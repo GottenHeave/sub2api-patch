@@ -8,6 +8,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	gocache "github.com/patrickmn/go-cache"
 )
@@ -29,6 +30,9 @@ const rawUsageLogModelColumn = "model"
 // 配合 `FROM usage_logs ul` JOIN 查询使用。
 const usageLogSuccessFilterUL = "ul.actual_cost > 0"
 
+const usageLogTokenSumExpr = "input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens + audio_input_tokens + audio_output_tokens + audio_cache_creation_tokens + audio_cache_read_tokens"
+const usageLogTokenSumExprUL = "ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens + ul.audio_input_tokens + ul.audio_output_tokens + ul.audio_cache_creation_tokens + ul.audio_cache_read_tokens"
+
 // usageLogEffectivePlatformExpr 用于按"有效平台"维度聚合 usage_logs：
 // 优先取请求实际走的分组 platform，若分组未设置 platform 再 fallback 到 account.platform。
 // 配套要求查询里 LEFT JOIN groups g ON g.id = ul.group_id 与 LEFT JOIN accounts a ON a.id = ul.account_id。
@@ -48,6 +52,51 @@ func safeDateFormat(granularity string) string {
 		return f
 	}
 	return "YYYY-MM-DD"
+}
+
+func usageStatsTotalTokens(stats *usagestats.UsageStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheTokens +
+		stats.TotalAudioInputTokens + stats.TotalAudioOutputTokens +
+		stats.TotalAudioCacheCreationTokens + stats.TotalAudioCacheReadTokens
+}
+
+func dashboardTotalTokens(stats *DashboardStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheCreationTokens + stats.TotalCacheReadTokens +
+		stats.TotalAudioInputTokens + stats.TotalAudioOutputTokens +
+		stats.TotalAudioCacheCreationTokens + stats.TotalAudioCacheReadTokens
+}
+
+func dashboardTodayTokens(stats *DashboardStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens +
+		stats.TodayAudioInputTokens + stats.TodayAudioOutputTokens +
+		stats.TodayAudioCacheCreationTokens + stats.TodayAudioCacheReadTokens
+}
+
+func userDashboardTotalTokens(stats *UserDashboardStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheCreationTokens + stats.TotalCacheReadTokens +
+		stats.TotalAudioInputTokens + stats.TotalAudioOutputTokens +
+		stats.TotalAudioCacheCreationTokens + stats.TotalAudioCacheReadTokens
+}
+
+func userDashboardTodayTokens(stats *UserDashboardStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens +
+		stats.TodayAudioInputTokens + stats.TodayAudioOutputTokens +
+		stats.TodayAudioCacheCreationTokens + stats.TodayAudioCacheReadTokens
 }
 
 // appendRawUsageLogModelWhereCondition keeps direct model filters on the raw model column for backward
