@@ -223,8 +223,11 @@ type OpenAIWSIngressHooks struct {
 	// 的 reasoning effort 后缀推导，禁止用于上游请求或计费模型。
 	InitialRequestModel string
 	BeforeTurn          func(turn int) error
-	BeforeRequest       func(turn int, payload []byte, originalModel string) error
-	AfterTurn           func(turn int, result *OpenAIForwardResult, turnErr error)
+	// BeforeRequest runs for every client text frame before it is sent upstream.
+	// For non-response.create events, turn is the next response turn and originalModel
+	// is the best current session model.
+	BeforeRequest func(turn int, payload []byte, originalModel string) error
+	AfterTurn     func(turn int, result *OpenAIForwardResult, turnErr error)
 }
 
 func normalizeOpenAIWSLogValue(value string) string {
@@ -1069,26 +1072,62 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
 }
 
 func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (string, error) {
+	return s.buildOpenAIWSURL(account, "/v1/responses", "")
+}
+
+func (s *OpenAIGatewayService) buildOpenAIRealtimeWSURL(account *Account, model string) (string, error) {
+	return s.buildOpenAIWSURL(account, "/v1/realtime", model)
+}
+
+func (s *OpenAIGatewayService) buildOpenAIRealtimeTranslationWSURL(account *Account, model string) (string, error) {
+	return s.buildOpenAIWSURL(account, "/v1/realtime/translations", model)
+}
+
+func (s *OpenAIGatewayService) buildOpenAIWSURL(account *Account, endpoint string, model string) (string, error) {
 	if account == nil {
 		return "", errors.New("account is nil")
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		endpoint = "/v1/responses"
+	}
+	realtimeEndpoint := isOpenAIRealtimeWSEndpoint(endpoint)
+	if realtimeEndpoint && (account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth)) {
+		return "", errors.New("realtime websocket requires an OpenAI API key or OAuth account")
 	}
 	var targetURL string
 	switch account.Type {
 	case AccountTypeOAuth:
-		targetURL = chatgptCodexURL
+		if realtimeEndpoint {
+			targetURL = buildOpenAIRealtimeEndpointURL("https://api.openai.com", endpoint)
+		} else {
+			targetURL = chatgptCodexURL
+		}
 	case AccountTypeAPIKey:
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL == "" {
-			targetURL = openaiPlatformAPIURL
+			if realtimeEndpoint {
+				targetURL = buildOpenAIRealtimeEndpointURL("https://api.openai.com", endpoint)
+			} else {
+				targetURL = openaiPlatformAPIURL
+			}
 		} else {
 			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 			if err != nil {
 				return "", err
 			}
-			targetURL = buildOpenAIResponsesURL(validatedURL)
+			if realtimeEndpoint {
+				targetURL = buildOpenAIRealtimeEndpointURL(validatedURL, endpoint)
+			} else {
+				targetURL = buildOpenAIResponsesURL(validatedURL)
+			}
 		}
 	default:
-		targetURL = openaiPlatformAPIURL
+		if realtimeEndpoint {
+			targetURL = buildOpenAIRealtimeEndpointURL("https://api.openai.com", endpoint)
+		} else {
+			targetURL = openaiPlatformAPIURL
+		}
 	}
 
 	parsed, err := url.Parse(strings.TrimSpace(targetURL))
@@ -1105,7 +1144,19 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
 	default:
 		return "", fmt.Errorf("unsupported scheme for ws: %s", parsed.Scheme)
 	}
+	if realtimeEndpoint {
+		if m := strings.TrimSpace(model); m != "" {
+			query := parsed.Query()
+			query.Set("model", m)
+			parsed.RawQuery = query.Encode()
+		}
+	}
 	return parsed.String(), nil
+}
+
+func isOpenAIRealtimeWSEndpoint(endpoint string) bool {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	return endpoint == "/v1/realtime" || strings.HasPrefix(endpoint, "/v1/realtime/")
 }
 
 func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
@@ -1120,6 +1171,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 ) (http.Header, openAIWSSessionHeaderResolution) {
 	headers := make(http.Header)
 	headers.Set("authorization", "Bearer "+token)
+	realtime := isOpenAIRealtimeRequest(c)
 
 	sessionResolution := resolveOpenAIWSSessionHeaders(c, promptCacheKey)
 	if c != nil && c.Request != nil {
@@ -1158,11 +1210,13 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 	}
 
-	betaValue := openAIWSBetaV2Value
-	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
-		betaValue = openAIWSBetaV1Value
+	if !realtime {
+		betaValue := openAIWSBetaV2Value
+		if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
+			betaValue = openAIWSBetaV1Value
+		}
+		headers.Set("OpenAI-Beta", betaValue)
 	}
-	headers.Set("OpenAI-Beta", betaValue)
 
 	customUA := ""
 	if account != nil {
@@ -2431,6 +2485,77 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	firstClientMessage []byte,
 	hooks *OpenAIWSIngressHooks,
 ) error {
+	return s.proxyOpenAIWebSocketFromClient(ctx, c, clientConn, account, token, firstClientMessage, hooks, "/v1/responses", "")
+}
+
+// ProxyRealtimeWebSocketFromClient 处理客户端入站 WebSocket（OpenAI Realtime API）并转发到上游。
+func (s *OpenAIGatewayService) ProxyRealtimeWebSocketFromClient(
+	ctx context.Context,
+	c *gin.Context,
+	clientConn *coderws.Conn,
+	account *Account,
+	token string,
+	firstClientMessage []byte,
+	model string,
+	upstreamEndpoint string,
+	hooks *OpenAIWSIngressHooks,
+) error {
+	if s == nil {
+		return errors.New("service is nil")
+	}
+	if clientConn == nil {
+		return errors.New("client websocket is nil")
+	}
+	if account == nil {
+		return errors.New("account is nil")
+	}
+	if strings.TrimSpace(token) == "" {
+		return errors.New("token is empty")
+	}
+	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
+		return NewOpenAIWSClientCloseError(
+			coderws.StatusPolicyViolation,
+			"realtime websocket requires an OpenAI API key or OAuth account",
+			nil,
+		)
+	}
+	if s.settingService != nil {
+		if settings, err := s.settingService.GetOpenAIFastPolicySettings(ctx); err == nil && settings != nil {
+			ctx = withOpenAIFastPolicyContext(ctx, settings)
+		}
+	}
+	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
+	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
+		return fmt.Errorf("realtime websocket requires ws_v2 transport, got=%s", wsDecision.Transport)
+	}
+	if !isOpenAIRealtimeWSEndpoint(upstreamEndpoint) {
+		upstreamEndpoint = "/v1/realtime"
+	}
+	return s.proxyResponsesWebSocketV2Passthrough(
+		ctx,
+		c,
+		clientConn,
+		account,
+		token,
+		firstClientMessage,
+		hooks,
+		wsDecision,
+		upstreamEndpoint,
+		model,
+	)
+}
+
+func (s *OpenAIGatewayService) proxyOpenAIWebSocketFromClient(
+	ctx context.Context,
+	c *gin.Context,
+	clientConn *coderws.Conn,
+	account *Account,
+	token string,
+	firstClientMessage []byte,
+	hooks *OpenAIWSIngressHooks,
+	upstreamEndpoint string,
+	realtimeModel string,
+) error {
 	if s == nil {
 		return errors.New("service is nil")
 	}
@@ -2482,6 +2607,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				firstClientMessage,
 				hooks,
 				wsDecision,
+				upstreamEndpoint,
+				realtimeModel,
 			)
 		case OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
 			// continue
@@ -2498,7 +2625,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 	dedicatedMode := modeRouterV2Enabled && ingressMode == OpenAIWSIngressModeDedicated
 
-	wsURL, err := s.buildOpenAIResponsesWSURL(account)
+	wsURL, err := s.buildOpenAIWSURL(account, upstreamEndpoint, realtimeModel)
 	if err != nil {
 		return fmt.Errorf("build ws url: %w", err)
 	}
@@ -4202,6 +4329,14 @@ func getOpenAIGroupIDFromContext(c *gin.Context) int64 {
 		return 0
 	}
 	return *apiKey.GroupID
+}
+
+func isOpenAIRealtimeRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	return strings.Contains(strings.TrimRight(c.Request.URL.Path, "/"), "/v1/realtime") ||
+		strings.Contains(strings.TrimRight(c.FullPath(), "/"), "/v1/realtime")
 }
 
 // SelectAccountByPreviousResponseID 按 previous_response_id 命中账号粘连。
