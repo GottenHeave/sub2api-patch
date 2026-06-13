@@ -479,6 +479,62 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Require
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForAudioTranscriptions_FallbackSelectionModel(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10110)
+	account := Account{
+		ID:          36031,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				OpenAIAudioTranscriptionsDefaultModel: OpenAIAudioTranscriptionsDefaultModel,
+			},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForAccountType(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"whisper-1",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIAudioTranscriptionsRequiredAccountTypes,
+		false,
+	)
+	require.ErrorContains(t, err, "no available OpenAI accounts supporting model: whisper-1")
+	require.Nil(t, selection)
+
+	selection, _, selectionModel, err := svc.SelectAccountWithSchedulerForAudioTranscriptions(
+		ctx,
+		&groupID,
+		"",
+		"whisper-1",
+		nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, account.ID, selection.Account.ID)
+	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, selectionModel)
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_EmbeddingsSkipsChatOnlyAccount(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
@@ -2341,6 +2397,204 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
 	require.Nil(t, selection)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 	require.Equal(t, 0, decision.CandidateCount)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForAccountType_RequiredAPIKeySkipsOAuthWSV2(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(1013)
+	accounts := []Account{
+		{
+			ID:          2401,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			Extra: map[string]any{
+				"responses_websockets_v2_enabled": true,
+			},
+		},
+		{
+			ID:          2402,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    10,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                newSchedulerTestOpenAIWSV2Config(),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForAccountType(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-realtime",
+		nil,
+		OpenAIUpstreamTransportResponsesWebsocketV2,
+		AccountTypeAPIKey,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, AccountTypeAPIKey, selection.Account.Type)
+	require.Equal(t, int64(2402), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, 1, decision.CandidateCount)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForAccountType_MultipleTypesSkipsUnsupported(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(1014)
+	accounts := []Account{
+		{
+			ID:          2501,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeSetupToken,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+		},
+		{
+			ID:          2502,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    10,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForAccountType(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-4o-mini-transcribe",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIAudioTranscriptionsRequiredAccountTypes,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, AccountTypeOAuth, selection.Account.Type)
+	require.Equal(t, int64(2502), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, 1, decision.CandidateCount)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForAccountType_AudioScopeOnlySkipsAudio(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(1015)
+	model := OpenAIAudioTranscriptionsDefaultModel
+	scope := OpenAIAudioTranscriptionsModelRateLimitScope(model)
+	future := time.Now().Add(30 * time.Second).Format(time.RFC3339)
+	accounts := []Account{
+		{
+			ID:          2601,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			Extra: map[string]any{
+				modelRateLimitsKey: map[string]any{
+					scope: map[string]any{
+						"rate_limit_reset_at": future,
+					},
+				},
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	audioCtx := WithModelRateLimitExtraScopes(context.Background(), scope)
+	audioSelection, _, err := svc.SelectAccountWithSchedulerForAccountType(
+		audioCtx,
+		&groupID,
+		"",
+		"",
+		model,
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIAudioTranscriptionsRequiredAccountTypes,
+		false,
+	)
+	require.Error(t, err)
+	require.Nil(t, audioSelection)
+
+	plainSelection, _, err := svc.SelectAccountWithSchedulerForAccountType(
+		context.Background(),
+		&groupID,
+		"",
+		"",
+		model,
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIAudioTranscriptionsRequiredAccountTypes,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, plainSelection)
+	require.NotNil(t, plainSelection.Account)
+	require.Equal(t, int64(2601), plainSelection.Account.ID)
+	if plainSelection.ReleaseFunc != nil {
+		plainSelection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIAudioTranscriptionsModelRateLimitScopeIfModel_BlankDoesNotDefault(t *testing.T) {
+	require.Empty(t, OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(""))
+	require.Equal(
+		t,
+		OpenAIAudioTranscriptionsModelRateLimitScope("custom-transcribe"),
+		OpenAIAudioTranscriptionsModelRateLimitScopeIfModel("custom-transcribe"),
+	)
 }
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback(t *testing.T) {
