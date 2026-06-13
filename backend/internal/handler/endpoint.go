@@ -15,13 +15,18 @@ import (
 // ──────────────────────────────────────────────────────────
 
 const (
-	EndpointMessages          = "/v1/messages"
-	EndpointChatCompletions   = "/v1/chat/completions"
-	EndpointEmbeddings        = "/v1/embeddings"
-	EndpointResponses         = "/v1/responses"
-	EndpointImagesGenerations = "/v1/images/generations"
-	EndpointImagesEdits       = "/v1/images/edits"
-	EndpointGeminiModels      = "/v1beta/models"
+	EndpointMessages            = "/v1/messages"
+	EndpointChatCompletions     = "/v1/chat/completions"
+	EndpointEmbeddings          = "/v1/embeddings"
+	EndpointResponses           = "/v1/responses"
+	EndpointRealtime            = "/v1/realtime"
+	EndpointRealtimeREST        = "/v1/realtime/rest"
+	EndpointRealtimeCallsAccept = EndpointRealtimeREST
+	EndpointAudioTranscriptions = "/v1/audio/transcriptions"
+	EndpointTranscribe          = "/transcribe"
+	EndpointImagesGenerations   = "/v1/images/generations"
+	EndpointImagesEdits         = "/v1/images/edits"
+	EndpointGeminiModels        = "/v1beta/models"
 )
 
 // gin.Context keys used by the middleware and helpers below.
@@ -53,8 +58,16 @@ func NormalizeInboundEndpoint(path string) string {
 		return EndpointImagesGenerations
 	case strings.Contains(path, EndpointImagesEdits) || strings.Contains(path, "/images/edits"):
 		return EndpointImagesEdits
+	case strings.Contains(path, EndpointAudioTranscriptions) || strings.Contains(path, "/audio/transcriptions"):
+		return EndpointAudioTranscriptions
+	case path == EndpointTranscribe:
+		return EndpointTranscribe
 	case strings.Contains(path, EndpointResponses):
 		return EndpointResponses
+	case isRealtimeRESTEndpoint(path):
+		return EndpointRealtimeREST
+	case strings.Contains(path, EndpointRealtime):
+		return EndpointRealtime
 	case strings.Contains(path, EndpointGeminiModels):
 		return EndpointGeminiModels
 	default:
@@ -80,6 +93,15 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 	case service.PlatformOpenAI:
 		if inbound == EndpointEmbeddings || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits {
 			return inbound
+		}
+		if inbound == EndpointAudioTranscriptions || inbound == EndpointTranscribe {
+			return EndpointAudioTranscriptions
+		}
+		if inbound == EndpointRealtime {
+			return EndpointRealtime
+		}
+		if inbound == EndpointRealtimeREST {
+			return realtimeRESTUpstreamPath(rawRequestPath)
 		}
 		// OpenAI forwards everything to the Responses API.
 		// Preserve subresource suffix (e.g. /v1/responses/compact).
@@ -123,6 +145,41 @@ func responsesSubpathSuffix(rawPath string) string {
 		return ""
 	}
 	return suffix
+}
+
+func isRealtimeRESTEndpoint(path string) bool {
+	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
+	if trimmed == "" {
+		return false
+	}
+	switch {
+	case strings.Contains(trimmed, "/realtime/client_secrets"):
+		return true
+	case strings.Contains(trimmed, "/realtime/translations/client_secrets"):
+		return true
+	case strings.Contains(trimmed, "/realtime/translations/calls"):
+		return true
+	case strings.Contains(trimmed, "/realtime/sessions"):
+		return true
+	case strings.Contains(trimmed, "/realtime/transcription_sessions"):
+		return true
+	case strings.Contains(trimmed, "/realtime/calls"):
+		return true
+	default:
+		return false
+	}
+}
+
+func realtimeRESTUpstreamPath(rawPath string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(rawPath), "/")
+	idx := strings.LastIndex(trimmed, "/realtime/")
+	if idx < 0 {
+		if strings.HasSuffix(trimmed, "/realtime") {
+			return EndpointRealtime
+		}
+		return EndpointRealtimeREST
+	}
+	return "/v1" + trimmed[idx:]
 }
 
 // ──────────────────────────────────────────────────────────
