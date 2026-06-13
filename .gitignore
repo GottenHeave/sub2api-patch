@@ -3,3 +3,6 @@
 *.tmp
 worktree/
 artifacts/
+
+__pycache__/
+*.py[cod]
