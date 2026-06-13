@@ -1231,9 +1231,30 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	return wrapReleaseOnDone(ctx, accountReleaseFunc), true
 }
 
+type openAIWebSocketEndpointOptions struct {
+	Realtime    bool
+	Translation bool
+}
+
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
 // GET /openai/v1/responses (Upgrade: websocket)
 func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{})
+}
+
+// RealtimeWebSocket handles OpenAI Realtime API WebSocket ingress endpoint
+// GET /v1/realtime?model=... (Upgrade: websocket)
+func (h *OpenAIGatewayHandler) RealtimeWebSocket(c *gin.Context) {
+	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{Realtime: true})
+}
+
+// RealtimeTranslationWebSocket handles OpenAI Realtime translation WebSocket ingress endpoint.
+// GET /v1/realtime/translations?model=... (Upgrade: websocket)
+func (h *OpenAIGatewayHandler) RealtimeTranslationWebSocket(c *gin.Context) {
+	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{Realtime: true, Translation: true})
+}
+
+func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSocketEndpointOptions) {
 	if !isOpenAIWSUpgradeRequest(c.Request) {
 		h.errorResponse(c, http.StatusUpgradeRequired, "invalid_request_error", "WebSocket upgrade required (Upgrade: websocket)")
 		return
@@ -1253,11 +1274,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 
 	reqLog := requestLogger(
 		c,
-		"handler.openai_gateway.responses_ws",
+		openAIWebSocketLoggerName(opts),
 		zap.Int64("user_id", subject.UserID),
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
 		zap.Bool("openai_ws_mode", true),
+		zap.Bool("realtime", opts.Realtime),
 	)
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
@@ -1287,33 +1309,42 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
 
 	ctx := c.Request.Context()
-	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	msgType, firstMessage, err := wsConn.Read(readCtx)
-	cancel()
-	if err != nil {
-		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
-		reqLog.Warn("openai.websocket_read_first_message_failed",
-			zap.Error(err),
-			zap.String("client_ip", clientIP),
-			zap.String("close_status", closeStatus),
-			zap.String("close_reason", closeReason),
-			zap.Duration("read_timeout", 30*time.Second),
-		)
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "missing first response.create message")
-		return
+	var (
+		msgType      coderws.MessageType
+		firstMessage []byte
+	)
+	queryModel := strings.TrimSpace(c.Request.URL.Query().Get("model"))
+	if !opts.Realtime || queryModel == "" {
+		readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		var readErr error
+		msgType, firstMessage, readErr = wsConn.Read(readCtx)
+		cancel()
+		if readErr != nil {
+			closeStatus, closeReason := summarizeWSCloseErrorForLog(readErr)
+			reqLog.Warn("openai.websocket_read_first_message_failed",
+				zap.Error(readErr),
+				zap.String("client_ip", clientIP),
+				zap.String("close_status", closeStatus),
+				zap.String("close_reason", closeReason),
+				zap.Duration("read_timeout", 30*time.Second),
+			)
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, openAIWebSocketMissingFirstMessageReason(opts))
+			return
+		}
 	}
-	if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "unsupported websocket message type")
-		return
+	if len(firstMessage) > 0 {
+		if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "unsupported websocket message type")
+			return
+		}
+		if !gjson.ValidBytes(firstMessage) {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid JSON payload")
+			return
+		}
 	}
-	if !gjson.ValidBytes(firstMessage) {
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid JSON payload")
-		return
-	}
-
-	reqModel := strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
+	reqModel := resolveOpenAIWebSocketRequestModel(c, firstMessage, opts)
 	if reqModel == "" {
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "model is required in first response.create payload")
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, openAIWebSocketMissingModelReason(opts))
 		return
 	}
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String())
@@ -1333,13 +1364,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	setOpsRequestContext(c, reqModel, true)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeWSV2))
 
-	if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage); decision != nil && decision.Blocked {
-		writeContentModerationWSError(ctx, wsConn, decision)
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, decision.Message)
-		return
+	if len(firstMessage) > 0 {
+		if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage); decision != nil && decision.Blocked {
+			writeContentModerationWSError(ctx, wsConn, decision)
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, decision.Message)
+			return
+		}
 	}
 
-	if service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage) && !service.GroupAllowsImageGeneration(apiKey.Group) {
+	if !opts.Realtime && service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage) && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
 	}
@@ -1429,15 +1462,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 
 	for {
 		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityAndAccountType(
 			ctx,
 			apiKey.GroupID,
-			previousResponseID,
+			openAIWebSocketPreviousResponseID(previousResponseID, opts),
 			sessionHash,
 			reqModel,
 			failedAccountIDs,
 			requiredTransport,
 			service.OpenAIEndpointCapabilityChatCompletions,
+			openAIWebSocketRequiredAccountType(opts),
 			false,
 			previousResponseCanMove,
 			requestPlatform,
@@ -1651,9 +1685,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		// WebSocket 首包可能很大，hash 必须在 hooks 外算成字符串，避免 AfterTurn 闭包保活请求体。
 		requestPayloadHash = service.HashUsageRequestPayload(wsFirstMessage)
 
-		if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
+		var proxyErr error
+		if opts.Realtime {
+			realtimeModel := reqModel
+			if channelMappingWS.Mapped && strings.TrimSpace(channelMappingWS.MappedModel) != "" {
+				realtimeModel = channelMappingWS.MappedModel
+			}
+			proxyErr = h.gatewayService.ProxyRealtimeWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, realtimeModel, opts.RealtimeUpstreamEndpoint(), hooks)
+		} else {
+			proxyErr = h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks)
+		}
+		if proxyErr != nil {
 			var failoverErr *service.UpstreamFailoverError
-			if errors.As(err, &failoverErr) {
+			if errors.As(proxyErr, &failoverErr) {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				releaseAccountSlot()
 				failedAccountIDs[account.ID] = struct{}{}
@@ -1681,15 +1725,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			}
 
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
-			closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
+			closeStatus, closeReason := summarizeWSCloseErrorForLog(proxyErr)
 			reqLog.Warn("openai.websocket_proxy_failed",
 				zap.Int64("account_id", account.ID),
-				zap.Error(err),
+				zap.Error(proxyErr),
 				zap.String("close_status", closeStatus),
 				zap.String("close_reason", closeReason),
 			)
 			var closeErr *service.OpenAIWSClientCloseError
-			if errors.As(err, &closeErr) {
+			if errors.As(proxyErr, &closeErr) {
 				closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
 				return
 			}
@@ -1700,6 +1744,62 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
+}
+
+func openAIWebSocketLoggerName(opts openAIWebSocketEndpointOptions) string {
+	if opts.Realtime {
+		if opts.Translation {
+			return "handler.openai_gateway.realtime_translation_ws"
+		}
+		return "handler.openai_gateway.realtime_ws"
+	}
+	return "handler.openai_gateway.responses_ws"
+}
+
+func (opts openAIWebSocketEndpointOptions) RealtimeUpstreamEndpoint() string {
+	if opts.Realtime && opts.Translation {
+		return "/v1/realtime/translations"
+	}
+	return "/v1/realtime"
+}
+
+func openAIWebSocketMissingFirstMessageReason(opts openAIWebSocketEndpointOptions) string {
+	if opts.Realtime {
+		return "missing first realtime message"
+	}
+	return "missing first response.create message"
+}
+
+func openAIWebSocketMissingModelReason(opts openAIWebSocketEndpointOptions) string {
+	if opts.Realtime {
+		return "model is required in realtime query or session.update payload"
+	}
+	return "model is required in first response.create payload"
+}
+
+func resolveOpenAIWebSocketRequestModel(c *gin.Context, firstMessage []byte, opts openAIWebSocketEndpointOptions) string {
+	if opts.Realtime {
+		if c != nil && c.Request != nil && c.Request.URL != nil {
+			if model := strings.TrimSpace(c.Request.URL.Query().Get("model")); model != "" {
+				return model
+			}
+		}
+		if model := strings.TrimSpace(gjson.GetBytes(firstMessage, "session.model").String()); model != "" {
+			return model
+		}
+	}
+	return strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
+}
+
+func openAIWebSocketPreviousResponseID(previousResponseID string, opts openAIWebSocketEndpointOptions) string {
+	if opts.Realtime {
+		return ""
+	}
+	return previousResponseID
+}
+
+func openAIWebSocketRequiredAccountType(opts openAIWebSocketEndpointOptions) string {
+	return ""
 }
 
 func (h *OpenAIGatewayHandler) recoverResponsesPanic(c *gin.Context, streamStarted *bool) {
