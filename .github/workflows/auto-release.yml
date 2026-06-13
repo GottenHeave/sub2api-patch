@@ -94,6 +94,12 @@ jobs:
           cache: pnpm
           cache-dependency-path: worktree/frontend/pnpm-lock.yaml
 
+      - name: Record upstream base
+        run: |
+          set -euo pipefail
+          echo "UPSTREAM_COMMIT=$(git -C worktree rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "UPSTREAM_COMMIT_SHORT=$(git -C worktree rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+
       - name: Apply patches
         run: sub2api-patch/scripts/apply-patches.sh worktree
 
@@ -119,7 +125,6 @@ jobs:
       - name: Prepare release notes
         run: |
           set -euo pipefail
-          upstream_commit="$(git -C worktree rev-parse --short=12 HEAD)"
           upstream_version="$(tr -d '[:space:]' < worktree/backend/cmd/server/VERSION)"
           patchset_commit="$(git -C sub2api-patch rev-parse --short=12 HEAD)"
           echo "RELEASE_REVISION=$(git -C worktree rev-parse HEAD)" >> "$GITHUB_ENV"
@@ -127,8 +132,8 @@ jobs:
           ${VERSION}
 
           Base:
-          - upstream version: v${upstream_version}
-          - upstream commit: ${upstream_commit}
+          - upstream tag: v${upstream_version}
+          - upstream commit: ${UPSTREAM_COMMIT_SHORT}
           - patchset commit: ${patchset_commit}
 
           Patch topics:
