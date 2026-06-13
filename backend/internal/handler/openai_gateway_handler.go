@@ -1629,9 +1629,30 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	return wrapReleaseOnDone(ctx, accountReleaseFunc), openAISlotAcquireOK
 }
 
+type openAIWebSocketEndpointOptions struct {
+	Realtime    bool
+	Translation bool
+}
+
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
 // GET /openai/v1/responses (Upgrade: websocket)
 func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{})
+}
+
+// RealtimeWebSocket handles OpenAI Realtime API WebSocket ingress endpoint
+// GET /v1/realtime?model=... (Upgrade: websocket)
+func (h *OpenAIGatewayHandler) RealtimeWebSocket(c *gin.Context) {
+	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{Realtime: true})
+}
+
+// RealtimeTranslationWebSocket handles OpenAI Realtime translation WebSocket ingress endpoint.
+// GET /v1/realtime/translations?model=... (Upgrade: websocket)
+func (h *OpenAIGatewayHandler) RealtimeTranslationWebSocket(c *gin.Context) {
+	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{Realtime: true, Translation: true})
+}
+
+func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSocketEndpointOptions) {
 	if !isOpenAIWSUpgradeRequest(c.Request) {
 		h.errorResponse(c, http.StatusUpgradeRequired, "invalid_request_error", "WebSocket upgrade required (Upgrade: websocket)")
 		return
@@ -1651,11 +1672,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 
 	reqLog := requestLogger(
 		c,
-		"handler.openai_gateway.responses_ws",
+		openAIWebSocketLoggerName(opts),
 		zap.Int64("user_id", subject.UserID),
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
 		zap.Bool("openai_ws_mode", true),
+		zap.Bool("realtime", opts.Realtime),
 	)
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
@@ -1707,43 +1729,53 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}()
 	wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
 
-	firstMessageTimeout := service.ResolveOpenAIWSClientFirstMessageTimeout(h.cfg)
-	msgType, firstMessage, err := service.ReadOpenAIWSClientMessage(
-		ctx,
-		wsConn,
-		firstMessageTimeout,
-		coderws.StatusPolicyViolation,
-		"missing first response.create message",
+	var (
+		msgType      coderws.MessageType
+		firstMessage []byte
 	)
-	if err != nil {
-		if errors.Is(context.Cause(ctx), service.ErrOpenAIWSIngressLeaseLost) {
-			reqLog.Warn("openai.websocket_ingress_lease_lost_before_first_message", zap.Error(err))
-			closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "websocket ingress capacity lease lost; please reconnect")
+	queryModel := strings.TrimSpace(c.Request.URL.Query().Get("model"))
+	if !opts.Realtime || queryModel == "" {
+		firstMessageTimeout := service.ResolveOpenAIWSClientFirstMessageTimeout(h.cfg)
+		var readErr error
+		msgType, firstMessage, readErr = service.ReadOpenAIWSClientMessage(
+			ctx,
+			wsConn,
+			firstMessageTimeout,
+			coderws.StatusPolicyViolation,
+			openAIWebSocketMissingFirstMessageReason(opts),
+		)
+		if readErr != nil {
+			if errors.Is(context.Cause(ctx), service.ErrOpenAIWSIngressLeaseLost) {
+				reqLog.Warn("openai.websocket_ingress_lease_lost_before_first_message", zap.Error(readErr))
+				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "websocket ingress capacity lease lost; please reconnect")
+				return
+			}
+			closeStatus, closeReason := summarizeWSCloseErrorForLog(readErr)
+			reqLog.Warn("openai.websocket_read_first_message_failed",
+				zap.Error(readErr),
+				zap.String("client_ip", clientIP),
+				zap.String("close_status", closeStatus),
+				zap.String("close_reason", closeReason),
+				zap.Duration("read_timeout", firstMessageTimeout),
+			)
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, openAIWebSocketMissingFirstMessageReason(opts))
 			return
 		}
-		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
-		reqLog.Warn("openai.websocket_read_first_message_failed",
-			zap.Error(err),
-			zap.String("client_ip", clientIP),
-			zap.String("close_status", closeStatus),
-			zap.String("close_reason", closeReason),
-			zap.Duration("read_timeout", firstMessageTimeout),
-		)
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "missing first response.create message")
-		return
 	}
 	firstTurnStartedAt := time.Now()
-	if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "unsupported websocket message type")
-		return
+	if len(firstMessage) > 0 {
+		if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "unsupported websocket message type")
+			return
+		}
+		if !gjson.ValidBytes(firstMessage) {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid JSON payload")
+			return
+		}
 	}
-	if !gjson.ValidBytes(firstMessage) {
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid JSON payload")
-		return
-	}
-	reqModel := strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
+	reqModel := resolveOpenAIWebSocketRequestModel(c, firstMessage, opts)
 	if reqModel == "" {
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "model is required in first response.create payload")
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, openAIWebSocketMissingModelReason(opts))
 		return
 	}
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
@@ -1779,7 +1811,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}
 
 	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
-	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
+	if !opts.Realtime && imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
 	}
@@ -1928,10 +1960,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			return
 		}
 		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityAndAccountType(
 			ctx,
 			apiKey.GroupID,
-			previousResponseID,
+			openAIWebSocketPreviousResponseID(previousResponseID, opts),
 			sessionHash,
 			reqModel,
 			failedAccountIDs,
@@ -2292,9 +2324,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		// WebSocket 首包可能很大，hash 必须在 hooks 外算成字符串，避免 AfterTurn 闭包保活请求体。
 		requestPayloadHash = service.HashUsageRequestPayload(wsFirstMessage)
 
-		if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
+		var proxyErr error
+		if opts.Realtime {
+			realtimeModel := reqModel
+			if channelMappingWS.Mapped && strings.TrimSpace(channelMappingWS.MappedModel) != "" {
+				realtimeModel = channelMappingWS.MappedModel
+			}
+			proxyErr = h.gatewayService.ProxyRealtimeWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, realtimeModel, opts.RealtimeUpstreamEndpoint(), hooks)
+		} else {
+			proxyErr = h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks)
+		}
+		if proxyErr != nil {
 			var failoverErr *service.UpstreamFailoverError
-			if errors.As(err, &failoverErr) {
+			if errors.As(proxyErr, &failoverErr) {
 				if handleWSFailover(account, failoverErr) {
 					continue
 				}
@@ -2304,14 +2346,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			if errors.Is(context.Cause(ctx), service.ErrOpenAIWSIngressLeaseLost) {
 				reqLog.Warn("openai.websocket_ingress_lease_lost",
 					zap.Int64("account_id", account.ID),
-					zap.Error(err),
+					zap.Error(proxyErr),
 				)
 				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "websocket ingress capacity lease lost; please reconnect")
 				return
 			}
 
 			var closeErr *service.OpenAIWSClientCloseError
-			if errors.As(err, &closeErr) && closeErr.StatusCode() == coderws.StatusNormalClosure {
+			if errors.As(proxyErr, &closeErr) && closeErr.StatusCode() == coderws.StatusNormalClosure {
 				reqLog.Info("openai.websocket_ingress_closed_normally",
 					zap.Int64("account_id", account.ID),
 					zap.String("reason", closeErr.Reason()),
@@ -2320,13 +2362,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return
 			}
 
-			if shouldReportOpenAIWSProxyAccountFailure(err) {
+			if shouldReportOpenAIWSProxyAccountFailure(proxyErr) {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
 			}
-			closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
+			closeStatus, closeReason := summarizeWSCloseErrorForLog(proxyErr)
 			proxyFailedFields := []zap.Field{
 				zap.Int64("account_id", account.ID),
-				zap.Error(err),
+				zap.Error(proxyErr),
 				zap.String("close_status", closeStatus),
 				zap.String("close_reason", closeReason),
 			}
@@ -2341,7 +2383,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				proxyFailedFields = append(proxyFailedFields, zap.Int64p("proxy_id", account.ProxyID))
 			}
 			reqLog.Warn("openai.websocket_proxy_failed", proxyFailedFields...)
-			if errors.As(err, &closeErr) {
+			if errors.As(proxyErr, &closeErr) {
 				closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
 				return
 			}
@@ -2352,6 +2394,62 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
+}
+
+func openAIWebSocketLoggerName(opts openAIWebSocketEndpointOptions) string {
+	if opts.Realtime {
+		if opts.Translation {
+			return "handler.openai_gateway.realtime_translation_ws"
+		}
+		return "handler.openai_gateway.realtime_ws"
+	}
+	return "handler.openai_gateway.responses_ws"
+}
+
+func (opts openAIWebSocketEndpointOptions) RealtimeUpstreamEndpoint() string {
+	if opts.Realtime && opts.Translation {
+		return "/v1/realtime/translations"
+	}
+	return "/v1/realtime"
+}
+
+func openAIWebSocketMissingFirstMessageReason(opts openAIWebSocketEndpointOptions) string {
+	if opts.Realtime {
+		return "missing first realtime message"
+	}
+	return "missing first response.create message"
+}
+
+func openAIWebSocketMissingModelReason(opts openAIWebSocketEndpointOptions) string {
+	if opts.Realtime {
+		return "model is required in realtime query or session.update payload"
+	}
+	return "model is required in first response.create payload"
+}
+
+func resolveOpenAIWebSocketRequestModel(c *gin.Context, firstMessage []byte, opts openAIWebSocketEndpointOptions) string {
+	if opts.Realtime {
+		if c != nil && c.Request != nil && c.Request.URL != nil {
+			if model := strings.TrimSpace(c.Request.URL.Query().Get("model")); model != "" {
+				return model
+			}
+		}
+		if model := strings.TrimSpace(gjson.GetBytes(firstMessage, "session.model").String()); model != "" {
+			return model
+		}
+	}
+	return strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
+}
+
+func openAIWebSocketPreviousResponseID(previousResponseID string, opts openAIWebSocketEndpointOptions) string {
+	if opts.Realtime {
+		return ""
+	}
+	return previousResponseID
+}
+
+func openAIWebSocketRequiredAccountType(opts openAIWebSocketEndpointOptions) string {
+	return ""
 }
 
 func (h *OpenAIGatewayHandler) recoverResponsesPanic(c *gin.Context, streamStarted *bool) {
