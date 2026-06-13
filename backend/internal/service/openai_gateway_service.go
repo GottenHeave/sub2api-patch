@@ -40,8 +40,9 @@ const (
 	// ChatGPT internal API for OAuth accounts
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
 	// OpenAI Platform API for API Key accounts (fallback)
-	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
-	openaiStickySessionTTL = time.Hour // 粘性会话TTL
+	openaiPlatformAPIURL         = "https://api.openai.com/v1/responses"
+	openaiPlatformRealtimeAPIURL = "https://api.openai.com/v1/realtime"
+	openaiStickySessionTTL       = time.Hour // 粘性会话TTL
 	// 与真实 Codex CLI 的 User-Agent 结构对齐：
 	// {originator}/{version} ({OS} {OS_version}; {arch}) {terminal}
 	// 旧值 "codex_cli_rs/0.125.0" 缺少 OS/架构/终端后缀，易被上游指纹识别为非官方客户端。
@@ -216,6 +217,10 @@ type OpenAIUsage struct {
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
+	InputAudioTokens         int `json:"input_audio_tokens,omitempty"`
+	OutputAudioTokens        int `json:"output_audio_tokens,omitempty"`
+	CacheCreationAudioTokens int `json:"cache_creation_audio_tokens,omitempty"`
+	CacheReadAudioTokens     int `json:"cache_read_audio_tokens,omitempty"`
 }
 
 // OpenAIForwardResult represents the result of forwarding
@@ -5139,19 +5144,58 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 	}
 	cacheReadTokens := value.Get("input_tokens_details.cached_tokens").Int()
 	if cacheReadTokens == 0 {
+		cacheReadTokens = value.Get("input_token_details.cached_tokens").Int()
+	}
+	if cacheReadTokens == 0 {
 		cacheReadTokens = value.Get("prompt_tokens_details.cached_tokens").Int()
 	}
 	imageOutputTokens := value.Get("output_tokens_details.image_tokens").Int()
 	if imageOutputTokens == 0 {
 		imageOutputTokens = value.Get("completion_tokens_details.image_tokens").Int()
 	}
+	inputAudioTokens := firstGJSONInt(value,
+		"input_token_details.audio_tokens",
+		"input_tokens_details.audio_tokens",
+		"prompt_tokens_details.audio_tokens",
+	)
+	outputAudioTokens := firstGJSONInt(value,
+		"output_token_details.audio_tokens",
+		"output_tokens_details.audio_tokens",
+		"completion_tokens_details.audio_tokens",
+	)
+	cacheReadAudioTokens := firstGJSONInt(value,
+		"input_token_details.cached_tokens_details.audio_tokens",
+		"input_tokens_details.cached_tokens_details.audio_tokens",
+		"prompt_tokens_details.cached_tokens_details.audio_tokens",
+	)
+	cacheCreationAudioTokens := firstGJSONInt(value,
+		"input_token_details.cache_creation.audio_tokens",
+		"input_tokens_details.cache_creation.audio_tokens",
+		"prompt_tokens_details.cache_creation.audio_tokens",
+		"cache_creation_input_token_details.audio_tokens",
+		"cache_creation_input_tokens_details.audio_tokens",
+	)
 	return OpenAIUsage{
 		InputTokens:              int(inputTokens),
 		OutputTokens:             int(outputTokens),
 		CacheCreationInputTokens: int(value.Get("cache_creation_input_tokens").Int()),
 		CacheReadInputTokens:     int(cacheReadTokens),
 		ImageOutputTokens:        int(imageOutputTokens),
+		InputAudioTokens:         int(inputAudioTokens),
+		OutputAudioTokens:        int(outputAudioTokens),
+		CacheCreationAudioTokens: int(cacheCreationAudioTokens),
+		CacheReadAudioTokens:     int(cacheReadAudioTokens),
 	}, true
+}
+
+func firstGJSONInt(value gjson.Result, paths ...string) int64 {
+	for _, path := range paths {
+		result := value.Get(path)
+		if result.Exists() && result.Type == gjson.Number {
+			return result.Int()
+		}
+	}
+	return 0
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
@@ -5503,6 +5547,10 @@ func buildOpenAIResponsesURL(base string) string {
 	return buildOpenAIEndpointURL(base, "/v1/responses")
 }
 
+func buildOpenAIRealtimeEndpointURL(base string, endpoint string) string {
+	return buildOpenAIEndpointURL(base, endpoint)
+}
+
 func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {
 	if len(reqBody) == 0 {
 		return false
@@ -5759,14 +5807,22 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if actualInputTokens < 0 {
 		actualInputTokens = 0
 	}
+	actualAudioInputTokens := result.Usage.InputAudioTokens - result.Usage.CacheReadAudioTokens
+	if actualAudioInputTokens < 0 {
+		actualAudioInputTokens = 0
+	}
 
 	// Calculate cost
 	tokens := UsageTokens{
-		InputTokens:         actualInputTokens,
-		OutputTokens:        result.Usage.OutputTokens,
-		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-		CacheReadTokens:     result.Usage.CacheReadInputTokens,
-		ImageOutputTokens:   result.Usage.ImageOutputTokens,
+		InputTokens:              actualInputTokens,
+		OutputTokens:             result.Usage.OutputTokens,
+		CacheCreationTokens:      result.Usage.CacheCreationInputTokens,
+		CacheReadTokens:          result.Usage.CacheReadInputTokens,
+		ImageOutputTokens:        result.Usage.ImageOutputTokens,
+		AudioInputTokens:         actualAudioInputTokens,
+		AudioOutputTokens:        result.Usage.OutputAudioTokens,
+		AudioCacheCreationTokens: result.Usage.CacheCreationAudioTokens,
+		AudioCacheReadTokens:     result.Usage.CacheReadAudioTokens,
 	}
 
 	// Get rate multiplier
@@ -5848,28 +5904,32 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	usageLog := &UsageLog{
-		UserID:              user.ID,
-		APIKeyID:            apiKey.ID,
-		AccountID:           account.ID,
-		RequestID:           requestID,
-		Model:               result.Model,
-		RequestedModel:      requestedModel,
-		UpstreamModel:       optionalNonEqualStringPtr(result.UpstreamModel, result.Model),
-		ServiceTier:         result.ServiceTier,
-		ReasoningEffort:     result.ReasoningEffort,
-		InboundEndpoint:     optionalTrimmedStringPtr(input.InboundEndpoint),
-		UpstreamEndpoint:    optionalTrimmedStringPtr(input.UpstreamEndpoint),
-		InputTokens:         actualInputTokens,
-		OutputTokens:        result.Usage.OutputTokens,
-		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-		CacheReadTokens:     result.Usage.CacheReadInputTokens,
-		ImageOutputTokens:   result.Usage.ImageOutputTokens,
-		ImageCount:          result.ImageCount,
-		ImageSize:           optionalTrimmedStringPtr(result.ImageSize),
-		ImageInputSize:      optionalTrimmedStringPtr(result.ImageInputSize),
-		ImageOutputSize:     optionalTrimmedStringPtr(result.ImageOutputSize),
-		ImageSizeSource:     optionalTrimmedStringPtr(result.ImageSizeSource),
-		ImageSizeBreakdown:  result.ImageSizeBreakdown,
+		UserID:                   user.ID,
+		APIKeyID:                 apiKey.ID,
+		AccountID:                account.ID,
+		RequestID:                requestID,
+		Model:                    result.Model,
+		RequestedModel:           requestedModel,
+		UpstreamModel:            optionalNonEqualStringPtr(result.UpstreamModel, result.Model),
+		ServiceTier:              result.ServiceTier,
+		ReasoningEffort:          result.ReasoningEffort,
+		InboundEndpoint:          optionalTrimmedStringPtr(input.InboundEndpoint),
+		UpstreamEndpoint:         optionalTrimmedStringPtr(input.UpstreamEndpoint),
+		InputTokens:              actualInputTokens,
+		OutputTokens:             result.Usage.OutputTokens,
+		CacheCreationTokens:      result.Usage.CacheCreationInputTokens,
+		CacheReadTokens:          result.Usage.CacheReadInputTokens,
+		AudioInputTokens:         actualAudioInputTokens,
+		AudioOutputTokens:        result.Usage.OutputAudioTokens,
+		AudioCacheCreationTokens: result.Usage.CacheCreationAudioTokens,
+		AudioCacheReadTokens:     result.Usage.CacheReadAudioTokens,
+		ImageOutputTokens:        result.Usage.ImageOutputTokens,
+		ImageCount:               result.ImageCount,
+		ImageSize:                optionalTrimmedStringPtr(result.ImageSize),
+		ImageInputSize:           optionalTrimmedStringPtr(result.ImageInputSize),
+		ImageOutputSize:          optionalTrimmedStringPtr(result.ImageOutputSize),
+		ImageSizeSource:          optionalTrimmedStringPtr(result.ImageSizeSource),
+		ImageSizeBreakdown:       result.ImageSizeBreakdown,
 	}
 	if cost != nil {
 		usageLog.InputCost = cost.InputCost
