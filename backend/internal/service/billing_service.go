@@ -102,6 +102,11 @@ type ModelPricing struct {
 	CacheReadPricePerTokenPriority     float64 // priority service tier 下缓存读取每token价格 (USD)
 	CacheCreation5mPrice               float64 // 5分钟缓存创建每token价格 (USD)
 	CacheCreation1hPrice               float64 // 1小时缓存创建每token价格 (USD)
+	AudioInputPricePerToken            float64 // 音频输入 token 价格 (USD)
+	AudioInputPricePerTokenPriority    float64 // priority service tier 下音频输入 token 价格 (USD)
+	AudioOutputPricePerToken           float64 // 音频输出 token 价格 (USD)
+	AudioCacheCreationPricePerToken    float64 // 音频缓存创建 token 价格 (USD)
+	AudioCacheReadPricePerToken        float64 // 音频缓存读取 token 价格 (USD)
 	SupportsCacheBreakdown             bool    // 是否支持详细的缓存分类
 	LongContextInputThreshold          int     // 超过阈值后按整次会话提升输入价格
 	LongContextInputMultiplier         float64 // 长上下文整次会话输入倍率
@@ -125,7 +130,8 @@ func usePriorityServiceTierPricing(serviceTier string, pricing *ModelPricing) bo
 		return false
 	}
 	return pricing.InputPricePerTokenPriority > 0 || pricing.OutputPricePerTokenPriority > 0 ||
-		pricing.CacheCreationPricePerTokenPriority > 0 || pricing.CacheReadPricePerTokenPriority > 0
+		pricing.CacheCreationPricePerTokenPriority > 0 || pricing.CacheReadPricePerTokenPriority > 0 ||
+		pricing.AudioInputPricePerTokenPriority > 0
 }
 
 func serviceTierCostMultiplier(serviceTier string) float64 {
@@ -141,14 +147,18 @@ func serviceTierCostMultiplier(serviceTier string) float64 {
 
 // UsageTokens 使用的token数量
 type UsageTokens struct {
-	InputTokens           int
-	ImageInputTokens      int
-	OutputTokens          int
-	CacheCreationTokens   int
-	CacheReadTokens       int
-	CacheCreation5mTokens int
-	CacheCreation1hTokens int
-	ImageOutputTokens     int
+	InputTokens              int
+	ImageInputTokens         int
+	OutputTokens             int
+	CacheCreationTokens      int
+	CacheReadTokens          int
+	CacheCreation5mTokens    int
+	CacheCreation1hTokens    int
+	ImageOutputTokens        int
+	AudioInputTokens         int
+	AudioOutputTokens        int
+	AudioCacheCreationTokens int
+	AudioCacheReadTokens     int
 }
 
 // CostBreakdown 费用明细
@@ -788,6 +798,11 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 				CacheReadPricePerTokenPriority:     litellmPricing.CacheReadInputTokenCostPriority,
 				CacheCreation5mPrice:               price5m,
 				CacheCreation1hPrice:               price1h,
+				AudioInputPricePerToken:            litellmPricing.InputCostPerAudioToken,
+				AudioInputPricePerTokenPriority:    litellmPricing.InputCostPerAudioTokenPriority,
+				AudioOutputPricePerToken:           litellmPricing.OutputCostPerAudioToken,
+				AudioCacheCreationPricePerToken:    litellmPricing.CacheCreationInputAudioTokenCost,
+				AudioCacheReadPricePerToken:        litellmPricing.CacheReadInputAudioTokenCost,
 				SupportsCacheBreakdown:             enableBreakdown,
 				LongContextInputThreshold:          litellmPricing.LongContextInputTokenThreshold,
 				LongContextInputMultiplier:         litellmPricing.LongContextInputCostMultiplier,
@@ -827,10 +842,13 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
 	if channelPricing.InputPrice != nil {
 		pricing.InputPricePerToken = *channelPricing.InputPrice
 		pricing.InputPricePerTokenPriority = *channelPricing.InputPrice
+		pricing.AudioInputPricePerToken = *channelPricing.InputPrice
+		pricing.AudioInputPricePerTokenPriority = *channelPricing.InputPrice
 	}
 	if channelPricing.OutputPrice != nil {
 		pricing.OutputPricePerToken = *channelPricing.OutputPrice
 		pricing.OutputPricePerTokenPriority = *channelPricing.OutputPrice
+		pricing.AudioOutputPricePerToken = *channelPricing.OutputPrice
 	}
 	if channelPricing.CacheWritePrice != nil {
 		pricing.CacheCreationPricePerToken = *channelPricing.CacheWritePrice
@@ -838,10 +856,12 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
 		pricing.CacheCreationPriceExplicit = true
 		pricing.CacheCreation5mPrice = *channelPricing.CacheWritePrice
 		pricing.CacheCreation1hPrice = *channelPricing.CacheWritePrice
+		pricing.AudioCacheCreationPricePerToken = *channelPricing.CacheWritePrice
 	}
 	if channelPricing.CacheReadPrice != nil {
 		pricing.CacheReadPricePerToken = *channelPricing.CacheReadPrice
 		pricing.CacheReadPricePerTokenPriority = *channelPricing.CacheReadPrice
+		pricing.AudioCacheReadPricePerToken = *channelPricing.CacheReadPrice
 	}
 	if channelPricing.ImageOutputPrice != nil {
 		pricing.ImageOutputPricePerToken = *channelPricing.ImageOutputPrice
@@ -973,31 +993,45 @@ func (s *BillingService) computeTokenBreakdown(
 	}
 
 	bd := &CostBreakdown{}
-	// 分离图片输入 token 与文本输入 token（多模态 embedding 等图文不同价场景）。
-	// ImageInputTokens 为 0 时（绝大多数 chat/vision 流量）走原始单价路径，行为不变。
+	textInputTokens := tokens.InputTokens
+	textInputTokens = subtractDetailTokens(textInputTokens, tokens.ImageInputTokens)
+	textInputTokens = subtractDetailTokens(textInputTokens, tokens.AudioInputTokens)
+	bd.InputCost = float64(textInputTokens) * inputPrice
+
 	if tokens.ImageInputTokens > 0 {
 		imageInputTokens := tokens.ImageInputTokens
-		textInputTokens := tokens.InputTokens - imageInputTokens
-		if textInputTokens < 0 {
-			textInputTokens = 0
+		if imageInputTokens > tokens.InputTokens {
 			imageInputTokens = tokens.InputTokens
 		}
 		imageInputPrice := pricing.ImageInputPricePerToken
 		if imageInputPrice == 0 {
-			// 未配置图片输入档时回退到文本 input 价（已含 priority / 长上下文调整）
 			imageInputPrice = inputPrice
 		}
-		bd.InputCost = float64(textInputTokens)*inputPrice + float64(imageInputTokens)*imageInputPrice
-	} else {
-		bd.InputCost = float64(tokens.InputTokens) * inputPrice
+		bd.InputCost += float64(imageInputTokens) * imageInputPrice
+	}
+	if tokens.AudioInputTokens > 0 {
+		audioInputPrice := pricing.AudioInputPricePerToken
+		if normalizeBillingServiceTier(serviceTier) == "priority" && pricing.AudioInputPricePerTokenPriority > 0 {
+			audioInputPrice = pricing.AudioInputPricePerTokenPriority
+		}
+		if audioInputPrice == 0 {
+			audioInputPrice = inputPrice
+		}
+		bd.InputCost += float64(tokens.AudioInputTokens) * audioInputPrice
 	}
 
-	// 分离图片输出 token 与文本输出 token
-	textOutputTokens := tokens.OutputTokens - tokens.ImageOutputTokens
-	if textOutputTokens < 0 {
-		textOutputTokens = 0
-	}
+	// 分离图片和音频输出 token 与文本输出 token
+	textOutputTokens := tokens.OutputTokens
+	textOutputTokens = subtractDetailTokens(textOutputTokens, tokens.ImageOutputTokens)
+	textOutputTokens = subtractDetailTokens(textOutputTokens, tokens.AudioOutputTokens)
 	bd.OutputCost = float64(textOutputTokens) * outputPrice
+	if tokens.AudioOutputTokens > 0 {
+		audioOutputPrice := pricing.AudioOutputPricePerToken
+		if audioOutputPrice == 0 {
+			audioOutputPrice = outputPrice
+		}
+		bd.OutputCost += float64(tokens.AudioOutputTokens) * audioOutputPrice
+	}
 
 	// 图片输出 token 费用（独立费率）
 	if tokens.ImageOutputTokens > 0 {
@@ -1010,8 +1044,23 @@ func (s *BillingService) computeTokenBreakdown(
 
 	// 缓存创建费用
 	bd.CacheCreationCost = s.computeCacheCreationCost(pricing, tokens, cacheCreationPrice, cacheCreationMultiplier)
+	if tokens.AudioCacheCreationTokens > 0 {
+		audioCacheCreationPrice := pricing.AudioCacheCreationPricePerToken
+		if audioCacheCreationPrice == 0 {
+			audioCacheCreationPrice = cacheCreationPrice
+		}
+		bd.CacheCreationCost += float64(tokens.AudioCacheCreationTokens) * audioCacheCreationPrice * cacheCreationMultiplier
+	}
 
-	bd.CacheReadCost = float64(tokens.CacheReadTokens) * cacheReadPrice
+	textCacheReadTokens := subtractDetailTokens(tokens.CacheReadTokens, tokens.AudioCacheReadTokens)
+	bd.CacheReadCost = float64(textCacheReadTokens) * cacheReadPrice
+	if tokens.AudioCacheReadTokens > 0 {
+		audioCacheReadPrice := pricing.AudioCacheReadPricePerToken
+		if audioCacheReadPrice == 0 {
+			audioCacheReadPrice = cacheReadPrice
+		}
+		bd.CacheReadCost += float64(tokens.AudioCacheReadTokens) * audioCacheReadPrice
+	}
 
 	if tierMultiplier != 1.0 {
 		bd.InputCost *= tierMultiplier
@@ -1031,15 +1080,46 @@ func (s *BillingService) computeTokenBreakdown(
 // computeCacheCreationCost 计算缓存创建费用（支持 5m/1h 分类或标准计费）。
 // multiplier 用于长上下文等场景下的整体价格缩放（普通调用传 1.0 即可）。
 func (s *BillingService) computeCacheCreationCost(pricing *ModelPricing, tokens UsageTokens, price, multiplier float64) float64 {
+	textCacheCreationTokens := subtractDetailTokens(tokens.CacheCreationTokens, tokens.AudioCacheCreationTokens)
 	if pricing.SupportsCacheBreakdown && (pricing.CacheCreation5mPrice > 0 || pricing.CacheCreation1hPrice > 0) {
-		if tokens.CacheCreation5mTokens == 0 && tokens.CacheCreation1hTokens == 0 && tokens.CacheCreationTokens > 0 {
+		if tokens.CacheCreation5mTokens == 0 && tokens.CacheCreation1hTokens == 0 && textCacheCreationTokens > 0 {
 			// API 未返回 ephemeral 明细，回退到全部按 5m 单价计费
-			return float64(tokens.CacheCreationTokens) * pricing.CacheCreation5mPrice * multiplier
+			return float64(textCacheCreationTokens) * pricing.CacheCreation5mPrice * multiplier
 		}
-		return float64(tokens.CacheCreation5mTokens)*pricing.CacheCreation5mPrice*multiplier +
-			float64(tokens.CacheCreation1hTokens)*pricing.CacheCreation1hPrice*multiplier
+		textCacheCreation5mTokens, textCacheCreation1hTokens := splitCacheCreationDetailTokens(tokens)
+		return float64(textCacheCreation5mTokens)*pricing.CacheCreation5mPrice*multiplier +
+			float64(textCacheCreation1hTokens)*pricing.CacheCreation1hPrice*multiplier
 	}
-	return float64(tokens.CacheCreationTokens) * price * multiplier
+	return float64(textCacheCreationTokens) * price * multiplier
+}
+
+func subtractDetailTokens(total, detail int) int {
+	if total <= detail {
+		return 0
+	}
+	return total - detail
+}
+
+func splitCacheCreationDetailTokens(tokens UsageTokens) (int, int) {
+	text5m := tokens.CacheCreation5mTokens
+	text1h := tokens.CacheCreation1hTokens
+	remainingAudio := tokens.AudioCacheCreationTokens
+	if remainingAudio <= 0 {
+		return text5m, text1h
+	}
+	if remainingAudio >= text5m {
+		remainingAudio -= text5m
+		text5m = 0
+	} else {
+		text5m -= remainingAudio
+		remainingAudio = 0
+	}
+	if remainingAudio >= text1h {
+		text1h = 0
+	} else {
+		text1h -= remainingAudio
+	}
+	return text5m, text1h
 }
 
 // calculatePerRequestCost 按次/图片计费
