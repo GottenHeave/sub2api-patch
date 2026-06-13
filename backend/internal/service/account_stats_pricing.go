@@ -65,15 +65,26 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
 	if err != nil || pricing == nil {
 		return nil
 	}
-	cost := float64(tokens.InputTokens)*pricing.InputPricePerToken +
-		float64(tokens.OutputTokens)*pricing.OutputPricePerToken +
-		float64(tokens.CacheCreationTokens)*pricing.CacheCreationPricePerToken +
-		float64(tokens.CacheReadTokens)*pricing.CacheReadPricePerToken +
+	cost := float64(subtractDetailTokens(tokens.InputTokens, tokens.AudioInputTokens))*pricing.InputPricePerToken +
+		float64(subtractDetailTokens(tokens.OutputTokens, tokens.AudioOutputTokens))*pricing.OutputPricePerToken +
+		float64(subtractDetailTokens(tokens.CacheCreationTokens, tokens.AudioCacheCreationTokens))*pricing.CacheCreationPricePerToken +
+		float64(subtractDetailTokens(tokens.CacheReadTokens, tokens.AudioCacheReadTokens))*pricing.CacheReadPricePerToken +
+		float64(tokens.AudioInputTokens)*selectPrice(pricing.AudioInputPricePerToken, pricing.InputPricePerToken) +
+		float64(tokens.AudioOutputTokens)*selectPrice(pricing.AudioOutputPricePerToken, pricing.OutputPricePerToken) +
+		float64(tokens.AudioCacheCreationTokens)*selectPrice(pricing.AudioCacheCreationPricePerToken, pricing.CacheCreationPricePerToken) +
+		float64(tokens.AudioCacheReadTokens)*selectPrice(pricing.AudioCacheReadPricePerToken, pricing.CacheReadPricePerToken) +
 		float64(tokens.ImageOutputTokens)*pricing.ImageOutputPricePerToken
 	if cost <= 0 {
 		return nil
 	}
 	return &cost
+}
+
+func selectPrice(price, fallback float64) float64 {
+	if price != 0 {
+		return price
+	}
+	return fallback
 }
 
 // tryCustomRules 遍历自定义规则，按数组顺序先命中为准。
@@ -203,10 +214,18 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 		}
 		return *ptr
 	}
-	cost := float64(tokens.InputTokens)*deref(p.InputPrice) +
-		float64(tokens.OutputTokens)*deref(p.OutputPrice) +
-		float64(tokens.CacheCreationTokens)*deref(p.CacheWritePrice) +
-		float64(tokens.CacheReadTokens)*deref(p.CacheReadPrice) +
+	inputPrice := deref(p.InputPrice)
+	outputPrice := deref(p.OutputPrice)
+	cacheWritePrice := deref(p.CacheWritePrice)
+	cacheReadPrice := deref(p.CacheReadPrice)
+	cost := float64(subtractDetailTokens(tokens.InputTokens, tokens.AudioInputTokens))*inputPrice +
+		float64(subtractDetailTokens(tokens.OutputTokens, tokens.AudioOutputTokens))*outputPrice +
+		float64(subtractDetailTokens(tokens.CacheCreationTokens, tokens.AudioCacheCreationTokens))*cacheWritePrice +
+		float64(subtractDetailTokens(tokens.CacheReadTokens, tokens.AudioCacheReadTokens))*cacheReadPrice +
+		float64(tokens.AudioInputTokens)*inputPrice +
+		float64(tokens.AudioOutputTokens)*outputPrice +
+		float64(tokens.AudioCacheCreationTokens)*cacheWritePrice +
+		float64(tokens.AudioCacheReadTokens)*cacheReadPrice +
 		float64(tokens.ImageOutputTokens)*deref(p.ImageOutputPrice)
 	if cost <= 0 {
 		return nil
