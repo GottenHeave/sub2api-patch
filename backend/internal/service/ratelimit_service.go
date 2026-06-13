@@ -968,6 +968,10 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	if resetTimestamp == "" {
 		switch account.Platform {
 		case PlatformOpenAI:
+			if parseOpenAIRetryAfterSecondsFromBody(responseBody) != nil {
+				slog.Warn("openai_429_retry_after_seconds_skipped_account_rate_limit", "account_id", account.ID)
+				return
+			}
 			// 尝试解析 OpenAI 的 usage_limit_reached 错误
 			if resetAt := parseOpenAIRateLimitResetTime(responseBody); resetAt != nil {
 				resetTime := time.Unix(*resetAt, 0)
@@ -1498,6 +1502,46 @@ func parseOpenAIRateLimitResetTime(body []byte) *int64 {
 	}
 
 	return nil
+}
+
+func parseOpenAIRetryAfterSecondsFromBody(body []byte) *int64 {
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	if resetAt := parseOpenAIRetryAfterSeconds(parsed["detail"]); resetAt != nil {
+		return resetAt
+	}
+	return parseOpenAIRetryAfterSeconds(parsed)
+}
+
+func parseOpenAIRetryAfterSeconds(raw any) *int64 {
+	detail, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawSeconds, ok := detail["retry_after_seconds"]
+	if !ok {
+		return nil
+	}
+	var seconds int64
+	switch v := rawSeconds.(type) {
+	case float64:
+		seconds = int64(v)
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			return nil
+		}
+		seconds = parsed
+	default:
+		return nil
+	}
+	if seconds <= 0 {
+		return nil
+	}
+	ts := time.Now().Unix() + seconds
+	return &ts
 }
 
 func parseOpenAIRateLimitPlanType(body []byte) string {
