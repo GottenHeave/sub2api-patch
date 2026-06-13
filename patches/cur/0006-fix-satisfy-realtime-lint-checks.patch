@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: GottenHeave <274621501+GottenHeave@users.noreply.github.com>
+Date: Fri, 22 May 2026 07:35:31 -0400
+Subject: [PATCH] fix: satisfy realtime lint checks
+
+
+diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
+index c69872b6..9493b800 100644
+--- a/backend/internal/handler/openai_gateway_handler.go
++++ b/backend/internal/handler/openai_gateway_handler.go
+@@ -1153,7 +1153,7 @@ func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSoc
+ 		firstMessage []byte
+ 	)
+ 	queryModel := strings.TrimSpace(c.Request.URL.Query().Get("model"))
+-	if !(opts.Realtime && queryModel != "") {
++	if !opts.Realtime || queryModel == "" {
+ 		readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+ 		var readErr error
+ 		msgType, firstMessage, readErr = wsConn.Read(readCtx)
+diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
+index 7034c4ca..76941962 100644
+--- a/backend/internal/service/openai_ws_forwarder_success_test.go
++++ b/backend/internal/service/openai_ws_forwarder_success_test.go
+@@ -322,7 +322,7 @@ func TestOpenAIGatewayService_ProxyRealtimeWebSocketFromClient_RewritesSessionUp
+ 	}, time.Second, 10*time.Millisecond)
+ 
+ 	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
+-	_ = <-serverErrCh
++	<-serverErrCh
+ 
+ 	require.Equal(t, "wss://api.openai.com/v1/realtime?model=gpt-realtime", captureDialer.LastURL())
+ 	headers := captureDialer.LastHeaders()

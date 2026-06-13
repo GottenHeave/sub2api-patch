@@ -1,0 +1,603 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: GottenHeave <gotten-pelt-heave@duck.com>
+Date: Fri, 22 May 2026 12:06:52 -0400
+Subject: [PATCH] feat: support OpenAI OAuth realtime audio
+
+* feat: support openai oauth realtime audio
+
+* fix: filter openai audio oauth accounts
+
+---------
+
+
+diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
+index e762885f..2717e135 100644
+--- a/backend/internal/handler/openai_audio_transcriptions.go
++++ b/backend/internal/handler/openai_audio_transcriptions.go
+@@ -112,7 +112,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
+ 			parsed.Model,
+ 			failedAccountIDs,
+ 			service.OpenAIUpstreamTransportHTTPSSE,
+-			service.AccountTypeAPIKey,
++			service.OpenAIAudioTranscriptionsRequiredAccountTypes,
+ 			false,
+ 		)
+ 		if err != nil {
+diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
+index 9493b800..147893c6 100644
+--- a/backend/internal/handler/openai_gateway_handler.go
++++ b/backend/internal/handler/openai_gateway_handler.go
+@@ -1278,17 +1278,6 @@ func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSoc
+ 	}
+ 
+ 	account := selection.Account
+-	if opts.Realtime && account.Type != service.AccountTypeAPIKey {
+-		if selection.ReleaseFunc != nil {
+-			selection.ReleaseFunc()
+-		}
+-		reqLog.Warn("openai.realtime_account_type_unsupported",
+-			zap.Int64("account_id", account.ID),
+-			zap.String("account_type", account.Type),
+-		)
+-		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "realtime websocket requires an OpenAI API key account")
+-		return
+-	}
+ 	accountMaxConcurrency := account.Concurrency
+ 	if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
+ 		accountMaxConcurrency = selection.WaitPlan.MaxConcurrency
+@@ -1512,9 +1501,6 @@ func openAIWebSocketPreviousResponseID(previousResponseID string, opts openAIWeb
+ }
+ 
+ func openAIWebSocketRequiredAccountType(opts openAIWebSocketEndpointOptions) string {
+-	if opts.Realtime {
+-		return service.AccountTypeAPIKey
+-	}
+ 	return ""
+ }
+ 
+diff --git a/backend/internal/handler/openai_gateway_handler_test.go b/backend/internal/handler/openai_gateway_handler_test.go
+index 842eb455..15afe842 100644
+--- a/backend/internal/handler/openai_gateway_handler_test.go
++++ b/backend/internal/handler/openai_gateway_handler_test.go
+@@ -117,6 +117,11 @@ func TestResolveOpenAIWebSocketRequestModelResponsesRequiresTopLevelModel(t *tes
+ 	require.Empty(t, got)
+ }
+ 
++func TestOpenAIWebSocketRequiredAccountTypeAllowsRealtimeOAuth(t *testing.T) {
++	require.Empty(t, openAIWebSocketRequiredAccountType(openAIWebSocketEndpointOptions{Realtime: true}))
++	require.Empty(t, openAIWebSocketRequiredAccountType(openAIWebSocketEndpointOptions{}))
++}
++
+ func TestResolveOpenAIMessagesMetadataSession_DoesNotDerivePromptCacheKey(t *testing.T) {
+ 	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
+ 
+diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
+index 252063b9..ee3ad377 100644
+--- a/backend/internal/server/routes/gateway.go
++++ b/backend/internal/server/routes/gateway.go
+@@ -80,7 +80,18 @@ func RegisterGatewayRoutes(
+ 			h.Gateway.Responses(c)
+ 		})
+ 		gateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
+-		gateway.GET("/realtime", h.OpenAIGateway.RealtimeWebSocket)
++		gateway.GET("/realtime", func(c *gin.Context) {
++			if getGroupPlatform(c) != service.PlatformOpenAI {
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeWebSocket(c)
++		})
+ 		gateway.POST("/audio/transcriptions", func(c *gin.Context) {
+ 			if getGroupPlatform(c) != service.PlatformOpenAI {
+ 				c.JSON(http.StatusNotFound, gin.H{
+diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
+index c76c26a6..2e272a9f 100644
+--- a/backend/internal/server/routes/gateway_test.go
++++ b/backend/internal/server/routes/gateway_test.go
+@@ -42,6 +42,34 @@ func newGatewayRoutesTestRouter() *gin.Engine {
+ 	return router
+ }
+ 
++func newGatewayRoutesTestRouterForPlatform(platform string) *gin.Engine {
++	gin.SetMode(gin.TestMode)
++	router := gin.New()
++
++	RegisterGatewayRoutes(
++		router,
++		&handler.Handlers{
++			Gateway:       &handler.GatewayHandler{},
++			OpenAIGateway: &handler.OpenAIGatewayHandler{},
++		},
++		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
++			groupID := int64(1)
++			c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
++				GroupID: &groupID,
++				Group:   &service.Group{Platform: platform},
++			})
++			c.Next()
++		}),
++		nil,
++		nil,
++		nil,
++		nil,
++		&config.Config{},
++	)
++
++	return router
++}
++
+ func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
+ 	router := newGatewayRoutesTestRouter()
+ 
+@@ -89,6 +117,17 @@ func TestGatewayRoutesOpenAIRealtimePathIsRegistered(t *testing.T) {
+ 	require.Equal(t, http.StatusUpgradeRequired, w.Code)
+ }
+ 
++func TestGatewayRoutesOpenAIRealtimeRejectsNonOpenAIPlatform(t *testing.T) {
++	router := newGatewayRoutesTestRouterForPlatform(service.PlatformAnthropic)
++
++	req := httptest.NewRequest(http.MethodGet, "/v1/realtime?model=gpt-realtime", nil)
++	w := httptest.NewRecorder()
++
++	router.ServeHTTP(w, req)
++	require.Equal(t, http.StatusNotFound, w.Code)
++	require.Contains(t, w.Body.String(), "Realtime API is not supported for this platform")
++}
++
+ func TestGatewayRoutesOpenAIAudioTranscriptionsPathsAreRegistered(t *testing.T) {
+ 	router := newGatewayRoutesTestRouter()
+ 
+diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
+index 4c9a7ba3..f49d372b 100644
+--- a/backend/internal/service/openai_account_scheduler.go
++++ b/backend/internal/service/openai_account_scheduler.go
+@@ -914,7 +914,15 @@ func openAIAccountTypeCompatible(account *Account, requiredAccountType string) b
+ 	if requiredAccountType == "" {
+ 		return true
+ 	}
+-	return account != nil && account.Type == requiredAccountType
++	if account == nil {
++		return false
++	}
++	for _, candidate := range strings.Split(requiredAccountType, ",") {
++		if account.Type == strings.TrimSpace(candidate) {
++			return true
++		}
++	}
++	return false
+ }
+ 
+ func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
+diff --git a/backend/internal/service/openai_account_scheduler_test.go b/backend/internal/service/openai_account_scheduler_test.go
+index e81d707e..ef569101 100644
+--- a/backend/internal/service/openai_account_scheduler_test.go
++++ b/backend/internal/service/openai_account_scheduler_test.go
+@@ -980,6 +980,63 @@ func TestOpenAIGatewayService_SelectAccountWithSchedulerForAccountType_RequiredA
+ 	}
+ }
+ 
++func TestOpenAIGatewayService_SelectAccountWithSchedulerForAccountType_MultipleTypesSkipsUnsupported(t *testing.T) {
++	resetOpenAIAdvancedSchedulerSettingCacheForTest()
++
++	ctx := context.Background()
++	groupID := int64(1014)
++	accounts := []Account{
++		{
++			ID:          2501,
++			Platform:    PlatformOpenAI,
++			Type:        AccountTypeSetupToken,
++			Status:      StatusActive,
++			Schedulable: true,
++			Concurrency: 1,
++			Priority:    0,
++		},
++		{
++			ID:          2502,
++			Platform:    PlatformOpenAI,
++			Type:        AccountTypeOAuth,
++			Status:      StatusActive,
++			Schedulable: true,
++			Concurrency: 1,
++			Priority:    10,
++		},
++	}
++
++	svc := &OpenAIGatewayService{
++		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
++		cache:              &schedulerTestGatewayCache{},
++		cfg:                &config.Config{},
++		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
++		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
++	}
++
++	selection, decision, err := svc.SelectAccountWithSchedulerForAccountType(
++		ctx,
++		&groupID,
++		"",
++		"",
++		"gpt-4o-mini-transcribe",
++		nil,
++		OpenAIUpstreamTransportHTTPSSE,
++		OpenAIAudioTranscriptionsRequiredAccountTypes,
++		false,
++	)
++	require.NoError(t, err)
++	require.NotNil(t, selection)
++	require.NotNil(t, selection.Account)
++	require.Equal(t, AccountTypeOAuth, selection.Account.Type)
++	require.Equal(t, int64(2502), selection.Account.ID)
++	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
++	require.Equal(t, 1, decision.CandidateCount)
++	if selection.ReleaseFunc != nil {
++		selection.ReleaseFunc()
++	}
++}
++
+ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback(t *testing.T) {
+ 	ctx := context.Background()
+ 	groupID := int64(11)
+diff --git a/backend/internal/service/openai_audio_transcriptions.go b/backend/internal/service/openai_audio_transcriptions.go
+index bef943fb..a633130a 100644
+--- a/backend/internal/service/openai_audio_transcriptions.go
++++ b/backend/internal/service/openai_audio_transcriptions.go
+@@ -14,6 +14,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+ 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
+ 	"github.com/gin-gonic/gin"
+ )
+@@ -22,9 +23,11 @@ const (
+ 	openAIAudioTranscriptionsEndpoint = "/v1/audio/transcriptions"
+ 	openAITranscribeAliasEndpoint     = "/transcribe"
+ 	openAIAudioTranscriptionsURL      = "https://api.openai.com/v1/audio/transcriptions"
++	chatgptTranscribeURL              = "https://chatgpt.com/backend-api/transcribe"
+ 
+-	OpenAIAudioTranscriptionsDefaultModel = "gpt-4o-mini-transcribe"
+-	openAIAudioTranscriptionsMaxFieldSize = 1 << 20
++	OpenAIAudioTranscriptionsDefaultModel         = "gpt-4o-mini-transcribe"
++	openAIAudioTranscriptionsMaxFieldSize         = 1 << 20
++	OpenAIAudioTranscriptionsRequiredAccountTypes = AccountTypeAPIKey + "," + AccountTypeOAuth
+ )
+ 
+ type OpenAIAudioTranscriptionsRequest struct {
+@@ -186,8 +189,8 @@ func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
+ 	if account == nil {
+ 		return nil, fmt.Errorf("account is required")
+ 	}
+-	if account.Type != AccountTypeAPIKey {
+-		return nil, fmt.Errorf("audio transcriptions endpoint requires an API key account")
++	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
++		return nil, fmt.Errorf("audio transcriptions endpoint requires an OpenAI API key or OAuth account")
+ 	}
+ 
+ 	startTime := time.Now()
+@@ -207,9 +210,14 @@ func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
+ 		account.Type,
+ 	)
+ 
+-	forwardBody, forwardContentType, err := rewriteOpenAIAudioTranscriptionsMultipartModel(parsed.Body, parsed.ContentType, upstreamModel)
+-	if err != nil {
+-		return nil, err
++	forwardBody := parsed.Body
++	forwardContentType := parsed.ContentType
++	var err error
++	if account.Type == AccountTypeAPIKey || parsed.ExplicitModel {
++		forwardBody, forwardContentType, err = rewriteOpenAIAudioTranscriptionsMultipartModel(parsed.Body, parsed.ContentType, upstreamModel)
++		if err != nil {
++			return nil, err
++		}
+ 	}
+ 	token, _, err := s.GetAccessToken(ctx, account)
+ 	if err != nil {
+@@ -303,7 +311,9 @@ func (s *OpenAIGatewayService) buildOpenAIAudioTranscriptionsRequest(
+ 	token string,
+ ) (*http.Request, error) {
+ 	targetURL := openAIAudioTranscriptionsURL
+-	if baseURL := account.GetOpenAIBaseURL(); baseURL != "" {
++	if account.Type == AccountTypeOAuth {
++		targetURL = chatgptTranscribeURL
++	} else if baseURL := account.GetOpenAIBaseURL(); baseURL != "" {
+ 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+ 		if err != nil {
+ 			return nil, err
+@@ -315,18 +325,36 @@ func (s *OpenAIGatewayService) buildOpenAIAudioTranscriptionsRequest(
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	if c != nil && c.Request != nil {
++		for key, values := range c.Request.Header {
++			lowerKey := strings.ToLower(key)
++			if lowerKey == "x-codex-base64" || !openaiPassthroughAllowedHeaders[lowerKey] {
++				continue
++			}
++			for _, value := range values {
++				req.Header.Add(key, value)
++			}
++		}
++	}
++	req.Header.Del("Authorization")
++	req.Header.Del("X-Api-Key")
++	req.Header.Del("X-Goog-Api-Key")
+ 	req.Header.Set("Authorization", "Bearer "+token)
+-	for key, values := range c.Request.Header {
+-		lowerKey := strings.ToLower(key)
+-		if lowerKey == "x-codex-base64" || !openaiPassthroughAllowedHeaders[lowerKey] {
+-			continue
++	if account.Type == AccountTypeOAuth {
++		req.Host = "chatgpt.com"
++		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
++			req.Header.Set("chatgpt-account-id", chatgptAccountID)
+ 		}
+-		for _, value := range values {
+-			req.Header.Add(key, value)
++		isCodexOfficialClient := false
++		if c != nil {
++			isCodexOfficialClient = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
+ 		}
++		req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexOfficialClient))
+ 	}
+ 	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
+ 		req.Header.Set("User-Agent", customUA)
++	} else if account.Type == AccountTypeOAuth {
++		req.Header.Set("User-Agent", codexCLIUserAgent)
+ 	}
+ 	if strings.TrimSpace(contentType) != "" {
+ 		req.Header.Set("Content-Type", contentType)
+diff --git a/backend/internal/service/openai_audio_transcriptions_test.go b/backend/internal/service/openai_audio_transcriptions_test.go
+index 5c72bde5..8a7e430c 100644
+--- a/backend/internal/service/openai_audio_transcriptions_test.go
++++ b/backend/internal/service/openai_audio_transcriptions_test.go
+@@ -209,6 +209,139 @@ func TestOpenAIGatewayServiceParseAndForwardTranscribeAlias_DefaultModelAndBase6
+ 	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, fields["model"])
+ }
+ 
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthUsesChatGPTTranscribe(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"language": "en",
++		"prompt":   "terms",
++	}, []byte("codex-audio"))
++	encoded := []byte(base64.StdEncoding.EncodeToString(body))
++	c, rec := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/transcribe", encoded, contentType)
++	c.Request.Header.Set("X-Codex-Base64", "1")
++	c.Request.Header.Set("User-Agent", "Codex Desktop")
++	c.Request.Header.Set("Authorization", "Bearer client-token")
++	c.Request.Header.Set("chatgpt-account-id", "client-account")
++	c.Request.Header.Set("originator", "client-originator")
++	c.Request.Header.Set("X-Api-Key", "client-api-key")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_oauth_audio"}},
++		Body:       io.NopCloser(strings.NewReader(`{"text":"hello"}`)),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          9,
++		Name:        "oauth",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"access_token":       "oauth-token",
++			"chatgpt_account_id": "chatgpt-account",
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, encoded)
++	require.NoError(t, err)
++	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, parsed.Model)
++	require.False(t, parsed.ExplicitModel)
++
++	result, err := svc.ForwardAudioTranscriptions(context.Background(), c, account, parsed, "")
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, chatgptTranscribeURL, upstream.lastReq.URL.String())
++	require.Equal(t, "chatgpt.com", upstream.lastReq.Host)
++	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
++	require.Len(t, upstream.lastReq.Header.Values("Authorization"), 1)
++	require.Equal(t, "chatgpt-account", upstream.lastReq.Header.Get("chatgpt-account-id"))
++	require.Len(t, upstream.lastReq.Header.Values("chatgpt-account-id"), 1)
++	require.Equal(t, "client-originator", upstream.lastReq.Header.Get("originator"))
++	require.Len(t, upstream.lastReq.Header.Values("originator"), 1)
++	require.Equal(t, codexCLIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
++	require.Len(t, upstream.lastReq.Header.Values("User-Agent"), 1)
++	require.Empty(t, upstream.lastReq.Header.Get("X-Codex-Base64"))
++	require.Empty(t, upstream.lastReq.Header.Get("X-Api-Key"))
++
++	fields := parseMultipartFieldsForTest(t, upstream.lastBody, upstream.lastReq.Header.Get("Content-Type"))
++	require.Equal(t, "codex-audio", fields["file"])
++	require.Equal(t, "en", fields["language"])
++	require.Equal(t, "terms", fields["prompt"])
++	require.Empty(t, fields["model"])
++	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, result.Model)
++	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, result.UpstreamModel)
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthPreservesExplicitMappedModel(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model":    "client-transcribe",
++		"language": "en",
++	}, []byte("codex-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}},
++		Body:       io.NopCloser(strings.NewReader(`{"text":"hello"}`)),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          11,
++		Name:        "oauth",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"access_token": "oauth-token",
++			"model_mapping": map[string]any{
++				"client-transcribe": "upstream-transcribe",
++			},
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	require.True(t, parsed.ExplicitModel)
++	result, err := svc.ForwardAudioTranscriptions(context.Background(), c, account, parsed, "")
++	require.NoError(t, err)
++	require.NotNil(t, result)
++
++	fields := parseMultipartFieldsForTest(t, upstream.lastBody, upstream.lastReq.Header.Get("Content-Type"))
++	require.Equal(t, "upstream-transcribe", fields["model"])
++	require.Equal(t, "client-transcribe", result.Model)
++	require.Equal(t, "upstream-transcribe", result.UpstreamModel)
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_RejectsUnsupportedAccountType(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model": "client-transcribe",
++	}, []byte("fake-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: &httpUpstreamRecorder{}}
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++
++	result, err := svc.ForwardAudioTranscriptions(context.Background(), c, &Account{
++		ID:          10,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeSetupToken,
++		Credentials: map[string]any{"access_token": "setup-token"},
++	}, parsed, "")
++
++	require.Nil(t, result)
++	require.ErrorContains(t, err, "OpenAI API key or OAuth account")
++}
++
+ func TestOpenAIGatewayServiceParseTranscribeAlias_InvalidBase64(t *testing.T) {
+ 	_, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
+ 		"language": "en",
+diff --git a/backend/internal/service/openai_ws_forwarder.go b/backend/internal/service/openai_ws_forwarder.go
+index 9e3c63e4..e2f53009 100644
+--- a/backend/internal/service/openai_ws_forwarder.go
++++ b/backend/internal/service/openai_ws_forwarder.go
+@@ -1082,13 +1082,17 @@ func (s *OpenAIGatewayService) buildOpenAIWSURL(account *Account, endpoint strin
+ 	if endpoint == "" {
+ 		endpoint = "/v1/responses"
+ 	}
++	if endpoint == "/v1/realtime" && (account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth)) {
++		return "", errors.New("realtime websocket requires an OpenAI API key or OAuth account")
++	}
+ 	var targetURL string
+ 	switch account.Type {
+ 	case AccountTypeOAuth:
+ 		if endpoint == "/v1/realtime" {
+-			return "", errors.New("realtime websocket requires an OpenAI API key account")
++			targetURL = openaiPlatformRealtimeAPIURL
++		} else {
++			targetURL = chatgptCodexURL
+ 		}
+-		targetURL = chatgptCodexURL
+ 	case AccountTypeAPIKey:
+ 		baseURL := account.GetOpenAIBaseURL()
+ 		if baseURL == "" {
+@@ -2438,10 +2442,10 @@ func (s *OpenAIGatewayService) ProxyRealtimeWebSocketFromClient(
+ 	if strings.TrimSpace(token) == "" {
+ 		return errors.New("token is empty")
+ 	}
+-	if account.Type != AccountTypeAPIKey {
++	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
+ 		return NewOpenAIWSClientCloseError(
+ 			coderws.StatusPolicyViolation,
+-			"realtime websocket requires an OpenAI API key account",
++			"realtime websocket requires an OpenAI API key or OAuth account",
+ 			nil,
+ 		)
+ 	}
+diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
+index 76941962..19db442f 100644
+--- a/backend/internal/service/openai_ws_forwarder_success_test.go
++++ b/backend/internal/service/openai_ws_forwarder_success_test.go
+@@ -189,7 +189,7 @@ func TestOpenAIGatewayService_BuildOpenAIRealtimeWSURL(t *testing.T) {
+ 	require.Equal(t, "wss://api.openai.com/v1/realtime?model=gpt-realtime", got)
+ }
+ 
+-func TestOpenAIGatewayService_BuildOpenAIRealtimeWSURLRejectsOAuth(t *testing.T) {
++func TestOpenAIGatewayService_BuildOpenAIRealtimeWSURLAllowsOAuth(t *testing.T) {
+ 	svc := &OpenAIGatewayService{}
+ 	account := &Account{
+ 		ID:          1,
+@@ -199,8 +199,23 @@ func TestOpenAIGatewayService_BuildOpenAIRealtimeWSURLRejectsOAuth(t *testing.T)
+ 		Schedulable: true,
+ 	}
+ 
++	got, err := svc.buildOpenAIRealtimeWSURL(account, "gpt-realtime")
++	require.NoError(t, err)
++	require.Equal(t, "wss://api.openai.com/v1/realtime?model=gpt-realtime", got)
++}
++
++func TestOpenAIGatewayService_BuildOpenAIRealtimeWSURLRejectsUnsupportedAccountType(t *testing.T) {
++	svc := &OpenAIGatewayService{}
++	account := &Account{
++		ID:          1,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeSetupToken,
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++
+ 	_, err := svc.buildOpenAIRealtimeWSURL(account, "gpt-realtime")
+-	require.ErrorContains(t, err, "API key account")
++	require.ErrorContains(t, err, "OpenAI API key or OAuth account")
+ }
+ 
+ func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOmitsResponsesBeta(t *testing.T) {
+@@ -217,6 +232,31 @@ func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOmitsResponsesBeta(t *
+ 	require.Empty(t, headers.Get("OpenAI-Beta"))
+ }
+ 
++func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOAuthUsesCodexHeaders(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime?model=gpt-realtime", nil)
++	c.Request.Header.Set("User-Agent", "Desktop/1.0")
++
++	svc := &OpenAIGatewayService{}
++	account := &Account{
++		ID:       1,
++		Platform: PlatformOpenAI,
++		Type:     AccountTypeOAuth,
++		Credentials: map[string]any{
++			"chatgpt_account_id": "chatgpt-account",
++		},
++	}
++	headers, _ := svc.buildOpenAIWSHeaders(c, account, "oauth-token", OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2}, false, "", "", "")
++
++	require.Equal(t, "Bearer oauth-token", headers.Get("Authorization"))
++	require.Equal(t, "chatgpt-account", headers.Get("chatgpt-account-id"))
++	require.NotEmpty(t, headers.Get("originator"))
++	require.Equal(t, codexCLIUserAgent, headers.Get("User-Agent"))
++	require.Empty(t, headers.Get("OpenAI-Beta"))
++}
++
+ func TestOpenAIGatewayService_ProxyRealtimeWebSocketFromClient_RewritesSessionUpdateModel(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 

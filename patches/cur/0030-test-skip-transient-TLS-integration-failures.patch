@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: GottenHeave <274621501+GottenHeave@users.noreply.github.com>
+Date: Mon, 25 May 2026 00:36:01 -0400
+Subject: [PATCH] test: skip transient TLS integration failures
+
+
+diff --git a/backend/internal/pkg/tlsfingerprint/dialer_integration_test.go b/backend/internal/pkg/tlsfingerprint/dialer_integration_test.go
+index 38cddd0d..a8729d75 100644
+--- a/backend/internal/pkg/tlsfingerprint/dialer_integration_test.go
++++ b/backend/internal/pkg/tlsfingerprint/dialer_integration_test.go
+@@ -11,6 +11,7 @@ package tlsfingerprint
+ import (
+ 	"context"
+ 	"encoding/json"
++	"errors"
+ 	"io"
+ 	"net/http"
+ 	"strings"
+@@ -24,14 +25,18 @@ func skipIfExternalServiceUnavailable(t *testing.T, err error) {
+ 	t.Helper()
+ 	if err != nil {
+ 		// Check for common network/TLS errors that indicate external service issues
+-		errStr := err.Error()
++		errStr := strings.ToLower(err.Error())
+ 		if strings.Contains(errStr, "certificate has expired") ||
+ 			strings.Contains(errStr, "certificate is not yet valid") ||
+ 			strings.Contains(errStr, "connection refused") ||
++			strings.Contains(errStr, "connection reset by peer") ||
+ 			strings.Contains(errStr, "no such host") ||
+ 			strings.Contains(errStr, "network is unreachable") ||
+ 			strings.Contains(errStr, "timeout") ||
+-			strings.Contains(errStr, "deadline exceeded") {
++			strings.Contains(errStr, "deadline exceeded") ||
++			strings.Contains(errStr, "tls handshake failed: eof") ||
++			strings.Contains(errStr, "unexpected eof") ||
++			errors.Is(err, io.EOF) {
+ 			t.Skipf("skipping test: external service unavailable: %v", err)
+ 		}
+ 		t.Fatalf("failed to get fingerprint: %v", err)

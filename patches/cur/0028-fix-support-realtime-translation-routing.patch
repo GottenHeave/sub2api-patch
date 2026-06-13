@@ -1,0 +1,535 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: GottenHeave <274621501+GottenHeave@users.noreply.github.com>
+Date: Sun, 24 May 2026 13:24:50 -0400
+Subject: [PATCH] fix: support realtime translation routing
+
+
+diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
+index 13bf7983..9983b3e5 100644
+--- a/backend/internal/handler/endpoint.go
++++ b/backend/internal/handler/endpoint.go
+@@ -154,6 +154,8 @@ func isRealtimeRESTEndpoint(path string) bool {
+ 		return true
+ 	case strings.Contains(trimmed, "/realtime/translations/client_secrets"):
+ 		return true
++	case strings.Contains(trimmed, "/realtime/translations/calls"):
++		return true
+ 	case strings.Contains(trimmed, "/realtime/sessions"):
+ 		return true
+ 	case strings.Contains(trimmed, "/realtime/transcription_sessions"):
+diff --git a/backend/internal/handler/endpoint_test.go b/backend/internal/handler/endpoint_test.go
+index ec2ff2a9..f1e2f89d 100644
+--- a/backend/internal/handler/endpoint_test.go
++++ b/backend/internal/handler/endpoint_test.go
+@@ -30,6 +30,7 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
+ 		{"/v1/realtime/client_secrets", EndpointRealtimeREST},
+ 		{"/v1/realtime/translations/client_secrets", EndpointRealtimeREST},
+ 		{"/v1/realtime/calls", EndpointRealtimeREST},
++		{"/v1/realtime/translations/calls", EndpointRealtimeREST},
+ 		{"/v1/realtime/calls/call_123/hangup", EndpointRealtimeREST},
+ 		{"/v1/realtime/calls/call_123/refer", EndpointRealtimeREST},
+ 		{"/v1/realtime/calls/call_123/reject", EndpointRealtimeREST},
+@@ -99,12 +100,14 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
+ 		{"openai realtime client secrets", EndpointRealtimeREST, "/v1/realtime/client_secrets", service.PlatformOpenAI, "/v1/realtime/client_secrets"},
+ 		{"openai realtime translation client secrets", EndpointRealtimeREST, "/v1/realtime/translations/client_secrets", service.PlatformOpenAI, "/v1/realtime/translations/client_secrets"},
+ 		{"openai realtime calls create", EndpointRealtimeREST, "/v1/realtime/calls", service.PlatformOpenAI, "/v1/realtime/calls"},
++		{"openai realtime translation calls create", EndpointRealtimeREST, "/v1/realtime/translations/calls", service.PlatformOpenAI, "/v1/realtime/translations/calls"},
+ 		{"openai realtime calls hangup", EndpointRealtimeREST, "/v1/realtime/calls/call_123/hangup", service.PlatformOpenAI, "/v1/realtime/calls/call_123/hangup"},
+ 		{"openai realtime calls refer", EndpointRealtimeREST, "/v1/realtime/calls/call_123/refer", service.PlatformOpenAI, "/v1/realtime/calls/call_123/refer"},
+ 		{"openai realtime calls reject", EndpointRealtimeREST, "/v1/realtime/calls/call_123/reject", service.PlatformOpenAI, "/v1/realtime/calls/call_123/reject"},
+ 		{"openai realtime sessions", EndpointRealtimeREST, "/v1/realtime/sessions", service.PlatformOpenAI, "/v1/realtime/sessions"},
+ 		{"openai realtime transcription sessions", EndpointRealtimeREST, "/v1/realtime/transcription_sessions", service.PlatformOpenAI, "/v1/realtime/transcription_sessions"},
+ 		{"openai prefixed realtime reject", EndpointRealtimeREST, "/openai/v1/realtime/calls/call_789/reject", service.PlatformOpenAI, "/v1/realtime/calls/call_789/reject"},
++		{"openai prefixed realtime translation calls", EndpointRealtimeREST, "/openai/v1/realtime/translations/calls", service.PlatformOpenAI, "/v1/realtime/translations/calls"},
+ 		{"openai audio transcriptions", EndpointAudioTranscriptions, "/v1/audio/transcriptions", service.PlatformOpenAI, EndpointAudioTranscriptions},
+ 		{"openai transcribe alias", EndpointTranscribe, "/transcribe", service.PlatformOpenAI, EndpointAudioTranscriptions},
+ 		{"openai image generations", EndpointImagesGenerations, "/v1/images/generations", service.PlatformOpenAI, EndpointImagesGenerations},
+diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
+index 0dd79f6b..771ba51c 100644
+--- a/backend/internal/handler/openai_gateway_handler.go
++++ b/backend/internal/handler/openai_gateway_handler.go
+@@ -1094,7 +1094,8 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
+ }
+ 
+ type openAIWebSocketEndpointOptions struct {
+-	Realtime bool
++	Realtime    bool
++	Translation bool
+ }
+ 
+ // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
+@@ -1109,6 +1110,12 @@ func (h *OpenAIGatewayHandler) RealtimeWebSocket(c *gin.Context) {
+ 	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{Realtime: true})
+ }
+ 
++// RealtimeTranslationWebSocket handles OpenAI Realtime translation WebSocket ingress endpoint.
++// GET /v1/realtime/translations?model=... (Upgrade: websocket)
++func (h *OpenAIGatewayHandler) RealtimeTranslationWebSocket(c *gin.Context) {
++	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{Realtime: true, Translation: true})
++}
++
+ func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSocketEndpointOptions) {
+ 	if !isOpenAIWSUpgradeRequest(c.Request) {
+ 		h.errorResponse(c, http.StatusUpgradeRequired, "invalid_request_error", "WebSocket upgrade required (Upgrade: websocket)")
+@@ -1450,7 +1457,7 @@ func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSoc
+ 		if channelMappingWS.Mapped && strings.TrimSpace(channelMappingWS.MappedModel) != "" {
+ 			realtimeModel = channelMappingWS.MappedModel
+ 		}
+-		proxyErr = h.gatewayService.ProxyRealtimeWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, realtimeModel, hooks)
++		proxyErr = h.gatewayService.ProxyRealtimeWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, realtimeModel, opts.RealtimeUpstreamEndpoint(), hooks)
+ 	} else {
+ 		proxyErr = h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks)
+ 	}
+@@ -1476,11 +1483,21 @@ func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSoc
+ 
+ func openAIWebSocketLoggerName(opts openAIWebSocketEndpointOptions) string {
+ 	if opts.Realtime {
++		if opts.Translation {
++			return "handler.openai_gateway.realtime_translation_ws"
++		}
+ 		return "handler.openai_gateway.realtime_ws"
+ 	}
+ 	return "handler.openai_gateway.responses_ws"
+ }
+ 
++func (opts openAIWebSocketEndpointOptions) RealtimeUpstreamEndpoint() string {
++	if opts.Realtime && opts.Translation {
++		return "/v1/realtime/translations"
++	}
++	return "/v1/realtime"
++}
++
+ func openAIWebSocketMissingFirstMessageReason(opts openAIWebSocketEndpointOptions) string {
+ 	if opts.Realtime {
+ 		return "missing first realtime message"
+diff --git a/backend/internal/handler/openai_gateway_handler_test.go b/backend/internal/handler/openai_gateway_handler_test.go
+index 15afe842..7bb03cd8 100644
+--- a/backend/internal/handler/openai_gateway_handler_test.go
++++ b/backend/internal/handler/openai_gateway_handler_test.go
+@@ -122,6 +122,11 @@ func TestOpenAIWebSocketRequiredAccountTypeAllowsRealtimeOAuth(t *testing.T) {
+ 	require.Empty(t, openAIWebSocketRequiredAccountType(openAIWebSocketEndpointOptions{}))
+ }
+ 
++func TestOpenAIWebSocketEndpointOptionsRealtimeTranslationEndpoint(t *testing.T) {
++	require.Equal(t, "/v1/realtime", openAIWebSocketEndpointOptions{Realtime: true}.RealtimeUpstreamEndpoint())
++	require.Equal(t, "/v1/realtime/translations", openAIWebSocketEndpointOptions{Realtime: true, Translation: true}.RealtimeUpstreamEndpoint())
++}
++
+ func TestResolveOpenAIMessagesMetadataSession_DoesNotDerivePromptCacheKey(t *testing.T) {
+ 	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
+ 
+diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
+index 358bf471..2b792f8d 100644
+--- a/backend/internal/handler/openai_realtime_calls.go
++++ b/backend/internal/handler/openai_realtime_calls.go
+@@ -122,7 +122,7 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
+ 			apiKey.GroupID,
+ 			"",
+ 			sessionHash,
+-			parsed.Model,
++			"",
+ 			failedAccountIDs,
+ 			service.OpenAIUpstreamTransportHTTPSSE,
+ 			"",
+diff --git a/backend/internal/handler/openai_realtime_calls_test.go b/backend/internal/handler/openai_realtime_calls_test.go
+index b2333072..38951d40 100644
+--- a/backend/internal/handler/openai_realtime_calls_test.go
++++ b/backend/internal/handler/openai_realtime_calls_test.go
+@@ -149,6 +149,31 @@ func TestOpenAIGatewayHandlerRealtimeREST_ClientSecretAccountMappingForwardsMapp
+ 	require.Equal(t, "gpt-4o-transcribe", gjson.GetBytes(upstream.bodies[0], "session.audio.input.transcription.model").String())
+ }
+ 
++func TestOpenAIGatewayHandlerRealtimeREST_TranslationClientSecretDoesNotFilterBySessionModel(t *testing.T) {
++	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusOK}}
++	account := newRealtimeCallsHandlerAccount(1)
++	account.Type = service.AccountTypeOAuth
++	account.Credentials = map[string]any{
++		"access_token":       "oauth-token",
++		"chatgpt_account_id": "chatgpt-acc",
++		"model_mapping": map[string]any{
++			"client-transcribe": "gpt-4o-transcribe",
++		},
++	}
++	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{account})
++	body := []byte(`{"session":{"model":"gpt-realtime-translate","audio":{"input":{"transcription":{"model":"client-transcribe"}}}}}`)
++	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/translations/client_secrets", body)
++
++	handler.RealtimeREST(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{1}, upstream.accountIDs)
++	require.Len(t, upstream.bodies, 1)
++	require.Equal(t, "https://api.openai.com/v1/realtime/translations/client_secrets", upstream.urls[0])
++	require.Equal(t, "gpt-realtime-translate", gjson.GetBytes(upstream.bodies[0], "session.model").String())
++	require.Equal(t, "gpt-4o-transcribe", gjson.GetBytes(upstream.bodies[0], "session.audio.input.transcription.model").String())
++}
++
+ func TestOpenAIGatewayHandlerRealtimeREST_CallControlNoModelDispatchesAccount(t *testing.T) {
+ 	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusOK}}
+ 	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{
+diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
+index 1ae024d5..ce65d7b0 100644
+--- a/backend/internal/server/routes/gateway.go
++++ b/backend/internal/server/routes/gateway.go
+@@ -92,6 +92,18 @@ func RegisterGatewayRoutes(
+ 			}
+ 			h.OpenAIGateway.RealtimeWebSocket(c)
+ 		})
++		gateway.GET("/realtime/translations", func(c *gin.Context) {
++			if getGroupPlatform(c) != service.PlatformOpenAI {
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeTranslationWebSocket(c)
++		})
+ 		realtimeRESTHandler := func(c *gin.Context) {
+ 			if getGroupPlatform(c) != service.PlatformOpenAI {
+ 				c.JSON(http.StatusNotFound, gin.H{
+@@ -107,6 +119,7 @@ func RegisterGatewayRoutes(
+ 		gateway.POST("/realtime/client_secrets", realtimeRESTHandler)
+ 		gateway.POST("/realtime/translations/client_secrets", realtimeRESTHandler)
+ 		gateway.POST("/realtime/calls", realtimeRESTHandler)
++		gateway.POST("/realtime/translations/calls", realtimeRESTHandler)
+ 		gateway.POST("/realtime/calls/:call_id/accept", realtimeRESTHandler)
+ 		gateway.POST("/realtime/calls/:call_id/hangup", realtimeRESTHandler)
+ 		gateway.POST("/realtime/calls/:call_id/refer", realtimeRESTHandler)
+diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
+index 6e18d56c..95570bbf 100644
+--- a/backend/internal/server/routes/gateway_test.go
++++ b/backend/internal/server/routes/gateway_test.go
+@@ -117,6 +117,17 @@ func TestGatewayRoutesOpenAIRealtimePathIsRegistered(t *testing.T) {
+ 	require.Equal(t, http.StatusUpgradeRequired, w.Code)
+ }
+ 
++func TestGatewayRoutesOpenAIRealtimeTranslationPathIsRegistered(t *testing.T) {
++	router := newGatewayRoutesTestRouter()
++
++	req := httptest.NewRequest(http.MethodGet, "/v1/realtime/translations?model=gpt-realtime-translate", nil)
++	w := httptest.NewRecorder()
++
++	router.ServeHTTP(w, req)
++	require.NotEqual(t, http.StatusNotFound, w.Code)
++	require.Equal(t, http.StatusUpgradeRequired, w.Code)
++}
++
+ func TestGatewayRoutesOpenAIRealtimeRejectsNonOpenAIPlatform(t *testing.T) {
+ 	router := newGatewayRoutesTestRouterForPlatform(service.PlatformAnthropic)
+ 
+@@ -128,6 +139,17 @@ func TestGatewayRoutesOpenAIRealtimeRejectsNonOpenAIPlatform(t *testing.T) {
+ 	require.Contains(t, w.Body.String(), "Realtime API is not supported for this platform")
+ }
+ 
++func TestGatewayRoutesOpenAIRealtimeTranslationRejectsNonOpenAIPlatform(t *testing.T) {
++	router := newGatewayRoutesTestRouterForPlatform(service.PlatformAnthropic)
++
++	req := httptest.NewRequest(http.MethodGet, "/v1/realtime/translations?model=gpt-realtime-translate", nil)
++	w := httptest.NewRecorder()
++
++	router.ServeHTTP(w, req)
++	require.Equal(t, http.StatusNotFound, w.Code)
++	require.Contains(t, w.Body.String(), "Realtime API is not supported for this platform")
++}
++
+ func TestGatewayRoutesOpenAIRealtimeCallsAcceptPathIsRegistered(t *testing.T) {
+ 	router := newGatewayRoutesTestRouter()
+ 
+@@ -149,6 +171,7 @@ func TestGatewayRoutesOpenAIRealtimeRESTPathsAreRegistered(t *testing.T) {
+ 		{"/v1/realtime/client_secrets", `{"session":{"type":"realtime","model":"gpt-realtime"}}`},
+ 		{"/v1/realtime/translations/client_secrets", `{"session":{"model":"gpt-realtime-translate"}}`},
+ 		{"/v1/realtime/calls", `{"model":"gpt-realtime"}`},
++		{"/v1/realtime/translations/calls", `{"model":"gpt-realtime-translate"}`},
+ 		{"/v1/realtime/calls/call_123/hangup", `{}`},
+ 		{"/v1/realtime/calls/call_123/refer", `{"target_uri":"tel:+15551234567"}`},
+ 		{"/v1/realtime/calls/call_123/reject", `{"status_code":603}`},
+diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
+index 7c6c2659..e081b670 100644
+--- a/backend/internal/service/openai_gateway_service.go
++++ b/backend/internal/service/openai_gateway_service.go
+@@ -5241,6 +5241,10 @@ func buildOpenAIRealtimeURL(base string) string {
+ 	return buildOpenAIEndpointURL(base, "/v1/realtime")
+ }
+ 
++func buildOpenAIRealtimeEndpointURL(base string, endpoint string) string {
++	return buildOpenAIEndpointURL(base, endpoint)
++}
++
+ func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {
+ 	if len(reqBody) == 0 {
+ 		return false
+diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
+index 5b42d680..34b96c41 100644
+--- a/backend/internal/service/openai_realtime_calls.go
++++ b/backend/internal/service/openai_realtime_calls.go
+@@ -115,6 +115,7 @@ func normalizeOpenAIRealtimeRESTEndpoint(path string) (endpoint string, callID s
+ 	case "/v1/realtime/client_secrets",
+ 		"/v1/realtime/translations/client_secrets",
+ 		"/v1/realtime/calls",
++		"/v1/realtime/translations/calls",
+ 		"/v1/realtime/sessions",
+ 		"/v1/realtime/transcription_sessions":
+ 		return trimmed, "", "", nil
+@@ -149,7 +150,7 @@ func extractOpenAIRealtimeRESTModelRefs(endpoint string, body []byte) []OpenAIRe
+ 		paths = []string{"session.model", "session.audio.input.transcription.model"}
+ 	case "/v1/realtime/translations/client_secrets":
+ 		paths = []string{"session.model", "session.audio.input.transcription.model"}
+-	case "/v1/realtime/calls":
++	case "/v1/realtime/calls", "/v1/realtime/translations/calls":
+ 		paths = []string{"model", "session.model"}
+ 	case "/v1/realtime/sessions":
+ 		paths = []string{"model"}
+@@ -387,7 +388,9 @@ func (s *OpenAIGatewayService) buildOpenAIRealtimeRESTRequest(
+ 	req.Header.Del("X-Api-Key")
+ 	req.Header.Del("X-Goog-Api-Key")
+ 	req.Header.Set("Authorization", "Bearer "+token)
+-	req.Header.Set("Content-Type", "application/json")
++	if strings.TrimSpace(req.Header.Get("Content-Type")) == "" {
++		req.Header.Set("Content-Type", "application/json")
++	}
+ 	if account.Type == AccountTypeOAuth {
+ 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
+ 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
+diff --git a/backend/internal/service/openai_realtime_calls_test.go b/backend/internal/service/openai_realtime_calls_test.go
+index 45e06cd6..a2906351 100644
+--- a/backend/internal/service/openai_realtime_calls_test.go
++++ b/backend/internal/service/openai_realtime_calls_test.go
+@@ -257,6 +257,64 @@ func TestOpenAIGatewayService_ForwardRealtimeREST_TranslationMapsSessionAndTrans
+ 	require.Equal(t, "gpt-realtime-translate", result.UpstreamModel)
+ }
+ 
++func TestOpenAIGatewayService_ForwardRealtimeREST_TranslationCallsMapsModel(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	body := []byte(`{"model":"client-translate-call","sdp":"v=0"}`)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/translations/calls", bytes.NewReader(body))
++	c.Request.Header.Set("Content-Type", "application/sdp")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_translation_call"}},
++		Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":"call_123"}`))),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          123,
++		Name:        "acc",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"access_token":       "oauth-token",
++			"chatgpt_account_id": "chatgpt-acc",
++			"model_mapping": map[string]any{
++				"mapped-translate-call": "gpt-realtime-translate",
++			},
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++	parsed, err := ParseOpenAIRealtimeRESTRequest(c, body)
++	require.NoError(t, err)
++	require.Equal(t, "/v1/realtime/translations/calls", parsed.Endpoint)
++	require.Equal(t, "client-translate-call", parsed.Model)
++	require.Equal(t, "model", parsed.ScheduleModelPath)
++
++	result, err := svc.ForwardRealtimeREST(
++		context.Background(),
++		c,
++		account,
++		parsed,
++		map[string]string{"model": "mapped-translate-call"},
++	)
++
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, "https://api.openai.com/v1/realtime/translations/calls", upstream.lastReq.URL.String())
++	require.Equal(t, "application/sdp", upstream.lastReq.Header.Get("Content-Type"))
++	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
++	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
++	require.Equal(t, "gpt-realtime-translate", gjson.GetBytes(upstream.lastBody, "model").String())
++	require.Equal(t, "client-translate-call", result.Model)
++	require.Equal(t, "gpt-realtime-translate", result.UpstreamModel)
++}
++
+ func TestOpenAIGatewayService_ForwardRealtimeREST_TranslationOAuthHeaders(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 	rec := httptest.NewRecorder()
+diff --git a/backend/internal/service/openai_ws_forwarder.go b/backend/internal/service/openai_ws_forwarder.go
+index 8b47c66d..b23aab08 100644
+--- a/backend/internal/service/openai_ws_forwarder.go
++++ b/backend/internal/service/openai_ws_forwarder.go
+@@ -1079,6 +1079,10 @@ func (s *OpenAIGatewayService) buildOpenAIRealtimeWSURL(account *Account, model
+ 	return s.buildOpenAIWSURL(account, "/v1/realtime", model)
+ }
+ 
++func (s *OpenAIGatewayService) buildOpenAIRealtimeTranslationWSURL(account *Account, model string) (string, error) {
++	return s.buildOpenAIWSURL(account, "/v1/realtime/translations", model)
++}
++
+ func (s *OpenAIGatewayService) buildOpenAIWSURL(account *Account, endpoint string, model string) (string, error) {
+ 	if account == nil {
+ 		return "", errors.New("account is nil")
+@@ -1087,22 +1091,23 @@ func (s *OpenAIGatewayService) buildOpenAIWSURL(account *Account, endpoint strin
+ 	if endpoint == "" {
+ 		endpoint = "/v1/responses"
+ 	}
+-	if endpoint == "/v1/realtime" && (account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth)) {
++	realtimeEndpoint := isOpenAIRealtimeWSEndpoint(endpoint)
++	if realtimeEndpoint && (account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth)) {
+ 		return "", errors.New("realtime websocket requires an OpenAI API key or OAuth account")
+ 	}
+ 	var targetURL string
+ 	switch account.Type {
+ 	case AccountTypeOAuth:
+-		if endpoint == "/v1/realtime" {
+-			targetURL = openaiPlatformRealtimeAPIURL
++		if realtimeEndpoint {
++			targetURL = buildOpenAIRealtimeEndpointURL("https://api.openai.com", endpoint)
+ 		} else {
+ 			targetURL = chatgptCodexURL
+ 		}
+ 	case AccountTypeAPIKey:
+ 		baseURL := account.GetOpenAIBaseURL()
+ 		if baseURL == "" {
+-			if endpoint == "/v1/realtime" {
+-				targetURL = openaiPlatformRealtimeAPIURL
++			if realtimeEndpoint {
++				targetURL = buildOpenAIRealtimeEndpointURL("https://api.openai.com", endpoint)
+ 			} else {
+ 				targetURL = openaiPlatformAPIURL
+ 			}
+@@ -1111,15 +1116,15 @@ func (s *OpenAIGatewayService) buildOpenAIWSURL(account *Account, endpoint strin
+ 			if err != nil {
+ 				return "", err
+ 			}
+-			if endpoint == "/v1/realtime" {
+-				targetURL = buildOpenAIRealtimeURL(validatedURL)
++			if realtimeEndpoint {
++				targetURL = buildOpenAIRealtimeEndpointURL(validatedURL, endpoint)
+ 			} else {
+ 				targetURL = buildOpenAIResponsesURL(validatedURL)
+ 			}
+ 		}
+ 	default:
+-		if endpoint == "/v1/realtime" {
+-			targetURL = openaiPlatformRealtimeAPIURL
++		if realtimeEndpoint {
++			targetURL = buildOpenAIRealtimeEndpointURL("https://api.openai.com", endpoint)
+ 		} else {
+ 			targetURL = openaiPlatformAPIURL
+ 		}
+@@ -1139,7 +1144,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSURL(account *Account, endpoint strin
+ 	default:
+ 		return "", fmt.Errorf("unsupported scheme for ws: %s", parsed.Scheme)
+ 	}
+-	if endpoint == "/v1/realtime" {
++	if realtimeEndpoint {
+ 		if m := strings.TrimSpace(model); m != "" {
+ 			query := parsed.Query()
+ 			query.Set("model", m)
+@@ -1149,6 +1154,11 @@ func (s *OpenAIGatewayService) buildOpenAIWSURL(account *Account, endpoint strin
+ 	return parsed.String(), nil
+ }
+ 
++func isOpenAIRealtimeWSEndpoint(endpoint string) bool {
++	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
++	return endpoint == "/v1/realtime" || strings.HasPrefix(endpoint, "/v1/realtime/")
++}
++
+ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
+ 	c *gin.Context,
+ 	account *Account,
+@@ -2433,6 +2443,7 @@ func (s *OpenAIGatewayService) ProxyRealtimeWebSocketFromClient(
+ 	token string,
+ 	firstClientMessage []byte,
+ 	model string,
++	upstreamEndpoint string,
+ 	hooks *OpenAIWSIngressHooks,
+ ) error {
+ 	if s == nil {
+@@ -2463,6 +2474,9 @@ func (s *OpenAIGatewayService) ProxyRealtimeWebSocketFromClient(
+ 	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
+ 		return fmt.Errorf("realtime websocket requires ws_v2 transport, got=%s", wsDecision.Transport)
+ 	}
++	if !isOpenAIRealtimeWSEndpoint(upstreamEndpoint) {
++		upstreamEndpoint = "/v1/realtime"
++	}
+ 	return s.proxyResponsesWebSocketV2Passthrough(
+ 		ctx,
+ 		c,
+@@ -2472,7 +2486,7 @@ func (s *OpenAIGatewayService) ProxyRealtimeWebSocketFromClient(
+ 		firstClientMessage,
+ 		hooks,
+ 		wsDecision,
+-		"/v1/realtime",
++		upstreamEndpoint,
+ 		model,
+ 	)
+ }
+diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
+index 4fda43a0..f2757867 100644
+--- a/backend/internal/service/openai_ws_forwarder_success_test.go
++++ b/backend/internal/service/openai_ws_forwarder_success_test.go
+@@ -218,6 +218,45 @@ func TestOpenAIGatewayService_BuildOpenAIRealtimeWSURLAllowsOAuth(t *testing.T)
+ 	require.Equal(t, "wss://api.openai.com/v1/realtime?model=gpt-realtime", got)
+ }
+ 
++func TestOpenAIGatewayService_BuildOpenAIRealtimeTranslationWSURL(t *testing.T) {
++	svc := &OpenAIGatewayService{
++		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
++	}
++	tests := []struct {
++		name    string
++		account *Account
++	}{
++		{
++			name: "api key",
++			account: &Account{
++				ID:          1,
++				Platform:    PlatformOpenAI,
++				Type:        AccountTypeAPIKey,
++				Status:      StatusActive,
++				Schedulable: true,
++				Credentials: map[string]any{"api_key": "sk-test"},
++			},
++		},
++		{
++			name: "oauth",
++			account: &Account{
++				ID:          2,
++				Platform:    PlatformOpenAI,
++				Type:        AccountTypeOAuth,
++				Status:      StatusActive,
++				Schedulable: true,
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got, err := svc.buildOpenAIRealtimeTranslationWSURL(tt.account, "gpt-realtime-translate")
++			require.NoError(t, err)
++			require.Equal(t, "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate", got)
++		})
++	}
++}
++
+ func TestOpenAIGatewayService_BuildOpenAIRealtimeWSURLRejectsUnsupportedAccountType(t *testing.T) {
+ 	svc := &OpenAIGatewayService{}
+ 	account := &Account{
+@@ -352,7 +391,7 @@ func TestOpenAIGatewayService_ProxyRealtimeWebSocketFromClient_RewritesSessionUp
+ 		req.URL.RawQuery = "model=client-realtime"
+ 		ginCtx.Request = req
+ 
+-		serverErrCh <- svc.ProxyRealtimeWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", nil, "client-realtime", hooks)
++		serverErrCh <- svc.ProxyRealtimeWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", nil, "client-realtime", "/v1/realtime", hooks)
+ 	}))
+ 	defer wsServer.Close()
+ 

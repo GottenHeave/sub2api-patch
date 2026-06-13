@@ -1,0 +1,131 @@
+name: Auto release
+
+on:
+  workflow_run:
+    workflows:
+      - Patch validation
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Upstream ref to release
+        required: false
+        default: main
+
+permissions:
+  contents: write
+  packages: write
+  actions: read
+
+env:
+  UPSTREAM_REPOSITORY: Wei-Shaw/sub2api
+  PATCHED_BRANCH: patched
+
+jobs:
+  release:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patchset
+        uses: actions/checkout@v4
+        with:
+          ref: patchset
+          path: sub2api-patch
+          fetch-depth: 0
+
+      - name: Checkout upstream candidate
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.upstream_ref || 'main' }}
+          path: worktree
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: worktree/backend/go.mod
+          cache-dependency-path: worktree/backend/go.sum
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: worktree/frontend/pnpm-lock.yaml
+
+      - name: Apply patches
+        run: sub2api-patch/scripts/apply-patches.sh worktree
+
+      - name: Run release gates
+        run: |
+          set -euo pipefail
+          sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
+          make -C worktree/backend test
+          pnpm --dir worktree/frontend install --frozen-lockfile
+          pnpm --dir worktree/frontend run typecheck
+          pnpm --dir worktree/frontend run lint:check
+
+      - name: Compute version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sub2api-patch/scripts/compute-next-version.sh worktree)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Prepare release notes
+        run: |
+          set -euo pipefail
+          upstream_commit="$(git -C worktree rev-parse --short=12 HEAD)"
+          upstream_version="$(tr -d '[:space:]' < worktree/backend/cmd/server/VERSION)"
+          patchset_commit="$(git -C sub2api-patch rev-parse --short=12 HEAD)"
+          cat > release-notes.md <<EOF
+          ${VERSION}
+
+          Base:
+          - upstream version: v${upstream_version}
+          - upstream commit: ${upstream_commit}
+          - patchset commit: ${patchset_commit}
+
+          Patch topics:
+          - CI image publishing
+          - IPv6-only proxy probing
+          - OpenAI realtime websocket proxying
+          - OpenAI audio transcription proxying
+          - Audio usage accounting and billing
+          - OpenAI realtime REST endpoints
+          EOF
+          sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
+          if grep -E '#[0-9]+|/issues/[0-9]+|/pull/[0-9]+' release-notes.md; then
+            echo "blocked reference found in release notes" >&2
+            exit 1
+          fi
+
+      - name: Publish patched branch
+        run: |
+          set -euo pipefail
+          cd worktree
+          git config user.name "sub2api-patch automation"
+          git config user.email "actions@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git checkout -B "$PATCHED_BRANCH"
+          git push origin "$PATCHED_BRANCH" --force
+
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd worktree
+          git tag "$VERSION"
+          git push origin "$VERSION"
+          gh release create "$VERSION" --repo "${{ github.repository }}" --title "$VERSION" --notes-file ../release-notes.md --target "$PATCHED_BRANCH"

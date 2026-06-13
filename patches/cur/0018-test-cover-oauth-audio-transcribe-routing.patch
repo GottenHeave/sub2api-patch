@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: GottenHeave <gotten-pelt-heave@duck.com>
+Date: Fri, 22 May 2026 15:43:32 -0400
+Subject: [PATCH] test: cover oauth audio transcribe routing
+
+
+diff --git a/backend/internal/handler/openai_audio_transcriptions_test.go b/backend/internal/handler/openai_audio_transcriptions_test.go
+index bdf0910d..136c00fc 100644
+--- a/backend/internal/handler/openai_audio_transcriptions_test.go
++++ b/backend/internal/handler/openai_audio_transcriptions_test.go
+@@ -53,10 +53,14 @@ func (r *audioTranscriptionHandlerUsageLogRepo) Create(_ context.Context, log *s
+ type audioTranscriptionHandlerUpstream struct {
+ 	statuses   []int
+ 	accountIDs []int64
++	urls       []string
+ }
+ 
+ func (u *audioTranscriptionHandlerUpstream) Do(req *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
+ 	u.accountIDs = append(u.accountIDs, accountID)
++	if req != nil && req.URL != nil {
++		u.urls = append(u.urls, req.URL.String())
++	}
+ 	status := http.StatusOK
+ 	if idx := len(u.accountIDs) - 1; idx < len(u.statuses) {
+ 		status = u.statuses[idx]
+@@ -80,6 +84,21 @@ func (u *audioTranscriptionHandlerUpstream) DoWithTLS(req *http.Request, proxyUR
+ 	return u.Do(req, proxyURL, accountID, accountConcurrency)
+ }
+ 
++func TestOpenAIGatewayHandlerAudioTranscriptions_DispatchesOAuthAccount(t *testing.T) {
++	upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK}}
++	handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{
++		newAudioTranscriptionHandlerOAuthAccount(9),
++	})
++	c, rec := newAudioTranscriptionHandlerContext(t, "/transcribe")
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{9}, upstream.accountIDs)
++	require.Equal(t, []string{"https://chatgpt.com/backend-api/transcribe"}, upstream.urls)
++	require.JSONEq(t, `{"text":"ok"}`, rec.Body.String())
++}
++
+ func TestOpenAIGatewayHandlerAudioTranscriptions_SameAccountRetry(t *testing.T) {
+ 	tests := []struct {
+ 		name   string
+@@ -272,3 +291,19 @@ func newAudioTranscriptionHandlerAccount(id int64) service.Account {
+ 		Credentials: map[string]any{"api_key": "sk-test"},
+ 	}
+ }
++
++func newAudioTranscriptionHandlerOAuthAccount(id int64) service.Account {
++	return service.Account{
++		ID:          id,
++		Name:        "openai-oauth-audio",
++		Platform:    service.PlatformOpenAI,
++		Type:        service.AccountTypeOAuth,
++		Status:      service.StatusActive,
++		Schedulable: true,
++		Concurrency: 0,
++		Priority:    int(id),
++		Credentials: map[string]any{
++			"access_token": "oauth-test-token",
++		},
++	}
++}
+diff --git a/backend/internal/service/openai_audio_transcriptions_test.go b/backend/internal/service/openai_audio_transcriptions_test.go
+index 84ca149b..fce645c0 100644
+--- a/backend/internal/service/openai_audio_transcriptions_test.go
++++ b/backend/internal/service/openai_audio_transcriptions_test.go
+@@ -471,6 +471,45 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_FailoverStatuses(t *test
+ 	}
+ }
+ 
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthFailoverStatuses(t *testing.T) {
++	tests := []struct {
++		name   string
++		status int
++	}{
++		{name: "401", status: http.StatusUnauthorized},
++		{name: "403", status: http.StatusForbidden},
++		{name: "429", status: http.StatusTooManyRequests},
++		{name: "500", status: http.StatusInternalServerError},
++		{name: "503", status: http.StatusServiceUnavailable},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++				"language": "en",
++			}, []byte("fake-audio"))
++			c, rec := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/transcribe", body, contentType)
++			upstream := &httpUpstreamRecorder{resp: newOpenAIAudioTranscriptionResponse(tt.status, `{"error":{"message":"temporary upstream failure"}}`)}
++			svc := &OpenAIGatewayService{
++				cfg:          &config.Config{},
++				httpUpstream: upstream,
++			}
++			account := openAIAudioTranscriptionOAuthAccount(8)
++
++			parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++			require.NoError(t, err)
++			result, err := svc.ForwardAudioTranscriptions(context.Background(), c, account, parsed, "")
++
++			require.Nil(t, result)
++			var failoverErr *UpstreamFailoverError
++			require.ErrorAs(t, err, &failoverErr)
++			require.Equal(t, tt.status, failoverErr.StatusCode)
++			require.Equal(t, chatgptTranscribeURL, upstream.lastReq.URL.String())
++			require.Empty(t, rec.Body.String(), "failover response should not be written before handler retry logic")
++		})
++	}
++}
++
+ func TestOpenAIGatewayServiceForwardAudioTranscriptions_RequestErrorIsNotFailover(t *testing.T) {
+ 	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
+ 		"model": "gpt-4o-mini-transcribe",
+@@ -549,3 +588,18 @@ func openAIAudioTranscriptionAPIKeyAccount(id int64) *Account {
+ 		Schedulable: true,
+ 	}
+ }
++
++func openAIAudioTranscriptionOAuthAccount(id int64) *Account {
++	return &Account{
++		ID:          id,
++		Name:        "oauth",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"access_token": "oauth-token",
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++}

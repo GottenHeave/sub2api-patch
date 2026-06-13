@@ -1,0 +1,281 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: GottenHeave <gotten-pelt-heave@duck.com>
+Date: Sun, 24 May 2026 05:25:29 -0400
+Subject: [PATCH] fix: route audio transcription models
+
+
+diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
+index 2abe7c8e..41784993 100644
+--- a/backend/internal/handler/openai_audio_transcriptions.go
++++ b/backend/internal/handler/openai_audio_transcriptions.go
+@@ -109,16 +109,12 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
+ 	var lastFailoverErr *service.UpstreamFailoverError
+ 
+ 	for {
+-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForAccountType(
++		selection, scheduleDecision, selectionModel, err := h.gatewayService.SelectAccountWithSchedulerForAudioTranscriptions(
+ 			routingCtx,
+ 			apiKey.GroupID,
+-			"",
+ 			sessionHash,
+ 			parsed.Model,
+ 			failedAccountIDs,
+-			service.OpenAIUpstreamTransportHTTPSSE,
+-			service.OpenAIAudioTranscriptionsRequiredAccountTypes,
+-			false,
+ 		)
+ 		if err != nil {
+ 			reqLog.Warn("openai.audio_transcriptions.account_select_failed",
+@@ -149,6 +145,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
+ 			zap.Int("top_k", scheduleDecision.TopK),
+ 			zap.Int64("latency_ms", scheduleDecision.LatencyMs),
+ 			zap.Float64("load_skew", scheduleDecision.LoadSkew),
++			zap.String("selection_model", selectionModel),
+ 		)
+ 
+ 		account := selection.Account
+diff --git a/backend/internal/handler/openai_audio_transcriptions_test.go b/backend/internal/handler/openai_audio_transcriptions_test.go
+index 68067c2b..c535c241 100644
+--- a/backend/internal/handler/openai_audio_transcriptions_test.go
++++ b/backend/internal/handler/openai_audio_transcriptions_test.go
+@@ -54,6 +54,7 @@ type audioTranscriptionHandlerUpstream struct {
+ 	statuses   []int
+ 	accountIDs []int64
+ 	urls       []string
++	bodies     [][]byte
+ }
+ 
+ func (u *audioTranscriptionHandlerUpstream) Do(req *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
+@@ -61,6 +62,14 @@ func (u *audioTranscriptionHandlerUpstream) Do(req *http.Request, _ string, acco
+ 	if req != nil && req.URL != nil {
+ 		u.urls = append(u.urls, req.URL.String())
+ 	}
++	if req != nil && req.Body != nil {
++		body, err := io.ReadAll(req.Body)
++		if err != nil {
++			return nil, err
++		}
++		u.bodies = append(u.bodies, body)
++		req.Body = io.NopCloser(bytes.NewReader(body))
++	}
+ 	status := http.StatusOK
+ 	if idx := len(u.accountIDs) - 1; idx < len(u.statuses) {
+ 		status = u.statuses[idx]
+@@ -99,6 +108,35 @@ func TestOpenAIGatewayHandlerAudioTranscriptions_DispatchesOAuthAccount(t *testi
+ 	require.JSONEq(t, `{"text":"ok"}`, rec.Body.String())
+ }
+ 
++func TestOpenAIGatewayHandlerAudioTranscriptions_FallbackSelectionStillForwardsRequestedModel(t *testing.T) {
++	tests := []struct {
++		model string
++	}{
++		{model: "gpt-4o-transcribe"},
++		{model: "whisper-1"},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.model, func(t *testing.T) {
++			upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK}}
++			account := newAudioTranscriptionHandlerAccount(1)
++			account.Credentials["model_mapping"] = map[string]any{
++				service.OpenAIAudioTranscriptionsDefaultModel: service.OpenAIAudioTranscriptionsDefaultModel,
++			}
++			handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{account})
++			c, rec := newAudioTranscriptionHandlerContextWithModel(t, "/v1/audio/transcriptions", tt.model)
++
++			handler.AudioTranscriptions(c)
++
++			require.Equal(t, http.StatusOK, rec.Code)
++			require.Equal(t, []int64{1}, upstream.accountIDs)
++			require.Len(t, upstream.bodies, 1)
++			require.Contains(t, string(upstream.bodies[0]), tt.model)
++			require.NotContains(t, string(upstream.bodies[0]), service.OpenAIAudioTranscriptionsDefaultModel)
++		})
++	}
++}
++
+ func TestOpenAIGatewayHandlerAudioTranscriptions_SameAccountRetry(t *testing.T) {
+ 	tests := []struct {
+ 		name   string
+@@ -252,9 +290,14 @@ func newAudioTranscriptionHandlerForTest(t *testing.T, upstream service.HTTPUpst
+ }
+ 
+ func newAudioTranscriptionHandlerContext(t *testing.T, path string) (*gin.Context, *httptest.ResponseRecorder) {
++	t.Helper()
++	return newAudioTranscriptionHandlerContextWithModel(t, path, service.OpenAIAudioTranscriptionsDefaultModel)
++}
++
++func newAudioTranscriptionHandlerContextWithModel(t *testing.T, path string, model string) (*gin.Context, *httptest.ResponseRecorder) {
+ 	t.Helper()
+ 	gin.SetMode(gin.TestMode)
+-	body, contentType := buildAudioTranscriptionHandlerMultipart(t)
++	body, contentType := buildAudioTranscriptionHandlerMultipartWithModel(t, model)
+ 	rec := httptest.NewRecorder()
+ 	c, _ := gin.CreateTestContext(rec)
+ 	c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+@@ -283,7 +326,7 @@ func newAudioTranscriptionHandlerContext(t *testing.T, path string) (*gin.Contex
+ 	return c, rec
+ }
+ 
+-func buildAudioTranscriptionHandlerMultipart(t *testing.T) ([]byte, string) {
++func buildAudioTranscriptionHandlerMultipartWithModel(t *testing.T, model string) ([]byte, string) {
+ 	t.Helper()
+ 	var body bytes.Buffer
+ 	writer := multipart.NewWriter(&body)
+@@ -291,7 +334,7 @@ func buildAudioTranscriptionHandlerMultipart(t *testing.T) ([]byte, string) {
+ 	require.NoError(t, err)
+ 	_, err = part.Write([]byte("fake-audio"))
+ 	require.NoError(t, err)
+-	require.NoError(t, writer.WriteField("model", service.OpenAIAudioTranscriptionsDefaultModel))
++	require.NoError(t, writer.WriteField("model", model))
+ 	require.NoError(t, writer.Close())
+ 	return body.Bytes(), writer.FormDataContentType()
+ }
+diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
+index e271bf73..55bf381c 100644
+--- a/backend/internal/service/openai_account_scheduler.go
++++ b/backend/internal/service/openai_account_scheduler.go
+@@ -1145,6 +1145,51 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAccountType(
+ 	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", requiredAccountType, requireCompact)
+ }
+ 
++func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
++	ctx context.Context,
++	groupID *int64,
++	sessionHash string,
++	requestedModel string,
++	excludedIDs map[int64]struct{},
++) (*AccountSelectionResult, OpenAIAccountScheduleDecision, string, error) {
++	selection, decision, err := s.SelectAccountWithSchedulerForAccountType(
++		ctx,
++		groupID,
++		"",
++		sessionHash,
++		requestedModel,
++		excludedIDs,
++		OpenAIUpstreamTransportHTTPSSE,
++		OpenAIAudioTranscriptionsRequiredAccountTypes,
++		false,
++	)
++	if err == nil {
++		return selection, decision, requestedModel, nil
++	}
++	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
++		return nil, decision, requestedModel, err
++	}
++	fallbackModel := OpenAIAudioTranscriptionsAccountSelectionModel(requestedModel)
++	if fallbackModel == "" || fallbackModel == requestedModel {
++		return nil, decision, requestedModel, err
++	}
++	fallbackSelection, fallbackDecision, fallbackErr := s.SelectAccountWithSchedulerForAccountType(
++		ctx,
++		groupID,
++		"",
++		sessionHash,
++		fallbackModel,
++		excludedIDs,
++		OpenAIUpstreamTransportHTTPSSE,
++		OpenAIAudioTranscriptionsRequiredAccountTypes,
++		false,
++	)
++	if fallbackErr != nil {
++		return nil, decision, requestedModel, err
++	}
++	return fallbackSelection, fallbackDecision, fallbackModel, nil
++}
++
+ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
+ 	ctx context.Context,
+ 	groupID *int64,
+diff --git a/backend/internal/service/openai_account_scheduler_test.go b/backend/internal/service/openai_account_scheduler_test.go
+index d0107a4c..0d2a992c 100644
+--- a/backend/internal/service/openai_account_scheduler_test.go
++++ b/backend/internal/service/openai_account_scheduler_test.go
+@@ -393,6 +393,62 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Require
+ 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+ }
+ 
++func TestOpenAIGatewayService_SelectAccountWithSchedulerForAudioTranscriptions_FallbackSelectionModel(t *testing.T) {
++	resetOpenAIAdvancedSchedulerSettingCacheForTest()
++
++	ctx := context.Background()
++	groupID := int64(10110)
++	account := Account{
++		ID:          36031,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Status:      StatusActive,
++		Schedulable: true,
++		Concurrency: 1,
++		Priority:    0,
++		Credentials: map[string]any{
++			"model_mapping": map[string]any{
++				OpenAIAudioTranscriptionsDefaultModel: OpenAIAudioTranscriptionsDefaultModel,
++			},
++		},
++	}
++	cfg := &config.Config{}
++	cfg.Gateway.Scheduling.LoadBatchEnabled = false
++	svc := &OpenAIGatewayService{
++		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
++		cache:              &schedulerTestGatewayCache{},
++		cfg:                cfg,
++		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
++	}
++
++	selection, _, err := svc.SelectAccountWithSchedulerForAccountType(
++		ctx,
++		&groupID,
++		"",
++		"",
++		"whisper-1",
++		nil,
++		OpenAIUpstreamTransportHTTPSSE,
++		OpenAIAudioTranscriptionsRequiredAccountTypes,
++		false,
++	)
++	require.ErrorContains(t, err, "no available OpenAI accounts supporting model: whisper-1")
++	require.Nil(t, selection)
++
++	selection, _, selectionModel, err := svc.SelectAccountWithSchedulerForAudioTranscriptions(
++		ctx,
++		&groupID,
++		"",
++		"whisper-1",
++		nil,
++	)
++	require.NoError(t, err)
++	require.NotNil(t, selection)
++	require.NotNil(t, selection.Account)
++	require.Equal(t, account.ID, selection.Account.ID)
++	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, selectionModel)
++}
++
+ func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPreviousResponseRouting(t *testing.T) {
+ 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+ 
+diff --git a/backend/internal/service/openai_audio_transcriptions.go b/backend/internal/service/openai_audio_transcriptions.go
+index 5c9daffb..ae749745 100644
+--- a/backend/internal/service/openai_audio_transcriptions.go
++++ b/backend/internal/service/openai_audio_transcriptions.go
+@@ -79,6 +79,20 @@ func OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(model string) string {
+ 	return OpenAIAudioTranscriptionsModelRateLimitScope(model)
+ }
+ 
++func OpenAIAudioTranscriptionsAccountSelectionModel(model string) string {
++	model = strings.ToLower(strings.TrimSpace(model))
++	switch {
++	case model == "gpt-4o-transcribe",
++		model == "gpt-4o-transcribe-diarize",
++		model == "whisper-1",
++		strings.HasPrefix(model, "gpt-4o-transcribe-"),
++		strings.HasPrefix(model, "gpt-4o-mini-transcribe-"):
++		return OpenAIAudioTranscriptionsDefaultModel
++	default:
++		return ""
++	}
++}
++
+ func (s *OpenAIGatewayService) ParseOpenAIAudioTranscriptionsRequest(c *gin.Context, body []byte) (*OpenAIAudioTranscriptionsRequest, error) {
+ 	if c == nil || c.Request == nil {
+ 		return nil, fmt.Errorf("missing request context")

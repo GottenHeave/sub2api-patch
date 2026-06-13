@@ -1,0 +1,259 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: GottenHeave <gotten-pelt-heave@duck.com>
+Date: Fri, 22 May 2026 13:34:30 -0400
+Subject: [PATCH] fix: align channel audio token pricing
+
+
+diff --git a/backend/internal/service/billing_service.go b/backend/internal/service/billing_service.go
+index b84604da..34a1d89b 100644
+--- a/backend/internal/service/billing_service.go
++++ b/backend/internal/service/billing_service.go
+@@ -390,19 +390,24 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
+ 	if channelPricing.InputPrice != nil {
+ 		pricing.InputPricePerToken = *channelPricing.InputPrice
+ 		pricing.InputPricePerTokenPriority = *channelPricing.InputPrice
++		pricing.AudioInputPricePerToken = *channelPricing.InputPrice
++		pricing.AudioInputPricePerTokenPriority = *channelPricing.InputPrice
+ 	}
+ 	if channelPricing.OutputPrice != nil {
+ 		pricing.OutputPricePerToken = *channelPricing.OutputPrice
+ 		pricing.OutputPricePerTokenPriority = *channelPricing.OutputPrice
++		pricing.AudioOutputPricePerToken = *channelPricing.OutputPrice
+ 	}
+ 	if channelPricing.CacheWritePrice != nil {
+ 		pricing.CacheCreationPricePerToken = *channelPricing.CacheWritePrice
+ 		pricing.CacheCreation5mPrice = *channelPricing.CacheWritePrice
+ 		pricing.CacheCreation1hPrice = *channelPricing.CacheWritePrice
++		pricing.AudioCacheCreationPricePerToken = *channelPricing.CacheWritePrice
+ 	}
+ 	if channelPricing.CacheReadPrice != nil {
+ 		pricing.CacheReadPricePerToken = *channelPricing.CacheReadPrice
+ 		pricing.CacheReadPricePerTokenPriority = *channelPricing.CacheReadPrice
++		pricing.AudioCacheReadPricePerToken = *channelPricing.CacheReadPrice
+ 	}
+ 	if channelPricing.ImageOutputPrice != nil {
+ 		pricing.ImageOutputPricePerToken = *channelPricing.ImageOutputPrice
+diff --git a/backend/internal/service/billing_service_test.go b/backend/internal/service/billing_service_test.go
+index d61e3eca..e41673e1 100644
+--- a/backend/internal/service/billing_service_test.go
++++ b/backend/internal/service/billing_service_test.go
+@@ -900,6 +900,38 @@ func TestGetModelPricingWithChannel_OverrideAllFields(t *testing.T) {
+ 	require.InDelta(t, 50e-6, pricing.ImageOutputPricePerToken, 1e-12)
+ }
+ 
++func TestGetModelPricingWithChannel_OverrideAllFieldsAppliesToAudioPrices(t *testing.T) {
++	svc := NewBillingService(&config.Config{}, &PricingService{
++		pricingData: map[string]*LiteLLMModelPricing{
++			"audio-model": {
++				InputCostPerToken:                10e-6,
++				OutputCostPerToken:               20e-6,
++				CacheCreationInputTokenCost:      30e-6,
++				CacheReadInputTokenCost:          40e-6,
++				InputCostPerAudioToken:           100e-6,
++				OutputCostPerAudioToken:          200e-6,
++				CacheCreationInputAudioTokenCost: 300e-6,
++				CacheReadInputAudioTokenCost:     400e-6,
++			},
++		},
++	})
++	chPricing := &ChannelModelPricing{
++		InputPrice:      testPtrFloat64(1e-6),
++		OutputPrice:     testPtrFloat64(2e-6),
++		CacheWritePrice: testPtrFloat64(3e-6),
++		CacheReadPrice:  testPtrFloat64(4e-6),
++	}
++
++	pricing, err := svc.GetModelPricingWithChannel("audio-model", chPricing)
++	require.NoError(t, err)
++
++	require.InDelta(t, 1e-6, pricing.AudioInputPricePerToken, 1e-12)
++	require.InDelta(t, 1e-6, pricing.AudioInputPricePerTokenPriority, 1e-12)
++	require.InDelta(t, 2e-6, pricing.AudioOutputPricePerToken, 1e-12)
++	require.InDelta(t, 3e-6, pricing.AudioCacheCreationPricePerToken, 1e-12)
++	require.InDelta(t, 4e-6, pricing.AudioCacheReadPricePerToken, 1e-12)
++}
++
+ func TestGetModelPricingWithChannel_CacheWritePriceAffects5mAnd1h(t *testing.T) {
+ 	svc := newTestBillingService()
+ 
+diff --git a/backend/internal/service/billing_service_unified_test.go b/backend/internal/service/billing_service_unified_test.go
+index e6a92d1a..bd25fae8 100644
+--- a/backend/internal/service/billing_service_unified_test.go
++++ b/backend/internal/service/billing_service_unified_test.go
+@@ -202,6 +202,127 @@ func TestCalculateCostUnified_BillingModeFieldFilled(t *testing.T) {
+ 	require.Equal(t, "token", cost.BillingMode)
+ }
+ 
++func TestCalculateCostUnified_ChannelFlatPricingAppliesToAudioTokens(t *testing.T) {
++	cs := newTestChannelServiceWithCache(t, &channelCache{
++		pricingByGroupModel: map[channelModelKey]*ChannelModelPricing{
++			{groupID: 3, model: "audio-model"}: {
++				BillingMode:     BillingModeToken,
++				InputPrice:      testPtrFloat64(1e-6),
++				OutputPrice:     testPtrFloat64(2e-6),
++				CacheWritePrice: testPtrFloat64(3e-6),
++				CacheReadPrice:  testPtrFloat64(4e-6),
++			},
++		},
++		channelByGroupID: map[int64]*Channel{
++			3: {ID: 3, Status: StatusActive},
++		},
++		groupPlatform:           map[int64]string{3: ""},
++		wildcardByGroupPlatform: map[channelGroupPlatformKey][]*wildcardPricingEntry{},
++		mappingByGroupModel:     map[channelModelKey]string{},
++		wildcardMappingByGP:     map[channelGroupPlatformKey][]*wildcardMappingEntry{},
++		byID:                    map[int64]*Channel{},
++	})
++	bs := NewBillingService(&config.Config{}, &PricingService{
++		pricingData: map[string]*LiteLLMModelPricing{
++			"audio-model": {
++				InputCostPerToken:                   10e-6,
++				OutputCostPerToken:                  20e-6,
++				CacheCreationInputTokenCost:         30e-6,
++				CacheReadInputTokenCost:             40e-6,
++				InputCostPerAudioToken:              100e-6,
++				OutputCostPerAudioToken:             200e-6,
++				CacheCreationInputAudioTokenCost:    300e-6,
++				CacheReadInputAudioTokenCost:        400e-6,
++				InputCostPerAudioTokenPriority:      500e-6,
++				InputCostPerTokenPriority:           600e-6,
++				OutputCostPerTokenPriority:          700e-6,
++				CacheReadInputTokenCostPriority:     800e-6,
++				CacheCreationInputTokenCostAbove1hr: 0,
++			},
++		},
++	})
++	resolver := NewModelPricingResolver(cs, bs)
++	groupID := int64(3)
++
++	cost, err := bs.CalculateCostUnified(CostInput{
++		Ctx:            context.Background(),
++		Model:          "audio-model",
++		GroupID:        &groupID,
++		Tokens:         audioUsageTokensForChannelPricing(),
++		RateMultiplier: 1.0,
++		Resolver:       resolver,
++	})
++	require.NoError(t, err)
++	require.NotNil(t, cost)
++
++	require.InDelta(t, 100*1e-6, cost.InputCost, 1e-12)
++	require.InDelta(t, 50*2e-6, cost.OutputCost, 1e-12)
++	require.InDelta(t, 30*3e-6, cost.CacheCreationCost, 1e-12)
++	require.InDelta(t, 20*4e-6, cost.CacheReadCost, 1e-12)
++	require.InDelta(t, 100*1e-6+50*2e-6+30*3e-6+20*4e-6, cost.TotalCost, 1e-12)
++}
++
++func TestCalculateCostUnified_ChannelIntervalPricingAppliesToAudioTokens(t *testing.T) {
++	cs := newTestChannelServiceWithCache(t, &channelCache{
++		pricingByGroupModel: map[channelModelKey]*ChannelModelPricing{
++			{groupID: 4, model: "audio-model"}: {
++				BillingMode: BillingModeToken,
++				Intervals: []PricingInterval{
++					{
++						MinTokens:       0,
++						MaxTokens:       testPtrInt(200),
++						InputPrice:      testPtrFloat64(5e-6),
++						OutputPrice:     testPtrFloat64(6e-6),
++						CacheWritePrice: testPtrFloat64(7e-6),
++						CacheReadPrice:  testPtrFloat64(8e-6),
++					},
++				},
++			},
++		},
++		channelByGroupID: map[int64]*Channel{
++			4: {ID: 4, Status: StatusActive},
++		},
++		groupPlatform:           map[int64]string{4: ""},
++		wildcardByGroupPlatform: map[channelGroupPlatformKey][]*wildcardPricingEntry{},
++		mappingByGroupModel:     map[channelModelKey]string{},
++		wildcardMappingByGP:     map[channelGroupPlatformKey][]*wildcardMappingEntry{},
++		byID:                    map[int64]*Channel{},
++	})
++	bs := NewBillingService(&config.Config{}, &PricingService{
++		pricingData: map[string]*LiteLLMModelPricing{
++			"audio-model": {
++				InputCostPerToken:                10e-6,
++				OutputCostPerToken:               20e-6,
++				CacheCreationInputTokenCost:      30e-6,
++				CacheReadInputTokenCost:          40e-6,
++				InputCostPerAudioToken:           100e-6,
++				OutputCostPerAudioToken:          200e-6,
++				CacheCreationInputAudioTokenCost: 300e-6,
++				CacheReadInputAudioTokenCost:     400e-6,
++			},
++		},
++	})
++	resolver := NewModelPricingResolver(cs, bs)
++	groupID := int64(4)
++
++	cost, err := bs.CalculateCostUnified(CostInput{
++		Ctx:            context.Background(),
++		Model:          "audio-model",
++		GroupID:        &groupID,
++		Tokens:         audioUsageTokensForChannelPricing(),
++		RateMultiplier: 1.0,
++		Resolver:       resolver,
++	})
++	require.NoError(t, err)
++	require.NotNil(t, cost)
++
++	require.InDelta(t, 100*5e-6, cost.InputCost, 1e-12)
++	require.InDelta(t, 50*6e-6, cost.OutputCost, 1e-12)
++	require.InDelta(t, 30*7e-6, cost.CacheCreationCost, 1e-12)
++	require.InDelta(t, 20*8e-6, cost.CacheReadCost, 1e-12)
++	require.InDelta(t, 100*5e-6+50*6e-6+30*7e-6+20*8e-6, cost.TotalCost, 1e-12)
++}
++
+ func TestCalculateCostUnified_UsesPreResolvedPricing(t *testing.T) {
+ 	bs := newTestBillingService()
+ 	resolver := NewModelPricingResolver(nil, bs)
+@@ -233,6 +354,19 @@ func TestCalculateCostUnified_UsesPreResolvedPricing(t *testing.T) {
+ // helpers
+ // ---------------------------------------------------------------------------
+ 
++func audioUsageTokensForChannelPricing() UsageTokens {
++	return UsageTokens{
++		InputTokens:              100,
++		OutputTokens:             50,
++		CacheCreationTokens:      30,
++		CacheReadTokens:          20,
++		AudioInputTokens:         10,
++		AudioOutputTokens:        5,
++		AudioCacheCreationTokens: 3,
++		AudioCacheReadTokens:     2,
++	}
++}
++
+ // newTestChannelServiceWithCache creates a ChannelService with a pre-populated
+ // cache snapshot, bypassing the repository layer entirely.
+ func newTestChannelServiceWithCache(t *testing.T, cache *channelCache) *ChannelService {
+diff --git a/backend/internal/service/model_pricing_resolver.go b/backend/internal/service/model_pricing_resolver.go
+index 58089776..3b361d1e 100644
+--- a/backend/internal/service/model_pricing_resolver.go
++++ b/backend/internal/service/model_pricing_resolver.go
+@@ -152,19 +152,24 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
+ 	if chPricing.InputPrice != nil {
+ 		resolved.BasePricing.InputPricePerToken = *chPricing.InputPrice
+ 		resolved.BasePricing.InputPricePerTokenPriority = *chPricing.InputPrice
++		resolved.BasePricing.AudioInputPricePerToken = *chPricing.InputPrice
++		resolved.BasePricing.AudioInputPricePerTokenPriority = *chPricing.InputPrice
+ 	}
+ 	if chPricing.OutputPrice != nil {
+ 		resolved.BasePricing.OutputPricePerToken = *chPricing.OutputPrice
+ 		resolved.BasePricing.OutputPricePerTokenPriority = *chPricing.OutputPrice
++		resolved.BasePricing.AudioOutputPricePerToken = *chPricing.OutputPrice
+ 	}
+ 	if chPricing.CacheWritePrice != nil {
+ 		resolved.BasePricing.CacheCreationPricePerToken = *chPricing.CacheWritePrice
+ 		resolved.BasePricing.CacheCreation5mPrice = *chPricing.CacheWritePrice
+ 		resolved.BasePricing.CacheCreation1hPrice = *chPricing.CacheWritePrice
++		resolved.BasePricing.AudioCacheCreationPricePerToken = *chPricing.CacheWritePrice
+ 	}
+ 	if chPricing.CacheReadPrice != nil {
+ 		resolved.BasePricing.CacheReadPricePerToken = *chPricing.CacheReadPrice
+ 		resolved.BasePricing.CacheReadPricePerTokenPriority = *chPricing.CacheReadPrice
++		resolved.BasePricing.AudioCacheReadPricePerToken = *chPricing.CacheReadPrice
+ 	}
+ 	if chPricing.ImageOutputPrice != nil {
+ 		resolved.BasePricing.ImageOutputPricePerToken = *chPricing.ImageOutputPrice

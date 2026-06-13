@@ -1,0 +1,58 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+env:
+  UPSTREAM_REPOSITORY: Wei-Shaw/sub2api
+  UPSTREAM_BRANCH: main
+  MIRROR_BRANCH: mirror/upstream-main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patchset
+        uses: actions/checkout@v4
+        with:
+          ref: patchset
+          fetch-depth: 0
+
+      - name: Fetch upstream read-only
+        run: |
+          set -euo pipefail
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}" --tags --prune
+          echo "UPSTREAM_SHA=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
+
+      - name: Require upstream CI success
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$UPSTREAM_SHA"
+
+      - name: Update mirror branch
+        run: |
+          set -euo pipefail
+          git checkout -B "$MIRROR_BRANCH" "$UPSTREAM_SHA"
+          git push origin "$MIRROR_BRANCH" --force
+
+      - name: Open internal sync request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --head "$MIRROR_BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
+          body="Internal sync request for upstream commit ${UPSTREAM_SHA}. Upstream was read only. Upstream CI was passing before this branch was updated."
+          if [ -z "$existing" ]; then
+            gh pr create --base main --head "$MIRROR_BRANCH" --title "sync upstream main" --body "$body"
+          else
+            gh pr edit "$existing" --body "$body"
+          fi
