@@ -163,6 +163,11 @@ jobs:
             exit 1
           fi
           git checkout -B "$PATCHED_BRANCH"
+          rm -rf .github/workflows
+          git add -A .github/workflows
+          if ! git diff --cached --quiet; then
+            git commit -m "Remove upstream workflows from patched branch"
+          fi
           git tag "$VERSION"
           git push origin "$PATCHED_BRANCH" --force
           git push origin "$VERSION"
