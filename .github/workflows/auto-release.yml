@@ -39,17 +39,50 @@ jobs:
           path: sub2api-patch
           fetch-depth: 0
 
-      - name: Checkout manual upstream candidate
+      - name: Resolve manual upstream candidate
+        id: resolve_manual
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@v6.0.3
-        with:
-          repository: ${{ env.UPSTREAM_REPOSITORY }}
-          ref: ${{ inputs.upstream_ref }}
-          path: worktree
-          fetch-depth: 0
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_ref="${{ inputs.upstream_ref }}"
+          target_ref="${target_ref:-main}"
+
+          mkdir -p worktree
+          git -C worktree init
+          git -C worktree remote add origin "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git -C worktree fetch --prune origin \
+            '+refs/heads/*:refs/remotes/origin/*' \
+            '+refs/tags/*:refs/tags/*'
+
+          candidate=""
+          if git -C worktree rev-parse -q --verify "${target_ref}^{commit}" >/dev/null; then
+            candidate="${target_ref}"
+          elif git -C worktree rev-parse -q --verify "refs/tags/${target_ref}^{commit}" >/dev/null; then
+            candidate="refs/tags/${target_ref}"
+          elif git -C worktree rev-parse -q --verify "refs/remotes/origin/${target_ref#refs/heads/}^{commit}" >/dev/null; then
+            candidate="refs/remotes/origin/${target_ref#refs/heads/}"
+          fi
+
+          if [ -z "${candidate}" ]; then
+            {
+              echo "### Auto release skipped"
+              echo
+              echo "Manual upstream ref could not be resolved in ${UPSTREAM_REPOSITORY}."
+              echo
+              echo "Requested ref: \`${target_ref}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          upstream_sha="$(git -C worktree rev-parse "${candidate}^{commit}")"
+          git -C worktree checkout --detach "${upstream_sha}"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout validated mirror candidate
-        if: github.event_name == 'workflow_run'
+        if: (github.event_name == 'workflow_run') && (github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true')
         uses: actions/checkout@v6.0.3
         with:
           ref: mirror/upstream-main
@@ -68,7 +101,7 @@ jobs:
           fi
 
       - name: Require manual upstream CI success
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch') && (github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -77,17 +110,20 @@ jobs:
           sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_sha"
 
       - name: Setup Go
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         uses: actions/setup-go@v6.4.0
         with:
           go-version-file: worktree/backend/go.mod
           cache-dependency-path: worktree/backend/go.sum
 
       - name: Setup pnpm
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         uses: pnpm/action-setup@v6.0.8
         with:
           version: 9
 
       - name: Setup Node.js
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         uses: actions/setup-node@v6.4.0
         with:
           node-version: "24"
@@ -95,15 +131,18 @@ jobs:
           cache-dependency-path: worktree/frontend/pnpm-lock.yaml
 
       - name: Record upstream base
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         run: |
           set -euo pipefail
           echo "UPSTREAM_COMMIT=$(git -C worktree rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "UPSTREAM_COMMIT_SHORT=$(git -C worktree rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
 
       - name: Apply patches
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         run: sub2api-patch/scripts/apply-patches.sh worktree
 
       - name: Run release gates
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         run: |
           set -euo pipefail
           sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
@@ -113,6 +152,7 @@ jobs:
           pnpm --dir worktree/frontend run lint:check
 
       - name: Compute version
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,6 +163,7 @@ jobs:
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Prepare release notes
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         run: |
           set -euo pipefail
           upstream_version="$(tr -d '[:space:]' < worktree/backend/cmd/server/VERSION)"
@@ -151,13 +192,16 @@ jobs:
           fi
 
       - name: Set lowercase image owner
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         id: image
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         uses: docker/setup-buildx-action@v4.1.0
 
       - name: Preflight release image build
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         uses: docker/build-push-action@v7.2.0
         with:
           context: worktree
@@ -171,6 +215,7 @@ jobs:
             org.opencontainers.image.revision=${{ env.RELEASE_REVISION }}
 
       - name: Publish patched branch and reserve tag
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         run: |
           set -euo pipefail
           cd worktree
@@ -193,6 +238,7 @@ jobs:
           git push origin "$VERSION"
 
       - name: Log in to GHCR
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         uses: docker/login-action@v4.2.0
         with:
           registry: ghcr.io
@@ -200,6 +246,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Build and publish release image
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         uses: docker/build-push-action@v7.2.0
         with:
           context: worktree
@@ -215,6 +262,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=sub2api-patch-release
 
       - name: Create release
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
