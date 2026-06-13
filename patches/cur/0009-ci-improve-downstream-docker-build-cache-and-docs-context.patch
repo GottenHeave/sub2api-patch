@@ -1,9 +1,22 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Sat, 13 Jun 2026 17:47:46 +0000
+Date: Sat, 13 Jun 2026 17:53:58 +0000
 Subject: [PATCH] ci: improve downstream Docker build cache and docs context
 
 
+diff --git a/.dockerignore b/.dockerignore
+index 770145cb..a94dd541 100644
+--- a/.dockerignore
++++ b/.dockerignore
+@@ -11,6 +11,8 @@
+ *.md
+ !deploy/DOCKER.md
+ docs/
++!docs/legal/
++!docs/legal/*.md
+ 
+ # IDE
+ .idea/
 diff --git a/Dockerfile b/Dockerfile
 index f9a03a2b..d15a0ac2 100644
 --- a/Dockerfile
