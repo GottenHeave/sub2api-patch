@@ -54,18 +54,24 @@ const messages: Record<string, string> = {
   'usage.imageSizeUnknown': 'unknown',
   'usage.imageUnitPrice': 'Per-image price',
   'usage.imageTotalPrice': 'Image total price',
+  'usage.tokenDetails': 'Token Details',
+  'usage.totalTokens': 'Total tokens',
+  'admin.usage.inputTokens': 'Input Tokens',
+  'admin.usage.outputTokens': 'Output Tokens',
+  'admin.usage.cacheCreationTokens': 'Cache Creation Tokens',
+  'admin.usage.cacheReadTokens': 'Cache Read Tokens',
   'admin.usage.billingModeToken': 'Token',
   'admin.usage.billingModePerRequest': 'Per request',
   'admin.usage.billingModeImage': 'Image',
-	'admin.usage.requestIdCopied': 'Request ID copied',
-	'keys.copied': 'Copied',
-	'keys.copyToClipboard': 'Copy to clipboard',
-	'common.copyFailed': 'Copy failed',
-	'usage.requestedModel': 'Requested',
-	'usage.sentUpstreamModel': 'Sent upstream',
-	'usage.upstreamResponseModel': 'Upstream response',
-	'usage.modelVariant': 'Possible version variant',
-	'usage.modelMismatch': 'Different model',
+  'admin.usage.requestIdCopied': 'Request ID copied',
+  'keys.copied': 'Copied',
+  'keys.copyToClipboard': 'Copy to clipboard',
+  'common.copyFailed': 'Copy failed',
+  'usage.requestedModel': 'Requested',
+  'usage.sentUpstreamModel': 'Sent upstream',
+  'usage.upstreamResponseModel': 'Upstream response',
+  'usage.modelVariant': 'Possible version variant',
+  'usage.modelMismatch': 'Different model',
 }
 
 vi.mock('vue-i18n', async () => {
@@ -119,6 +125,29 @@ const baseImageRow = {
   image_output_size: null,
   image_size_source: null,
   image_size_breakdown: null,
+}
+
+const baseTokenRow = {
+  request_id: 'req-admin-token',
+  model: 'gpt-4o-mini',
+  actual_cost: 0,
+  total_cost: 0,
+  account_rate_multiplier: 1,
+  rate_multiplier: 1,
+  service_tier: null,
+  input_cost: 0,
+  output_cost: 0,
+  cache_creation_cost: 0,
+  cache_read_cost: 0,
+  input_tokens: 0,
+  output_tokens: 0,
+  cache_creation_tokens: 0,
+  cache_read_tokens: 0,
+  cache_creation_5m_tokens: 0,
+  cache_creation_1h_tokens: 0,
+  cache_ttl_overridden: false,
+  billing_mode: 'token',
+  image_count: 0,
 }
 
 describe('admin UsageTable tooltip', () => {
@@ -256,47 +285,118 @@ describe('admin UsageTable tooltip', () => {
     expect(text).toContain('claude-sonnet-4-20250514')
   })
 
-	it.each([
-		{
-			name: 'possible version variant',
-			responseModel: 'gpt-5.5-2026-08-01',
-			expectedBadge: 'Possible version variant',
-		},
-		{
-			name: 'different upstream model',
-			responseModel: 'gpt-5.4',
-			expectedBadge: 'Different model',
-		},
-	])('shows a compact upstream response audit marker for $name', ({ responseModel, expectedBadge }) => {
-		const wrapper = mount(UsageTable, {
-			props: {
-				data: [{
-					request_id: `req-${responseModel}`,
-					model: 'gpt-5.6-sol',
-					upstream_model: 'gpt-5.5',
-					model_mapping_chain: 'gpt-5.6-sol→gpt-5.5',
-					upstream_response_model: responseModel,
-					upstream_model_mismatch: true,
-				}],
-				loading: false,
-				columns: [],
-			},
-			global: {
-				stubs: {
-					DataTable: DataTableStub,
-					EmptyState: true,
-					Icon: true,
-					Teleport: true,
-				},
-			},
-		})
+  it.each([
+    {
+      name: 'possible version variant',
+      responseModel: 'gpt-5.5-2026-08-01',
+      expectedBadge: 'Possible version variant',
+    },
+    {
+      name: 'different upstream model',
+      responseModel: 'gpt-5.4',
+      expectedBadge: 'Different model',
+    },
+  ])('shows a compact upstream response audit marker for $name', ({ responseModel, expectedBadge }) => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [
+          {
+            request_id: `req-${responseModel}`,
+            model: 'gpt-5.6-sol',
+            upstream_model: 'gpt-5.5',
+            model_mapping_chain: 'gpt-5.6-sol→gpt-5.5',
+            upstream_response_model: responseModel,
+            upstream_model_mismatch: true,
+          },
+        ],
+        loading: false,
+        columns: [],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
 
-		const text = wrapper.text()
-		expect(text).toContain('gpt-5.6-sol')
-		expect(text).toContain('gpt-5.5')
-		expect(text).toContain(responseModel)
-		expect(text).toContain(expectedBadge)
-	})
+    const text = wrapper.text()
+    expect(text).toContain('gpt-5.6-sol')
+    expect(text).toContain('gpt-5.5')
+    expect(text).toContain(responseModel)
+    expect(text).toContain(expectedBadge)
+  })
+
+  it('includes audio tokens in the visible token summary and tooltip total', async () => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [
+          {
+            ...baseTokenRow,
+            request_id: 'req-admin-audio-token',
+            model: 'gpt-4o-mini-transcribe',
+            input_tokens: 0,
+            output_tokens: 6,
+            audio_input_tokens: 2046,
+          },
+        ],
+        loading: false,
+        columns: [],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('2,046')
+    expect(text).toContain('6')
+
+    await wrapper.find('.group.relative').trigger('mouseenter')
+    await nextTick()
+
+    const tooltipText = wrapper.text()
+    expect(tooltipText).toContain('Input Tokens')
+    expect(tooltipText).toContain('2,046')
+    expect(tooltipText).toContain('Total tokens')
+    expect(tooltipText).toContain('2,052')
+  })
+
+  it('keeps text-only token rows unchanged', () => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [
+          {
+            ...baseTokenRow,
+            request_id: 'req-admin-text-token',
+            input_tokens: 1234,
+            output_tokens: 56,
+          },
+        ],
+        loading: false,
+        columns: [],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('1,234')
+    expect(text).toContain('56')
+  })
 
   it.each([
     {
