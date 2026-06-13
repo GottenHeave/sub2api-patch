@@ -14,16 +14,28 @@ import (
 )
 
 type rateLimit429AccountRepoStub struct {
-	mockAccountRepoForGemini
-	rateLimitCalls     int
-	lastRateLimitID    int64
-	lastRateLimitReset time.Time
+	audioTranscriptionRateLimitAccountRepoStub
+	rateLimitCalls        int
+	lastRateLimitID       int64
+	lastRateLimitReset    time.Time
+	modelRateLimitCalls   int
+	lastModelRateLimitID  int64
+	lastModelRateLimitKey string
+	lastModelRateLimitAt  time.Time
 }
 
 func (r *rateLimit429AccountRepoStub) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
 	r.rateLimitCalls++
 	r.lastRateLimitID = id
 	r.lastRateLimitReset = resetAt
+	return nil
+}
+
+func (r *rateLimit429AccountRepoStub) SetModelRateLimit(_ context.Context, id int64, scope string, resetAt time.Time, _ ...string) error {
+	r.modelRateLimitCalls++
+	r.lastModelRateLimitID = id
+	r.lastModelRateLimitKey = scope
+	r.lastModelRateLimitAt = resetAt
 	return nil
 }
 
@@ -79,6 +91,29 @@ func TestHandle429_FallbackUsesDBSeconds(t *testing.T) {
 	require.Equal(t, 1, accountRepo.rateLimitCalls)
 	require.Equal(t, int64(42), accountRepo.lastRateLimitID)
 	require.True(t, !accountRepo.lastRateLimitReset.Before(before.Add(12*time.Second)) && !accountRepo.lastRateLimitReset.After(after.Add(12*time.Second)))
+}
+
+func TestHandle429_OpenAIRetryAfterSecondsDoesNotRateLimitWholeAccount(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "nested detail", body: `{"detail":{"retry_after_seconds":30}}`},
+		{name: "top level", body: `{"detail":"Transcription is temporarily unavailable. Please try again shortly.","retry_after_seconds":30}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			accountRepo := &rateLimit429AccountRepoStub{}
+			svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+
+			account := &Account{ID: 45, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+			svc.handle429(context.Background(), account, http.Header{}, []byte(tt.body))
+
+			require.Zero(t, accountRepo.rateLimitCalls)
+			require.Zero(t, accountRepo.modelRateLimitCalls)
+		})
+	}
 }
 
 func TestHandle429_FallbackDisabledSkipsLocalMark(t *testing.T) {
