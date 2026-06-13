@@ -112,6 +112,7 @@ jobs:
           upstream_commit="$(git -C worktree rev-parse --short=12 HEAD)"
           upstream_version="$(tr -d '[:space:]' < worktree/backend/cmd/server/VERSION)"
           patchset_commit="$(git -C sub2api-patch rev-parse --short=12 HEAD)"
+          echo "RELEASE_REVISION=$(git -C worktree rev-parse HEAD)" >> "$GITHUB_ENV"
           cat > release-notes.md <<EOF
           ${VERSION}
 
@@ -169,7 +170,7 @@ jobs:
             ghcr.io/${{ steps.image.outputs.owner }}/sub2api-patch:latest-patch
           labels: |
             org.opencontainers.image.version=${{ env.VERSION }}
-            org.opencontainers.image.revision=${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+            org.opencontainers.image.revision=${{ env.RELEASE_REVISION }}
 
       - name: Create tag and release
         env:
