@@ -182,4 +182,3 @@ jobs:
           git push origin "$VERSION"
           gh release create "$VERSION" --repo "${{ github.repository }}" --title "$VERSION" --notes-file ../release-notes.md --target "$PATCHED_BRANCH"
 
-# workflow-index: 20260613170140
