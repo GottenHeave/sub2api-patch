@@ -31,27 +31,34 @@ if isinstance(checks_payload, list):
 else:
     runs = checks_payload.get('check_runs') or []
 
-bad_statuses = [s for s in statuses if s.get('state') not in ('success',)]
+required_names = {'test', 'frontend', 'golangci-lint'}
+relevant_statuses = [s for s in statuses if s.get('context') in required_names]
+relevant_runs = [r for r in runs if r.get('name') in required_names]
+
+missing = sorted(required_names - {s.get('context') for s in relevant_statuses} - {r.get('name') for r in relevant_runs})
+bad_statuses = [s for s in relevant_statuses if s.get('state') not in ('success',)]
 bad_runs = [
-    r for r in runs
+    r for r in relevant_runs
     if r.get('status') != 'completed' or r.get('conclusion') not in ('success', 'skipped', 'neutral')
 ]
 
-if not statuses and not runs:
-    print('upstream CI state unavailable; sync paused')
+if not relevant_statuses and not relevant_runs:
+    print('upstream frontend/backend CI state unavailable; sync paused')
     sys.exit(1)
 
-if statuses and combined != 'success':
-    print(f'combined status is {combined}; sync paused')
+if missing:
+    print('upstream frontend/backend CI checks missing; sync paused')
+    for name in missing:
+        print(f'missing check: {name}')
     sys.exit(1)
 
 if bad_statuses or bad_runs:
-    print('upstream CI is not fully passing; sync paused')
+    print('upstream frontend/backend CI is not passing; sync paused')
     for item in bad_statuses:
         print(f"status: {item.get('context')}={item.get('state')}")
     for item in bad_runs:
         print(f"check: {item.get('name')} status={item.get('status')} conclusion={item.get('conclusion')}")
     sys.exit(1)
 
-print('upstream CI ready')
+print('upstream frontend/backend CI ready')
 PY

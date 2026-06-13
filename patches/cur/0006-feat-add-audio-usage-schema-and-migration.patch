@@ -1,0 +1,1851 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sat, 13 Jun 2026 18:07:46 +0000
+Subject: [PATCH] feat: add audio usage schema and migration
+
+
+diff --git a/backend/ent/migrate/schema.go b/backend/ent/migrate/schema.go
+index f235031c..3e669c08 100644
+--- a/backend/ent/migrate/schema.go
++++ b/backend/ent/migrate/schema.go
+@@ -1342,6 +1342,10 @@ var (
+ 		{Name: "output_tokens", Type: field.TypeInt, Default: 0},
+ 		{Name: "cache_creation_tokens", Type: field.TypeInt, Default: 0},
+ 		{Name: "cache_read_tokens", Type: field.TypeInt, Default: 0},
++		{Name: "audio_input_tokens", Type: field.TypeInt, Default: 0},
++		{Name: "audio_output_tokens", Type: field.TypeInt, Default: 0},
++		{Name: "audio_cache_creation_tokens", Type: field.TypeInt, Default: 0},
++		{Name: "audio_cache_read_tokens", Type: field.TypeInt, Default: 0},
+ 		{Name: "cache_creation_5m_tokens", Type: field.TypeInt, Default: 0},
+ 		{Name: "cache_creation_1h_tokens", Type: field.TypeInt, Default: 0},
+ 		{Name: "input_cost", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,10)"}},
+@@ -1380,31 +1384,31 @@ var (
+ 		ForeignKeys: []*schema.ForeignKey{
+ 			{
+ 				Symbol:     "usage_logs_api_keys_usage_logs",
+-				Columns:    []*schema.Column{UsageLogsColumns[37]},
++				Columns:    []*schema.Column{UsageLogsColumns[41]},
+ 				RefColumns: []*schema.Column{APIKeysColumns[0]},
+ 				OnDelete:   schema.NoAction,
+ 			},
+ 			{
+ 				Symbol:     "usage_logs_accounts_usage_logs",
+-				Columns:    []*schema.Column{UsageLogsColumns[38]},
++				Columns:    []*schema.Column{UsageLogsColumns[42]},
+ 				RefColumns: []*schema.Column{AccountsColumns[0]},
+ 				OnDelete:   schema.NoAction,
+ 			},
+ 			{
+ 				Symbol:     "usage_logs_groups_usage_logs",
+-				Columns:    []*schema.Column{UsageLogsColumns[39]},
++				Columns:    []*schema.Column{UsageLogsColumns[43]},
+ 				RefColumns: []*schema.Column{GroupsColumns[0]},
+ 				OnDelete:   schema.SetNull,
+ 			},
+ 			{
+ 				Symbol:     "usage_logs_users_usage_logs",
+-				Columns:    []*schema.Column{UsageLogsColumns[40]},
++				Columns:    []*schema.Column{UsageLogsColumns[44]},
+ 				RefColumns: []*schema.Column{UsersColumns[0]},
+ 				OnDelete:   schema.NoAction,
+ 			},
+ 			{
+ 				Symbol:     "usage_logs_user_subscriptions_usage_logs",
+-				Columns:    []*schema.Column{UsageLogsColumns[41]},
++				Columns:    []*schema.Column{UsageLogsColumns[45]},
+ 				RefColumns: []*schema.Column{UserSubscriptionsColumns[0]},
+ 				OnDelete:   schema.SetNull,
+ 			},
+@@ -1413,32 +1417,32 @@ var (
+ 			{
+ 				Name:    "usagelog_user_id",
+ 				Unique:  false,
+-				Columns: []*schema.Column{UsageLogsColumns[40]},
++				Columns: []*schema.Column{UsageLogsColumns[44]},
+ 			},
+ 			{
+ 				Name:    "usagelog_api_key_id",
+ 				Unique:  false,
+-				Columns: []*schema.Column{UsageLogsColumns[37]},
++				Columns: []*schema.Column{UsageLogsColumns[41]},
+ 			},
+ 			{
+ 				Name:    "usagelog_account_id",
+ 				Unique:  false,
+-				Columns: []*schema.Column{UsageLogsColumns[38]},
++				Columns: []*schema.Column{UsageLogsColumns[42]},
+ 			},
+ 			{
+ 				Name:    "usagelog_group_id",
+ 				Unique:  false,
+-				Columns: []*schema.Column{UsageLogsColumns[39]},
++				Columns: []*schema.Column{UsageLogsColumns[43]},
+ 			},
+ 			{
+ 				Name:    "usagelog_subscription_id",
+ 				Unique:  false,
+-				Columns: []*schema.Column{UsageLogsColumns[41]},
++				Columns: []*schema.Column{UsageLogsColumns[45]},
+ 			},
+ 			{
+ 				Name:    "usagelog_created_at",
+ 				Unique:  false,
+-				Columns: []*schema.Column{UsageLogsColumns[36]},
++				Columns: []*schema.Column{UsageLogsColumns[40]},
+ 			},
+ 			{
+ 				Name:    "usagelog_model",
+@@ -1458,17 +1462,17 @@ var (
+ 			{
+ 				Name:    "usagelog_user_id_created_at",
+ 				Unique:  false,
+-				Columns: []*schema.Column{UsageLogsColumns[40], UsageLogsColumns[36]},
++				Columns: []*schema.Column{UsageLogsColumns[44], UsageLogsColumns[40]},
+ 			},
+ 			{
+ 				Name:    "usagelog_api_key_id_created_at",
+ 				Unique:  false,
+-				Columns: []*schema.Column{UsageLogsColumns[37], UsageLogsColumns[36]},
++				Columns: []*schema.Column{UsageLogsColumns[41], UsageLogsColumns[40]},
+ 			},
+ 			{
+ 				Name:    "usagelog_group_id_created_at",
+ 				Unique:  false,
+-				Columns: []*schema.Column{UsageLogsColumns[39], UsageLogsColumns[36]},
++				Columns: []*schema.Column{UsageLogsColumns[43], UsageLogsColumns[40]},
+ 			},
+ 		},
+ 	}
+diff --git a/backend/ent/mutation.go b/backend/ent/mutation.go
+index 9ce8e636..eb7a4ed3 100644
+--- a/backend/ent/mutation.go
++++ b/backend/ent/mutation.go
+@@ -34885,78 +34885,86 @@ func (m *UsageCleanupTaskMutation) ResetEdge(name string) error {
+ // UsageLogMutation represents an operation that mutates the UsageLog nodes in the graph.
+ type UsageLogMutation struct {
+ 	config
+-	op                          Op
+-	typ                         string
+-	id                          *int64
+-	request_id                  *string
+-	model                       *string
+-	requested_model             *string
+-	upstream_model              *string
+-	channel_id                  *int64
+-	addchannel_id               *int64
+-	model_mapping_chain         *string
+-	billing_tier                *string
+-	billing_mode                *string
+-	input_tokens                *int
+-	addinput_tokens             *int
+-	output_tokens               *int
+-	addoutput_tokens            *int
+-	cache_creation_tokens       *int
+-	addcache_creation_tokens    *int
+-	cache_read_tokens           *int
+-	addcache_read_tokens        *int
+-	cache_creation_5m_tokens    *int
+-	addcache_creation_5m_tokens *int
+-	cache_creation_1h_tokens    *int
+-	addcache_creation_1h_tokens *int
+-	input_cost                  *float64
+-	addinput_cost               *float64
+-	output_cost                 *float64
+-	addoutput_cost              *float64
+-	cache_creation_cost         *float64
+-	addcache_creation_cost      *float64
+-	cache_read_cost             *float64
+-	addcache_read_cost          *float64
+-	total_cost                  *float64
+-	addtotal_cost               *float64
+-	actual_cost                 *float64
+-	addactual_cost              *float64
+-	rate_multiplier             *float64
+-	addrate_multiplier          *float64
+-	account_rate_multiplier     *float64
+-	addaccount_rate_multiplier  *float64
+-	billing_type                *int8
+-	addbilling_type             *int8
+-	stream                      *bool
+-	duration_ms                 *int
+-	addduration_ms              *int
+-	first_token_ms              *int
+-	addfirst_token_ms           *int
+-	user_agent                  *string
+-	ip_address                  *string
+-	image_count                 *int
+-	addimage_count              *int
+-	image_size                  *string
+-	image_input_size            *string
+-	image_output_size           *string
+-	image_size_source           *string
+-	image_size_breakdown        *map[string]int
+-	cache_ttl_overridden        *bool
+-	created_at                  *time.Time
+-	clearedFields               map[string]struct{}
+-	user                        *int64
+-	cleareduser                 bool
+-	api_key                     *int64
+-	clearedapi_key              bool
+-	account                     *int64
+-	clearedaccount              bool
+-	group                       *int64
+-	clearedgroup                bool
+-	subscription                *int64
+-	clearedsubscription         bool
+-	done                        bool
+-	oldValue                    func(context.Context) (*UsageLog, error)
+-	predicates                  []predicate.UsageLog
++	op                             Op
++	typ                            string
++	id                             *int64
++	request_id                     *string
++	model                          *string
++	requested_model                *string
++	upstream_model                 *string
++	channel_id                     *int64
++	addchannel_id                  *int64
++	model_mapping_chain            *string
++	billing_tier                   *string
++	billing_mode                   *string
++	input_tokens                   *int
++	addinput_tokens                *int
++	output_tokens                  *int
++	addoutput_tokens               *int
++	cache_creation_tokens          *int
++	addcache_creation_tokens       *int
++	cache_read_tokens              *int
++	addcache_read_tokens           *int
++	audio_input_tokens             *int
++	addaudio_input_tokens          *int
++	audio_output_tokens            *int
++	addaudio_output_tokens         *int
++	audio_cache_creation_tokens    *int
++	addaudio_cache_creation_tokens *int
++	audio_cache_read_tokens        *int
++	addaudio_cache_read_tokens     *int
++	cache_creation_5m_tokens       *int
++	addcache_creation_5m_tokens    *int
++	cache_creation_1h_tokens       *int
++	addcache_creation_1h_tokens    *int
++	input_cost                     *float64
++	addinput_cost                  *float64
++	output_cost                    *float64
++	addoutput_cost                 *float64
++	cache_creation_cost            *float64
++	addcache_creation_cost         *float64
++	cache_read_cost                *float64
++	addcache_read_cost             *float64
++	total_cost                     *float64
++	addtotal_cost                  *float64
++	actual_cost                    *float64
++	addactual_cost                 *float64
++	rate_multiplier                *float64
++	addrate_multiplier             *float64
++	account_rate_multiplier        *float64
++	addaccount_rate_multiplier     *float64
++	billing_type                   *int8
++	addbilling_type                *int8
++	stream                         *bool
++	duration_ms                    *int
++	addduration_ms                 *int
++	first_token_ms                 *int
++	addfirst_token_ms              *int
++	user_agent                     *string
++	ip_address                     *string
++	image_count                    *int
++	addimage_count                 *int
++	image_size                     *string
++	image_input_size               *string
++	image_output_size              *string
++	image_size_source              *string
++	image_size_breakdown           *map[string]int
++	cache_ttl_overridden           *bool
++	created_at                     *time.Time
++	clearedFields                  map[string]struct{}
++	user                           *int64
++	cleareduser                    bool
++	api_key                        *int64
++	clearedapi_key                 bool
++	account                        *int64
++	clearedaccount                 bool
++	group                          *int64
++	clearedgroup                   bool
++	subscription                   *int64
++	clearedsubscription            bool
++	done                           bool
++	oldValue                       func(context.Context) (*UsageLog, error)
++	predicates                     []predicate.UsageLog
+ }
+ 
+ var _ ent.Mutation = (*UsageLogMutation)(nil)
+@@ -35874,6 +35882,230 @@ func (m *UsageLogMutation) ResetCacheReadTokens() {
+ 	m.addcache_read_tokens = nil
+ }
+ 
++// SetAudioInputTokens sets the "audio_input_tokens" field.
++func (m *UsageLogMutation) SetAudioInputTokens(i int) {
++	m.audio_input_tokens = &i
++	m.addaudio_input_tokens = nil
++}
++
++// AudioInputTokens returns the value of the "audio_input_tokens" field in the mutation.
++func (m *UsageLogMutation) AudioInputTokens() (r int, exists bool) {
++	v := m.audio_input_tokens
++	if v == nil {
++		return
++	}
++	return *v, true
++}
++
++// OldAudioInputTokens returns the old "audio_input_tokens" field's value of the UsageLog entity.
++// If the UsageLog object wasn't provided to the builder, the object is fetched from the database.
++// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
++func (m *UsageLogMutation) OldAudioInputTokens(ctx context.Context) (v int, err error) {
++	if !m.op.Is(OpUpdateOne) {
++		return v, errors.New("OldAudioInputTokens is only allowed on UpdateOne operations")
++	}
++	if m.id == nil || m.oldValue == nil {
++		return v, errors.New("OldAudioInputTokens requires an ID field in the mutation")
++	}
++	oldValue, err := m.oldValue(ctx)
++	if err != nil {
++		return v, fmt.Errorf("querying old value for OldAudioInputTokens: %w", err)
++	}
++	return oldValue.AudioInputTokens, nil
++}
++
++// AddAudioInputTokens adds i to the "audio_input_tokens" field.
++func (m *UsageLogMutation) AddAudioInputTokens(i int) {
++	if m.addaudio_input_tokens != nil {
++		*m.addaudio_input_tokens += i
++	} else {
++		m.addaudio_input_tokens = &i
++	}
++}
++
++// AddedAudioInputTokens returns the value that was added to the "audio_input_tokens" field in this mutation.
++func (m *UsageLogMutation) AddedAudioInputTokens() (r int, exists bool) {
++	v := m.addaudio_input_tokens
++	if v == nil {
++		return
++	}
++	return *v, true
++}
++
++// ResetAudioInputTokens resets all changes to the "audio_input_tokens" field.
++func (m *UsageLogMutation) ResetAudioInputTokens() {
++	m.audio_input_tokens = nil
++	m.addaudio_input_tokens = nil
++}
++
++// SetAudioOutputTokens sets the "audio_output_tokens" field.
++func (m *UsageLogMutation) SetAudioOutputTokens(i int) {
++	m.audio_output_tokens = &i
++	m.addaudio_output_tokens = nil
++}
++
++// AudioOutputTokens returns the value of the "audio_output_tokens" field in the mutation.
++func (m *UsageLogMutation) AudioOutputTokens() (r int, exists bool) {
++	v := m.audio_output_tokens
++	if v == nil {
++		return
++	}
++	return *v, true
++}
++
++// OldAudioOutputTokens returns the old "audio_output_tokens" field's value of the UsageLog entity.
++// If the UsageLog object wasn't provided to the builder, the object is fetched from the database.
++// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
++func (m *UsageLogMutation) OldAudioOutputTokens(ctx context.Context) (v int, err error) {
++	if !m.op.Is(OpUpdateOne) {
++		return v, errors.New("OldAudioOutputTokens is only allowed on UpdateOne operations")
++	}
++	if m.id == nil || m.oldValue == nil {
++		return v, errors.New("OldAudioOutputTokens requires an ID field in the mutation")
++	}
++	oldValue, err := m.oldValue(ctx)
++	if err != nil {
++		return v, fmt.Errorf("querying old value for OldAudioOutputTokens: %w", err)
++	}
++	return oldValue.AudioOutputTokens, nil
++}
++
++// AddAudioOutputTokens adds i to the "audio_output_tokens" field.
++func (m *UsageLogMutation) AddAudioOutputTokens(i int) {
++	if m.addaudio_output_tokens != nil {
++		*m.addaudio_output_tokens += i
++	} else {
++		m.addaudio_output_tokens = &i
++	}
++}
++
++// AddedAudioOutputTokens returns the value that was added to the "audio_output_tokens" field in this mutation.
++func (m *UsageLogMutation) AddedAudioOutputTokens() (r int, exists bool) {
++	v := m.addaudio_output_tokens
++	if v == nil {
++		return
++	}
++	return *v, true
++}
++
++// ResetAudioOutputTokens resets all changes to the "audio_output_tokens" field.
++func (m *UsageLogMutation) ResetAudioOutputTokens() {
++	m.audio_output_tokens = nil
++	m.addaudio_output_tokens = nil
++}
++
++// SetAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field.
++func (m *UsageLogMutation) SetAudioCacheCreationTokens(i int) {
++	m.audio_cache_creation_tokens = &i
++	m.addaudio_cache_creation_tokens = nil
++}
++
++// AudioCacheCreationTokens returns the value of the "audio_cache_creation_tokens" field in the mutation.
++func (m *UsageLogMutation) AudioCacheCreationTokens() (r int, exists bool) {
++	v := m.audio_cache_creation_tokens
++	if v == nil {
++		return
++	}
++	return *v, true
++}
++
++// OldAudioCacheCreationTokens returns the old "audio_cache_creation_tokens" field's value of the UsageLog entity.
++// If the UsageLog object wasn't provided to the builder, the object is fetched from the database.
++// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
++func (m *UsageLogMutation) OldAudioCacheCreationTokens(ctx context.Context) (v int, err error) {
++	if !m.op.Is(OpUpdateOne) {
++		return v, errors.New("OldAudioCacheCreationTokens is only allowed on UpdateOne operations")
++	}
++	if m.id == nil || m.oldValue == nil {
++		return v, errors.New("OldAudioCacheCreationTokens requires an ID field in the mutation")
++	}
++	oldValue, err := m.oldValue(ctx)
++	if err != nil {
++		return v, fmt.Errorf("querying old value for OldAudioCacheCreationTokens: %w", err)
++	}
++	return oldValue.AudioCacheCreationTokens, nil
++}
++
++// AddAudioCacheCreationTokens adds i to the "audio_cache_creation_tokens" field.
++func (m *UsageLogMutation) AddAudioCacheCreationTokens(i int) {
++	if m.addaudio_cache_creation_tokens != nil {
++		*m.addaudio_cache_creation_tokens += i
++	} else {
++		m.addaudio_cache_creation_tokens = &i
++	}
++}
++
++// AddedAudioCacheCreationTokens returns the value that was added to the "audio_cache_creation_tokens" field in this mutation.
++func (m *UsageLogMutation) AddedAudioCacheCreationTokens() (r int, exists bool) {
++	v := m.addaudio_cache_creation_tokens
++	if v == nil {
++		return
++	}
++	return *v, true
++}
++
++// ResetAudioCacheCreationTokens resets all changes to the "audio_cache_creation_tokens" field.
++func (m *UsageLogMutation) ResetAudioCacheCreationTokens() {
++	m.audio_cache_creation_tokens = nil
++	m.addaudio_cache_creation_tokens = nil
++}
++
++// SetAudioCacheReadTokens sets the "audio_cache_read_tokens" field.
++func (m *UsageLogMutation) SetAudioCacheReadTokens(i int) {
++	m.audio_cache_read_tokens = &i
++	m.addaudio_cache_read_tokens = nil
++}
++
++// AudioCacheReadTokens returns the value of the "audio_cache_read_tokens" field in the mutation.
++func (m *UsageLogMutation) AudioCacheReadTokens() (r int, exists bool) {
++	v := m.audio_cache_read_tokens
++	if v == nil {
++		return
++	}
++	return *v, true
++}
++
++// OldAudioCacheReadTokens returns the old "audio_cache_read_tokens" field's value of the UsageLog entity.
++// If the UsageLog object wasn't provided to the builder, the object is fetched from the database.
++// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
++func (m *UsageLogMutation) OldAudioCacheReadTokens(ctx context.Context) (v int, err error) {
++	if !m.op.Is(OpUpdateOne) {
++		return v, errors.New("OldAudioCacheReadTokens is only allowed on UpdateOne operations")
++	}
++	if m.id == nil || m.oldValue == nil {
++		return v, errors.New("OldAudioCacheReadTokens requires an ID field in the mutation")
++	}
++	oldValue, err := m.oldValue(ctx)
++	if err != nil {
++		return v, fmt.Errorf("querying old value for OldAudioCacheReadTokens: %w", err)
++	}
++	return oldValue.AudioCacheReadTokens, nil
++}
++
++// AddAudioCacheReadTokens adds i to the "audio_cache_read_tokens" field.
++func (m *UsageLogMutation) AddAudioCacheReadTokens(i int) {
++	if m.addaudio_cache_read_tokens != nil {
++		*m.addaudio_cache_read_tokens += i
++	} else {
++		m.addaudio_cache_read_tokens = &i
++	}
++}
++
++// AddedAudioCacheReadTokens returns the value that was added to the "audio_cache_read_tokens" field in this mutation.
++func (m *UsageLogMutation) AddedAudioCacheReadTokens() (r int, exists bool) {
++	v := m.addaudio_cache_read_tokens
++	if v == nil {
++		return
++	}
++	return *v, true
++}
++
++// ResetAudioCacheReadTokens resets all changes to the "audio_cache_read_tokens" field.
++func (m *UsageLogMutation) ResetAudioCacheReadTokens() {
++	m.audio_cache_read_tokens = nil
++	m.addaudio_cache_read_tokens = nil
++}
++
+ // SetCacheCreation5mTokens sets the "cache_creation_5m_tokens" field.
+ func (m *UsageLogMutation) SetCacheCreation5mTokens(i int) {
+ 	m.cache_creation_5m_tokens = &i
+@@ -37320,7 +37552,7 @@ func (m *UsageLogMutation) Type() string {
+ // order to get all numeric fields that were incremented/decremented, call
+ // AddedFields().
+ func (m *UsageLogMutation) Fields() []string {
+-	fields := make([]string, 0, 41)
++	fields := make([]string, 0, 45)
+ 	if m.user != nil {
+ 		fields = append(fields, usagelog.FieldUserID)
+ 	}
+@@ -37372,6 +37604,18 @@ func (m *UsageLogMutation) Fields() []string {
+ 	if m.cache_read_tokens != nil {
+ 		fields = append(fields, usagelog.FieldCacheReadTokens)
+ 	}
++	if m.audio_input_tokens != nil {
++		fields = append(fields, usagelog.FieldAudioInputTokens)
++	}
++	if m.audio_output_tokens != nil {
++		fields = append(fields, usagelog.FieldAudioOutputTokens)
++	}
++	if m.audio_cache_creation_tokens != nil {
++		fields = append(fields, usagelog.FieldAudioCacheCreationTokens)
++	}
++	if m.audio_cache_read_tokens != nil {
++		fields = append(fields, usagelog.FieldAudioCacheReadTokens)
++	}
+ 	if m.cache_creation_5m_tokens != nil {
+ 		fields = append(fields, usagelog.FieldCacheCreation5mTokens)
+ 	}
+@@ -37486,6 +37730,14 @@ func (m *UsageLogMutation) Field(name string) (ent.Value, bool) {
+ 		return m.CacheCreationTokens()
+ 	case usagelog.FieldCacheReadTokens:
+ 		return m.CacheReadTokens()
++	case usagelog.FieldAudioInputTokens:
++		return m.AudioInputTokens()
++	case usagelog.FieldAudioOutputTokens:
++		return m.AudioOutputTokens()
++	case usagelog.FieldAudioCacheCreationTokens:
++		return m.AudioCacheCreationTokens()
++	case usagelog.FieldAudioCacheReadTokens:
++		return m.AudioCacheReadTokens()
+ 	case usagelog.FieldCacheCreation5mTokens:
+ 		return m.CacheCreation5mTokens()
+ 	case usagelog.FieldCacheCreation1hTokens:
+@@ -37577,6 +37829,14 @@ func (m *UsageLogMutation) OldField(ctx context.Context, name string) (ent.Value
+ 		return m.OldCacheCreationTokens(ctx)
+ 	case usagelog.FieldCacheReadTokens:
+ 		return m.OldCacheReadTokens(ctx)
++	case usagelog.FieldAudioInputTokens:
++		return m.OldAudioInputTokens(ctx)
++	case usagelog.FieldAudioOutputTokens:
++		return m.OldAudioOutputTokens(ctx)
++	case usagelog.FieldAudioCacheCreationTokens:
++		return m.OldAudioCacheCreationTokens(ctx)
++	case usagelog.FieldAudioCacheReadTokens:
++		return m.OldAudioCacheReadTokens(ctx)
+ 	case usagelog.FieldCacheCreation5mTokens:
+ 		return m.OldCacheCreation5mTokens(ctx)
+ 	case usagelog.FieldCacheCreation1hTokens:
+@@ -37753,6 +38013,34 @@ func (m *UsageLogMutation) SetField(name string, value ent.Value) error {
+ 		}
+ 		m.SetCacheReadTokens(v)
+ 		return nil
++	case usagelog.FieldAudioInputTokens:
++		v, ok := value.(int)
++		if !ok {
++			return fmt.Errorf("unexpected type %T for field %s", value, name)
++		}
++		m.SetAudioInputTokens(v)
++		return nil
++	case usagelog.FieldAudioOutputTokens:
++		v, ok := value.(int)
++		if !ok {
++			return fmt.Errorf("unexpected type %T for field %s", value, name)
++		}
++		m.SetAudioOutputTokens(v)
++		return nil
++	case usagelog.FieldAudioCacheCreationTokens:
++		v, ok := value.(int)
++		if !ok {
++			return fmt.Errorf("unexpected type %T for field %s", value, name)
++		}
++		m.SetAudioCacheCreationTokens(v)
++		return nil
++	case usagelog.FieldAudioCacheReadTokens:
++		v, ok := value.(int)
++		if !ok {
++			return fmt.Errorf("unexpected type %T for field %s", value, name)
++		}
++		m.SetAudioCacheReadTokens(v)
++		return nil
+ 	case usagelog.FieldCacheCreation5mTokens:
+ 		v, ok := value.(int)
+ 		if !ok {
+@@ -37944,6 +38232,18 @@ func (m *UsageLogMutation) AddedFields() []string {
+ 	if m.addcache_read_tokens != nil {
+ 		fields = append(fields, usagelog.FieldCacheReadTokens)
+ 	}
++	if m.addaudio_input_tokens != nil {
++		fields = append(fields, usagelog.FieldAudioInputTokens)
++	}
++	if m.addaudio_output_tokens != nil {
++		fields = append(fields, usagelog.FieldAudioOutputTokens)
++	}
++	if m.addaudio_cache_creation_tokens != nil {
++		fields = append(fields, usagelog.FieldAudioCacheCreationTokens)
++	}
++	if m.addaudio_cache_read_tokens != nil {
++		fields = append(fields, usagelog.FieldAudioCacheReadTokens)
++	}
+ 	if m.addcache_creation_5m_tokens != nil {
+ 		fields = append(fields, usagelog.FieldCacheCreation5mTokens)
+ 	}
+@@ -38004,6 +38304,14 @@ func (m *UsageLogMutation) AddedField(name string) (ent.Value, bool) {
+ 		return m.AddedCacheCreationTokens()
+ 	case usagelog.FieldCacheReadTokens:
+ 		return m.AddedCacheReadTokens()
++	case usagelog.FieldAudioInputTokens:
++		return m.AddedAudioInputTokens()
++	case usagelog.FieldAudioOutputTokens:
++		return m.AddedAudioOutputTokens()
++	case usagelog.FieldAudioCacheCreationTokens:
++		return m.AddedAudioCacheCreationTokens()
++	case usagelog.FieldAudioCacheReadTokens:
++		return m.AddedAudioCacheReadTokens()
+ 	case usagelog.FieldCacheCreation5mTokens:
+ 		return m.AddedCacheCreation5mTokens()
+ 	case usagelog.FieldCacheCreation1hTokens:
+@@ -38076,6 +38384,34 @@ func (m *UsageLogMutation) AddField(name string, value ent.Value) error {
+ 		}
+ 		m.AddCacheReadTokens(v)
+ 		return nil
++	case usagelog.FieldAudioInputTokens:
++		v, ok := value.(int)
++		if !ok {
++			return fmt.Errorf("unexpected type %T for field %s", value, name)
++		}
++		m.AddAudioInputTokens(v)
++		return nil
++	case usagelog.FieldAudioOutputTokens:
++		v, ok := value.(int)
++		if !ok {
++			return fmt.Errorf("unexpected type %T for field %s", value, name)
++		}
++		m.AddAudioOutputTokens(v)
++		return nil
++	case usagelog.FieldAudioCacheCreationTokens:
++		v, ok := value.(int)
++		if !ok {
++			return fmt.Errorf("unexpected type %T for field %s", value, name)
++		}
++		m.AddAudioCacheCreationTokens(v)
++		return nil
++	case usagelog.FieldAudioCacheReadTokens:
++		v, ok := value.(int)
++		if !ok {
++			return fmt.Errorf("unexpected type %T for field %s", value, name)
++		}
++		m.AddAudioCacheReadTokens(v)
++		return nil
+ 	case usagelog.FieldCacheCreation5mTokens:
+ 		v, ok := value.(int)
+ 		if !ok {
+@@ -38363,6 +38699,18 @@ func (m *UsageLogMutation) ResetField(name string) error {
+ 	case usagelog.FieldCacheReadTokens:
+ 		m.ResetCacheReadTokens()
+ 		return nil
++	case usagelog.FieldAudioInputTokens:
++		m.ResetAudioInputTokens()
++		return nil
++	case usagelog.FieldAudioOutputTokens:
++		m.ResetAudioOutputTokens()
++		return nil
++	case usagelog.FieldAudioCacheCreationTokens:
++		m.ResetAudioCacheCreationTokens()
++		return nil
++	case usagelog.FieldAudioCacheReadTokens:
++		m.ResetAudioCacheReadTokens()
++		return nil
+ 	case usagelog.FieldCacheCreation5mTokens:
+ 		m.ResetCacheCreation5mTokens()
+ 		return nil
+diff --git a/backend/ent/runtime/runtime.go b/backend/ent/runtime/runtime.go
+index 09d2a85f..d8d239fd 100644
+--- a/backend/ent/runtime/runtime.go
++++ b/backend/ent/runtime/runtime.go
+@@ -1689,84 +1689,100 @@ func init() {
+ 	usagelogDescCacheReadTokens := usagelogFields[16].Descriptor()
+ 	// usagelog.DefaultCacheReadTokens holds the default value on creation for the cache_read_tokens field.
+ 	usagelog.DefaultCacheReadTokens = usagelogDescCacheReadTokens.Default.(int)
++	// usagelogDescAudioInputTokens is the schema descriptor for audio_input_tokens field.
++	usagelogDescAudioInputTokens := usagelogFields[17].Descriptor()
++	// usagelog.DefaultAudioInputTokens holds the default value on creation for the audio_input_tokens field.
++	usagelog.DefaultAudioInputTokens = usagelogDescAudioInputTokens.Default.(int)
++	// usagelogDescAudioOutputTokens is the schema descriptor for audio_output_tokens field.
++	usagelogDescAudioOutputTokens := usagelogFields[18].Descriptor()
++	// usagelog.DefaultAudioOutputTokens holds the default value on creation for the audio_output_tokens field.
++	usagelog.DefaultAudioOutputTokens = usagelogDescAudioOutputTokens.Default.(int)
++	// usagelogDescAudioCacheCreationTokens is the schema descriptor for audio_cache_creation_tokens field.
++	usagelogDescAudioCacheCreationTokens := usagelogFields[19].Descriptor()
++	// usagelog.DefaultAudioCacheCreationTokens holds the default value on creation for the audio_cache_creation_tokens field.
++	usagelog.DefaultAudioCacheCreationTokens = usagelogDescAudioCacheCreationTokens.Default.(int)
++	// usagelogDescAudioCacheReadTokens is the schema descriptor for audio_cache_read_tokens field.
++	usagelogDescAudioCacheReadTokens := usagelogFields[20].Descriptor()
++	// usagelog.DefaultAudioCacheReadTokens holds the default value on creation for the audio_cache_read_tokens field.
++	usagelog.DefaultAudioCacheReadTokens = usagelogDescAudioCacheReadTokens.Default.(int)
+ 	// usagelogDescCacheCreation5mTokens is the schema descriptor for cache_creation_5m_tokens field.
+-	usagelogDescCacheCreation5mTokens := usagelogFields[17].Descriptor()
++	usagelogDescCacheCreation5mTokens := usagelogFields[21].Descriptor()
+ 	// usagelog.DefaultCacheCreation5mTokens holds the default value on creation for the cache_creation_5m_tokens field.
+ 	usagelog.DefaultCacheCreation5mTokens = usagelogDescCacheCreation5mTokens.Default.(int)
+ 	// usagelogDescCacheCreation1hTokens is the schema descriptor for cache_creation_1h_tokens field.
+-	usagelogDescCacheCreation1hTokens := usagelogFields[18].Descriptor()
++	usagelogDescCacheCreation1hTokens := usagelogFields[22].Descriptor()
+ 	// usagelog.DefaultCacheCreation1hTokens holds the default value on creation for the cache_creation_1h_tokens field.
+ 	usagelog.DefaultCacheCreation1hTokens = usagelogDescCacheCreation1hTokens.Default.(int)
+ 	// usagelogDescInputCost is the schema descriptor for input_cost field.
+-	usagelogDescInputCost := usagelogFields[19].Descriptor()
++	usagelogDescInputCost := usagelogFields[23].Descriptor()
+ 	// usagelog.DefaultInputCost holds the default value on creation for the input_cost field.
+ 	usagelog.DefaultInputCost = usagelogDescInputCost.Default.(float64)
+ 	// usagelogDescOutputCost is the schema descriptor for output_cost field.
+-	usagelogDescOutputCost := usagelogFields[20].Descriptor()
++	usagelogDescOutputCost := usagelogFields[24].Descriptor()
+ 	// usagelog.DefaultOutputCost holds the default value on creation for the output_cost field.
+ 	usagelog.DefaultOutputCost = usagelogDescOutputCost.Default.(float64)
+ 	// usagelogDescCacheCreationCost is the schema descriptor for cache_creation_cost field.
+-	usagelogDescCacheCreationCost := usagelogFields[21].Descriptor()
++	usagelogDescCacheCreationCost := usagelogFields[25].Descriptor()
+ 	// usagelog.DefaultCacheCreationCost holds the default value on creation for the cache_creation_cost field.
+ 	usagelog.DefaultCacheCreationCost = usagelogDescCacheCreationCost.Default.(float64)
+ 	// usagelogDescCacheReadCost is the schema descriptor for cache_read_cost field.
+-	usagelogDescCacheReadCost := usagelogFields[22].Descriptor()
++	usagelogDescCacheReadCost := usagelogFields[26].Descriptor()
+ 	// usagelog.DefaultCacheReadCost holds the default value on creation for the cache_read_cost field.
+ 	usagelog.DefaultCacheReadCost = usagelogDescCacheReadCost.Default.(float64)
+ 	// usagelogDescTotalCost is the schema descriptor for total_cost field.
+-	usagelogDescTotalCost := usagelogFields[23].Descriptor()
++	usagelogDescTotalCost := usagelogFields[27].Descriptor()
+ 	// usagelog.DefaultTotalCost holds the default value on creation for the total_cost field.
+ 	usagelog.DefaultTotalCost = usagelogDescTotalCost.Default.(float64)
+ 	// usagelogDescActualCost is the schema descriptor for actual_cost field.
+-	usagelogDescActualCost := usagelogFields[24].Descriptor()
++	usagelogDescActualCost := usagelogFields[28].Descriptor()
+ 	// usagelog.DefaultActualCost holds the default value on creation for the actual_cost field.
+ 	usagelog.DefaultActualCost = usagelogDescActualCost.Default.(float64)
+ 	// usagelogDescRateMultiplier is the schema descriptor for rate_multiplier field.
+-	usagelogDescRateMultiplier := usagelogFields[25].Descriptor()
++	usagelogDescRateMultiplier := usagelogFields[29].Descriptor()
+ 	// usagelog.DefaultRateMultiplier holds the default value on creation for the rate_multiplier field.
+ 	usagelog.DefaultRateMultiplier = usagelogDescRateMultiplier.Default.(float64)
+ 	// usagelogDescBillingType is the schema descriptor for billing_type field.
+-	usagelogDescBillingType := usagelogFields[27].Descriptor()
++	usagelogDescBillingType := usagelogFields[31].Descriptor()
+ 	// usagelog.DefaultBillingType holds the default value on creation for the billing_type field.
+ 	usagelog.DefaultBillingType = usagelogDescBillingType.Default.(int8)
+ 	// usagelogDescStream is the schema descriptor for stream field.
+-	usagelogDescStream := usagelogFields[28].Descriptor()
++	usagelogDescStream := usagelogFields[32].Descriptor()
+ 	// usagelog.DefaultStream holds the default value on creation for the stream field.
+ 	usagelog.DefaultStream = usagelogDescStream.Default.(bool)
+ 	// usagelogDescUserAgent is the schema descriptor for user_agent field.
+-	usagelogDescUserAgent := usagelogFields[31].Descriptor()
++	usagelogDescUserAgent := usagelogFields[35].Descriptor()
+ 	// usagelog.UserAgentValidator is a validator for the "user_agent" field. It is called by the builders before save.
+ 	usagelog.UserAgentValidator = usagelogDescUserAgent.Validators[0].(func(string) error)
+ 	// usagelogDescIPAddress is the schema descriptor for ip_address field.
+-	usagelogDescIPAddress := usagelogFields[32].Descriptor()
++	usagelogDescIPAddress := usagelogFields[36].Descriptor()
+ 	// usagelog.IPAddressValidator is a validator for the "ip_address" field. It is called by the builders before save.
+ 	usagelog.IPAddressValidator = usagelogDescIPAddress.Validators[0].(func(string) error)
+ 	// usagelogDescImageCount is the schema descriptor for image_count field.
+-	usagelogDescImageCount := usagelogFields[33].Descriptor()
++	usagelogDescImageCount := usagelogFields[37].Descriptor()
+ 	// usagelog.DefaultImageCount holds the default value on creation for the image_count field.
+ 	usagelog.DefaultImageCount = usagelogDescImageCount.Default.(int)
+ 	// usagelogDescImageSize is the schema descriptor for image_size field.
+-	usagelogDescImageSize := usagelogFields[34].Descriptor()
++	usagelogDescImageSize := usagelogFields[38].Descriptor()
+ 	// usagelog.ImageSizeValidator is a validator for the "image_size" field. It is called by the builders before save.
+ 	usagelog.ImageSizeValidator = usagelogDescImageSize.Validators[0].(func(string) error)
+ 	// usagelogDescImageInputSize is the schema descriptor for image_input_size field.
+-	usagelogDescImageInputSize := usagelogFields[35].Descriptor()
++	usagelogDescImageInputSize := usagelogFields[39].Descriptor()
+ 	// usagelog.ImageInputSizeValidator is a validator for the "image_input_size" field. It is called by the builders before save.
+ 	usagelog.ImageInputSizeValidator = usagelogDescImageInputSize.Validators[0].(func(string) error)
+ 	// usagelogDescImageOutputSize is the schema descriptor for image_output_size field.
+-	usagelogDescImageOutputSize := usagelogFields[36].Descriptor()
++	usagelogDescImageOutputSize := usagelogFields[40].Descriptor()
+ 	// usagelog.ImageOutputSizeValidator is a validator for the "image_output_size" field. It is called by the builders before save.
+ 	usagelog.ImageOutputSizeValidator = usagelogDescImageOutputSize.Validators[0].(func(string) error)
+ 	// usagelogDescImageSizeSource is the schema descriptor for image_size_source field.
+-	usagelogDescImageSizeSource := usagelogFields[37].Descriptor()
++	usagelogDescImageSizeSource := usagelogFields[41].Descriptor()
+ 	// usagelog.ImageSizeSourceValidator is a validator for the "image_size_source" field. It is called by the builders before save.
+ 	usagelog.ImageSizeSourceValidator = usagelogDescImageSizeSource.Validators[0].(func(string) error)
+ 	// usagelogDescCacheTTLOverridden is the schema descriptor for cache_ttl_overridden field.
+-	usagelogDescCacheTTLOverridden := usagelogFields[39].Descriptor()
++	usagelogDescCacheTTLOverridden := usagelogFields[43].Descriptor()
+ 	// usagelog.DefaultCacheTTLOverridden holds the default value on creation for the cache_ttl_overridden field.
+ 	usagelog.DefaultCacheTTLOverridden = usagelogDescCacheTTLOverridden.Default.(bool)
+ 	// usagelogDescCreatedAt is the schema descriptor for created_at field.
+-	usagelogDescCreatedAt := usagelogFields[40].Descriptor()
++	usagelogDescCreatedAt := usagelogFields[44].Descriptor()
+ 	// usagelog.DefaultCreatedAt holds the default value on creation for the created_at field.
+ 	usagelog.DefaultCreatedAt = usagelogDescCreatedAt.Default.(func() time.Time)
+ 	userMixin := schema.User{}.Mixin()
+diff --git a/backend/ent/schema/usage_log.go b/backend/ent/schema/usage_log.go
+index db9e5178..53090965 100644
+--- a/backend/ent/schema/usage_log.go
++++ b/backend/ent/schema/usage_log.go
+@@ -73,6 +73,14 @@ func (UsageLog) Fields() []ent.Field {
+ 			Default(0),
+ 		field.Int("cache_read_tokens").
+ 			Default(0),
++		field.Int("audio_input_tokens").
++			Default(0),
++		field.Int("audio_output_tokens").
++			Default(0),
++		field.Int("audio_cache_creation_tokens").
++			Default(0),
++		field.Int("audio_cache_read_tokens").
++			Default(0),
+ 		field.Int("cache_creation_5m_tokens").
+ 			Default(0),
+ 		field.Int("cache_creation_1h_tokens").
+diff --git a/backend/ent/usagelog.go b/backend/ent/usagelog.go
+index 283fe828..e318134e 100644
+--- a/backend/ent/usagelog.go
++++ b/backend/ent/usagelog.go
+@@ -57,6 +57,14 @@ type UsageLog struct {
+ 	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
+ 	// CacheReadTokens holds the value of the "cache_read_tokens" field.
+ 	CacheReadTokens int `json:"cache_read_tokens,omitempty"`
++	// AudioInputTokens holds the value of the "audio_input_tokens" field.
++	AudioInputTokens int `json:"audio_input_tokens,omitempty"`
++	// AudioOutputTokens holds the value of the "audio_output_tokens" field.
++	AudioOutputTokens int `json:"audio_output_tokens,omitempty"`
++	// AudioCacheCreationTokens holds the value of the "audio_cache_creation_tokens" field.
++	AudioCacheCreationTokens int `json:"audio_cache_creation_tokens,omitempty"`
++	// AudioCacheReadTokens holds the value of the "audio_cache_read_tokens" field.
++	AudioCacheReadTokens int `json:"audio_cache_read_tokens,omitempty"`
+ 	// CacheCreation5mTokens holds the value of the "cache_creation_5m_tokens" field.
+ 	CacheCreation5mTokens int `json:"cache_creation_5m_tokens,omitempty"`
+ 	// CacheCreation1hTokens holds the value of the "cache_creation_1h_tokens" field.
+@@ -194,7 +202,7 @@ func (*UsageLog) scanValues(columns []string) ([]any, error) {
+ 			values[i] = new(sql.NullBool)
+ 		case usagelog.FieldInputCost, usagelog.FieldOutputCost, usagelog.FieldCacheCreationCost, usagelog.FieldCacheReadCost, usagelog.FieldTotalCost, usagelog.FieldActualCost, usagelog.FieldRateMultiplier, usagelog.FieldAccountRateMultiplier:
+ 			values[i] = new(sql.NullFloat64)
+-		case usagelog.FieldID, usagelog.FieldUserID, usagelog.FieldAPIKeyID, usagelog.FieldAccountID, usagelog.FieldChannelID, usagelog.FieldGroupID, usagelog.FieldSubscriptionID, usagelog.FieldInputTokens, usagelog.FieldOutputTokens, usagelog.FieldCacheCreationTokens, usagelog.FieldCacheReadTokens, usagelog.FieldCacheCreation5mTokens, usagelog.FieldCacheCreation1hTokens, usagelog.FieldBillingType, usagelog.FieldDurationMs, usagelog.FieldFirstTokenMs, usagelog.FieldImageCount:
++		case usagelog.FieldID, usagelog.FieldUserID, usagelog.FieldAPIKeyID, usagelog.FieldAccountID, usagelog.FieldChannelID, usagelog.FieldGroupID, usagelog.FieldSubscriptionID, usagelog.FieldInputTokens, usagelog.FieldOutputTokens, usagelog.FieldCacheCreationTokens, usagelog.FieldCacheReadTokens, usagelog.FieldAudioInputTokens, usagelog.FieldAudioOutputTokens, usagelog.FieldAudioCacheCreationTokens, usagelog.FieldAudioCacheReadTokens, usagelog.FieldCacheCreation5mTokens, usagelog.FieldCacheCreation1hTokens, usagelog.FieldBillingType, usagelog.FieldDurationMs, usagelog.FieldFirstTokenMs, usagelog.FieldImageCount:
+ 			values[i] = new(sql.NullInt64)
+ 		case usagelog.FieldRequestID, usagelog.FieldModel, usagelog.FieldRequestedModel, usagelog.FieldUpstreamModel, usagelog.FieldModelMappingChain, usagelog.FieldBillingTier, usagelog.FieldBillingMode, usagelog.FieldUserAgent, usagelog.FieldIPAddress, usagelog.FieldImageSize, usagelog.FieldImageInputSize, usagelog.FieldImageOutputSize, usagelog.FieldImageSizeSource:
+ 			values[i] = new(sql.NullString)
+@@ -331,6 +339,30 @@ func (_m *UsageLog) assignValues(columns []string, values []any) error {
+ 			} else if value.Valid {
+ 				_m.CacheReadTokens = int(value.Int64)
+ 			}
++		case usagelog.FieldAudioInputTokens:
++			if value, ok := values[i].(*sql.NullInt64); !ok {
++				return fmt.Errorf("unexpected type %T for field audio_input_tokens", values[i])
++			} else if value.Valid {
++				_m.AudioInputTokens = int(value.Int64)
++			}
++		case usagelog.FieldAudioOutputTokens:
++			if value, ok := values[i].(*sql.NullInt64); !ok {
++				return fmt.Errorf("unexpected type %T for field audio_output_tokens", values[i])
++			} else if value.Valid {
++				_m.AudioOutputTokens = int(value.Int64)
++			}
++		case usagelog.FieldAudioCacheCreationTokens:
++			if value, ok := values[i].(*sql.NullInt64); !ok {
++				return fmt.Errorf("unexpected type %T for field audio_cache_creation_tokens", values[i])
++			} else if value.Valid {
++				_m.AudioCacheCreationTokens = int(value.Int64)
++			}
++		case usagelog.FieldAudioCacheReadTokens:
++			if value, ok := values[i].(*sql.NullInt64); !ok {
++				return fmt.Errorf("unexpected type %T for field audio_cache_read_tokens", values[i])
++			} else if value.Valid {
++				_m.AudioCacheReadTokens = int(value.Int64)
++			}
+ 		case usagelog.FieldCacheCreation5mTokens:
+ 			if value, ok := values[i].(*sql.NullInt64); !ok {
+ 				return fmt.Errorf("unexpected type %T for field cache_creation_5m_tokens", values[i])
+@@ -614,6 +646,18 @@ func (_m *UsageLog) String() string {
+ 	builder.WriteString("cache_read_tokens=")
+ 	builder.WriteString(fmt.Sprintf("%v", _m.CacheReadTokens))
+ 	builder.WriteString(", ")
++	builder.WriteString("audio_input_tokens=")
++	builder.WriteString(fmt.Sprintf("%v", _m.AudioInputTokens))
++	builder.WriteString(", ")
++	builder.WriteString("audio_output_tokens=")
++	builder.WriteString(fmt.Sprintf("%v", _m.AudioOutputTokens))
++	builder.WriteString(", ")
++	builder.WriteString("audio_cache_creation_tokens=")
++	builder.WriteString(fmt.Sprintf("%v", _m.AudioCacheCreationTokens))
++	builder.WriteString(", ")
++	builder.WriteString("audio_cache_read_tokens=")
++	builder.WriteString(fmt.Sprintf("%v", _m.AudioCacheReadTokens))
++	builder.WriteString(", ")
+ 	builder.WriteString("cache_creation_5m_tokens=")
+ 	builder.WriteString(fmt.Sprintf("%v", _m.CacheCreation5mTokens))
+ 	builder.WriteString(", ")
+diff --git a/backend/ent/usagelog/usagelog.go b/backend/ent/usagelog/usagelog.go
+index 297e0b41..56470f9f 100644
+--- a/backend/ent/usagelog/usagelog.go
++++ b/backend/ent/usagelog/usagelog.go
+@@ -48,6 +48,14 @@ const (
+ 	FieldCacheCreationTokens = "cache_creation_tokens"
+ 	// FieldCacheReadTokens holds the string denoting the cache_read_tokens field in the database.
+ 	FieldCacheReadTokens = "cache_read_tokens"
++	// FieldAudioInputTokens holds the string denoting the audio_input_tokens field in the database.
++	FieldAudioInputTokens = "audio_input_tokens"
++	// FieldAudioOutputTokens holds the string denoting the audio_output_tokens field in the database.
++	FieldAudioOutputTokens = "audio_output_tokens"
++	// FieldAudioCacheCreationTokens holds the string denoting the audio_cache_creation_tokens field in the database.
++	FieldAudioCacheCreationTokens = "audio_cache_creation_tokens"
++	// FieldAudioCacheReadTokens holds the string denoting the audio_cache_read_tokens field in the database.
++	FieldAudioCacheReadTokens = "audio_cache_read_tokens"
+ 	// FieldCacheCreation5mTokens holds the string denoting the cache_creation_5m_tokens field in the database.
+ 	FieldCacheCreation5mTokens = "cache_creation_5m_tokens"
+ 	// FieldCacheCreation1hTokens holds the string denoting the cache_creation_1h_tokens field in the database.
+@@ -165,6 +173,10 @@ var Columns = []string{
+ 	FieldOutputTokens,
+ 	FieldCacheCreationTokens,
+ 	FieldCacheReadTokens,
++	FieldAudioInputTokens,
++	FieldAudioOutputTokens,
++	FieldAudioCacheCreationTokens,
++	FieldAudioCacheReadTokens,
+ 	FieldCacheCreation5mTokens,
+ 	FieldCacheCreation1hTokens,
+ 	FieldInputCost,
+@@ -224,6 +236,14 @@ var (
+ 	DefaultCacheCreationTokens int
+ 	// DefaultCacheReadTokens holds the default value on creation for the "cache_read_tokens" field.
+ 	DefaultCacheReadTokens int
++	// DefaultAudioInputTokens holds the default value on creation for the "audio_input_tokens" field.
++	DefaultAudioInputTokens int
++	// DefaultAudioOutputTokens holds the default value on creation for the "audio_output_tokens" field.
++	DefaultAudioOutputTokens int
++	// DefaultAudioCacheCreationTokens holds the default value on creation for the "audio_cache_creation_tokens" field.
++	DefaultAudioCacheCreationTokens int
++	// DefaultAudioCacheReadTokens holds the default value on creation for the "audio_cache_read_tokens" field.
++	DefaultAudioCacheReadTokens int
+ 	// DefaultCacheCreation5mTokens holds the default value on creation for the "cache_creation_5m_tokens" field.
+ 	DefaultCacheCreation5mTokens int
+ 	// DefaultCacheCreation1hTokens holds the default value on creation for the "cache_creation_1h_tokens" field.
+@@ -359,6 +379,26 @@ func ByCacheReadTokens(opts ...sql.OrderTermOption) OrderOption {
+ 	return sql.OrderByField(FieldCacheReadTokens, opts...).ToFunc()
+ }
+ 
++// ByAudioInputTokens orders the results by the audio_input_tokens field.
++func ByAudioInputTokens(opts ...sql.OrderTermOption) OrderOption {
++	return sql.OrderByField(FieldAudioInputTokens, opts...).ToFunc()
++}
++
++// ByAudioOutputTokens orders the results by the audio_output_tokens field.
++func ByAudioOutputTokens(opts ...sql.OrderTermOption) OrderOption {
++	return sql.OrderByField(FieldAudioOutputTokens, opts...).ToFunc()
++}
++
++// ByAudioCacheCreationTokens orders the results by the audio_cache_creation_tokens field.
++func ByAudioCacheCreationTokens(opts ...sql.OrderTermOption) OrderOption {
++	return sql.OrderByField(FieldAudioCacheCreationTokens, opts...).ToFunc()
++}
++
++// ByAudioCacheReadTokens orders the results by the audio_cache_read_tokens field.
++func ByAudioCacheReadTokens(opts ...sql.OrderTermOption) OrderOption {
++	return sql.OrderByField(FieldAudioCacheReadTokens, opts...).ToFunc()
++}
++
+ // ByCacheCreation5mTokens orders the results by the cache_creation_5m_tokens field.
+ func ByCacheCreation5mTokens(opts ...sql.OrderTermOption) OrderOption {
+ 	return sql.OrderByField(FieldCacheCreation5mTokens, opts...).ToFunc()
+diff --git a/backend/ent/usagelog/where.go b/backend/ent/usagelog/where.go
+index 2987f179..87668e28 100644
+--- a/backend/ent/usagelog/where.go
++++ b/backend/ent/usagelog/where.go
+@@ -140,6 +140,26 @@ func CacheReadTokens(v int) predicate.UsageLog {
+ 	return predicate.UsageLog(sql.FieldEQ(FieldCacheReadTokens, v))
+ }
+ 
++// AudioInputTokens applies equality check predicate on the "audio_input_tokens" field. It's identical to AudioInputTokensEQ.
++func AudioInputTokens(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldEQ(FieldAudioInputTokens, v))
++}
++
++// AudioOutputTokens applies equality check predicate on the "audio_output_tokens" field. It's identical to AudioOutputTokensEQ.
++func AudioOutputTokens(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldEQ(FieldAudioOutputTokens, v))
++}
++
++// AudioCacheCreationTokens applies equality check predicate on the "audio_cache_creation_tokens" field. It's identical to AudioCacheCreationTokensEQ.
++func AudioCacheCreationTokens(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldEQ(FieldAudioCacheCreationTokens, v))
++}
++
++// AudioCacheReadTokens applies equality check predicate on the "audio_cache_read_tokens" field. It's identical to AudioCacheReadTokensEQ.
++func AudioCacheReadTokens(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldEQ(FieldAudioCacheReadTokens, v))
++}
++
+ // CacheCreation5mTokens applies equality check predicate on the "cache_creation_5m_tokens" field. It's identical to CacheCreation5mTokensEQ.
+ func CacheCreation5mTokens(v int) predicate.UsageLog {
+ 	return predicate.UsageLog(sql.FieldEQ(FieldCacheCreation5mTokens, v))
+@@ -1090,6 +1110,166 @@ func CacheReadTokensLTE(v int) predicate.UsageLog {
+ 	return predicate.UsageLog(sql.FieldLTE(FieldCacheReadTokens, v))
+ }
+ 
++// AudioInputTokensEQ applies the EQ predicate on the "audio_input_tokens" field.
++func AudioInputTokensEQ(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldEQ(FieldAudioInputTokens, v))
++}
++
++// AudioInputTokensNEQ applies the NEQ predicate on the "audio_input_tokens" field.
++func AudioInputTokensNEQ(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldNEQ(FieldAudioInputTokens, v))
++}
++
++// AudioInputTokensIn applies the In predicate on the "audio_input_tokens" field.
++func AudioInputTokensIn(vs ...int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldIn(FieldAudioInputTokens, vs...))
++}
++
++// AudioInputTokensNotIn applies the NotIn predicate on the "audio_input_tokens" field.
++func AudioInputTokensNotIn(vs ...int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldNotIn(FieldAudioInputTokens, vs...))
++}
++
++// AudioInputTokensGT applies the GT predicate on the "audio_input_tokens" field.
++func AudioInputTokensGT(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldGT(FieldAudioInputTokens, v))
++}
++
++// AudioInputTokensGTE applies the GTE predicate on the "audio_input_tokens" field.
++func AudioInputTokensGTE(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldGTE(FieldAudioInputTokens, v))
++}
++
++// AudioInputTokensLT applies the LT predicate on the "audio_input_tokens" field.
++func AudioInputTokensLT(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldLT(FieldAudioInputTokens, v))
++}
++
++// AudioInputTokensLTE applies the LTE predicate on the "audio_input_tokens" field.
++func AudioInputTokensLTE(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldLTE(FieldAudioInputTokens, v))
++}
++
++// AudioOutputTokensEQ applies the EQ predicate on the "audio_output_tokens" field.
++func AudioOutputTokensEQ(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldEQ(FieldAudioOutputTokens, v))
++}
++
++// AudioOutputTokensNEQ applies the NEQ predicate on the "audio_output_tokens" field.
++func AudioOutputTokensNEQ(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldNEQ(FieldAudioOutputTokens, v))
++}
++
++// AudioOutputTokensIn applies the In predicate on the "audio_output_tokens" field.
++func AudioOutputTokensIn(vs ...int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldIn(FieldAudioOutputTokens, vs...))
++}
++
++// AudioOutputTokensNotIn applies the NotIn predicate on the "audio_output_tokens" field.
++func AudioOutputTokensNotIn(vs ...int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldNotIn(FieldAudioOutputTokens, vs...))
++}
++
++// AudioOutputTokensGT applies the GT predicate on the "audio_output_tokens" field.
++func AudioOutputTokensGT(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldGT(FieldAudioOutputTokens, v))
++}
++
++// AudioOutputTokensGTE applies the GTE predicate on the "audio_output_tokens" field.
++func AudioOutputTokensGTE(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldGTE(FieldAudioOutputTokens, v))
++}
++
++// AudioOutputTokensLT applies the LT predicate on the "audio_output_tokens" field.
++func AudioOutputTokensLT(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldLT(FieldAudioOutputTokens, v))
++}
++
++// AudioOutputTokensLTE applies the LTE predicate on the "audio_output_tokens" field.
++func AudioOutputTokensLTE(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldLTE(FieldAudioOutputTokens, v))
++}
++
++// AudioCacheCreationTokensEQ applies the EQ predicate on the "audio_cache_creation_tokens" field.
++func AudioCacheCreationTokensEQ(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldEQ(FieldAudioCacheCreationTokens, v))
++}
++
++// AudioCacheCreationTokensNEQ applies the NEQ predicate on the "audio_cache_creation_tokens" field.
++func AudioCacheCreationTokensNEQ(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldNEQ(FieldAudioCacheCreationTokens, v))
++}
++
++// AudioCacheCreationTokensIn applies the In predicate on the "audio_cache_creation_tokens" field.
++func AudioCacheCreationTokensIn(vs ...int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldIn(FieldAudioCacheCreationTokens, vs...))
++}
++
++// AudioCacheCreationTokensNotIn applies the NotIn predicate on the "audio_cache_creation_tokens" field.
++func AudioCacheCreationTokensNotIn(vs ...int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldNotIn(FieldAudioCacheCreationTokens, vs...))
++}
++
++// AudioCacheCreationTokensGT applies the GT predicate on the "audio_cache_creation_tokens" field.
++func AudioCacheCreationTokensGT(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldGT(FieldAudioCacheCreationTokens, v))
++}
++
++// AudioCacheCreationTokensGTE applies the GTE predicate on the "audio_cache_creation_tokens" field.
++func AudioCacheCreationTokensGTE(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldGTE(FieldAudioCacheCreationTokens, v))
++}
++
++// AudioCacheCreationTokensLT applies the LT predicate on the "audio_cache_creation_tokens" field.
++func AudioCacheCreationTokensLT(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldLT(FieldAudioCacheCreationTokens, v))
++}
++
++// AudioCacheCreationTokensLTE applies the LTE predicate on the "audio_cache_creation_tokens" field.
++func AudioCacheCreationTokensLTE(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldLTE(FieldAudioCacheCreationTokens, v))
++}
++
++// AudioCacheReadTokensEQ applies the EQ predicate on the "audio_cache_read_tokens" field.
++func AudioCacheReadTokensEQ(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldEQ(FieldAudioCacheReadTokens, v))
++}
++
++// AudioCacheReadTokensNEQ applies the NEQ predicate on the "audio_cache_read_tokens" field.
++func AudioCacheReadTokensNEQ(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldNEQ(FieldAudioCacheReadTokens, v))
++}
++
++// AudioCacheReadTokensIn applies the In predicate on the "audio_cache_read_tokens" field.
++func AudioCacheReadTokensIn(vs ...int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldIn(FieldAudioCacheReadTokens, vs...))
++}
++
++// AudioCacheReadTokensNotIn applies the NotIn predicate on the "audio_cache_read_tokens" field.
++func AudioCacheReadTokensNotIn(vs ...int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldNotIn(FieldAudioCacheReadTokens, vs...))
++}
++
++// AudioCacheReadTokensGT applies the GT predicate on the "audio_cache_read_tokens" field.
++func AudioCacheReadTokensGT(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldGT(FieldAudioCacheReadTokens, v))
++}
++
++// AudioCacheReadTokensGTE applies the GTE predicate on the "audio_cache_read_tokens" field.
++func AudioCacheReadTokensGTE(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldGTE(FieldAudioCacheReadTokens, v))
++}
++
++// AudioCacheReadTokensLT applies the LT predicate on the "audio_cache_read_tokens" field.
++func AudioCacheReadTokensLT(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldLT(FieldAudioCacheReadTokens, v))
++}
++
++// AudioCacheReadTokensLTE applies the LTE predicate on the "audio_cache_read_tokens" field.
++func AudioCacheReadTokensLTE(v int) predicate.UsageLog {
++	return predicate.UsageLog(sql.FieldLTE(FieldAudioCacheReadTokens, v))
++}
++
+ // CacheCreation5mTokensEQ applies the EQ predicate on the "cache_creation_5m_tokens" field.
+ func CacheCreation5mTokensEQ(v int) predicate.UsageLog {
+ 	return predicate.UsageLog(sql.FieldEQ(FieldCacheCreation5mTokens, v))
+diff --git a/backend/ent/usagelog_create.go b/backend/ent/usagelog_create.go
+index 17e800f9..e0ab87a1 100644
+--- a/backend/ent/usagelog_create.go
++++ b/backend/ent/usagelog_create.go
+@@ -225,6 +225,62 @@ func (_c *UsageLogCreate) SetNillableCacheReadTokens(v *int) *UsageLogCreate {
+ 	return _c
+ }
+ 
++// SetAudioInputTokens sets the "audio_input_tokens" field.
++func (_c *UsageLogCreate) SetAudioInputTokens(v int) *UsageLogCreate {
++	_c.mutation.SetAudioInputTokens(v)
++	return _c
++}
++
++// SetNillableAudioInputTokens sets the "audio_input_tokens" field if the given value is not nil.
++func (_c *UsageLogCreate) SetNillableAudioInputTokens(v *int) *UsageLogCreate {
++	if v != nil {
++		_c.SetAudioInputTokens(*v)
++	}
++	return _c
++}
++
++// SetAudioOutputTokens sets the "audio_output_tokens" field.
++func (_c *UsageLogCreate) SetAudioOutputTokens(v int) *UsageLogCreate {
++	_c.mutation.SetAudioOutputTokens(v)
++	return _c
++}
++
++// SetNillableAudioOutputTokens sets the "audio_output_tokens" field if the given value is not nil.
++func (_c *UsageLogCreate) SetNillableAudioOutputTokens(v *int) *UsageLogCreate {
++	if v != nil {
++		_c.SetAudioOutputTokens(*v)
++	}
++	return _c
++}
++
++// SetAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field.
++func (_c *UsageLogCreate) SetAudioCacheCreationTokens(v int) *UsageLogCreate {
++	_c.mutation.SetAudioCacheCreationTokens(v)
++	return _c
++}
++
++// SetNillableAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field if the given value is not nil.
++func (_c *UsageLogCreate) SetNillableAudioCacheCreationTokens(v *int) *UsageLogCreate {
++	if v != nil {
++		_c.SetAudioCacheCreationTokens(*v)
++	}
++	return _c
++}
++
++// SetAudioCacheReadTokens sets the "audio_cache_read_tokens" field.
++func (_c *UsageLogCreate) SetAudioCacheReadTokens(v int) *UsageLogCreate {
++	_c.mutation.SetAudioCacheReadTokens(v)
++	return _c
++}
++
++// SetNillableAudioCacheReadTokens sets the "audio_cache_read_tokens" field if the given value is not nil.
++func (_c *UsageLogCreate) SetNillableAudioCacheReadTokens(v *int) *UsageLogCreate {
++	if v != nil {
++		_c.SetAudioCacheReadTokens(*v)
++	}
++	return _c
++}
++
+ // SetCacheCreation5mTokens sets the "cache_creation_5m_tokens" field.
+ func (_c *UsageLogCreate) SetCacheCreation5mTokens(v int) *UsageLogCreate {
+ 	_c.mutation.SetCacheCreation5mTokens(v)
+@@ -629,6 +685,22 @@ func (_c *UsageLogCreate) defaults() {
+ 		v := usagelog.DefaultCacheReadTokens
+ 		_c.mutation.SetCacheReadTokens(v)
+ 	}
++	if _, ok := _c.mutation.AudioInputTokens(); !ok {
++		v := usagelog.DefaultAudioInputTokens
++		_c.mutation.SetAudioInputTokens(v)
++	}
++	if _, ok := _c.mutation.AudioOutputTokens(); !ok {
++		v := usagelog.DefaultAudioOutputTokens
++		_c.mutation.SetAudioOutputTokens(v)
++	}
++	if _, ok := _c.mutation.AudioCacheCreationTokens(); !ok {
++		v := usagelog.DefaultAudioCacheCreationTokens
++		_c.mutation.SetAudioCacheCreationTokens(v)
++	}
++	if _, ok := _c.mutation.AudioCacheReadTokens(); !ok {
++		v := usagelog.DefaultAudioCacheReadTokens
++		_c.mutation.SetAudioCacheReadTokens(v)
++	}
+ 	if _, ok := _c.mutation.CacheCreation5mTokens(); !ok {
+ 		v := usagelog.DefaultCacheCreation5mTokens
+ 		_c.mutation.SetCacheCreation5mTokens(v)
+@@ -751,6 +823,18 @@ func (_c *UsageLogCreate) check() error {
+ 	if _, ok := _c.mutation.CacheReadTokens(); !ok {
+ 		return &ValidationError{Name: "cache_read_tokens", err: errors.New(`ent: missing required field "UsageLog.cache_read_tokens"`)}
+ 	}
++	if _, ok := _c.mutation.AudioInputTokens(); !ok {
++		return &ValidationError{Name: "audio_input_tokens", err: errors.New(`ent: missing required field "UsageLog.audio_input_tokens"`)}
++	}
++	if _, ok := _c.mutation.AudioOutputTokens(); !ok {
++		return &ValidationError{Name: "audio_output_tokens", err: errors.New(`ent: missing required field "UsageLog.audio_output_tokens"`)}
++	}
++	if _, ok := _c.mutation.AudioCacheCreationTokens(); !ok {
++		return &ValidationError{Name: "audio_cache_creation_tokens", err: errors.New(`ent: missing required field "UsageLog.audio_cache_creation_tokens"`)}
++	}
++	if _, ok := _c.mutation.AudioCacheReadTokens(); !ok {
++		return &ValidationError{Name: "audio_cache_read_tokens", err: errors.New(`ent: missing required field "UsageLog.audio_cache_read_tokens"`)}
++	}
+ 	if _, ok := _c.mutation.CacheCreation5mTokens(); !ok {
+ 		return &ValidationError{Name: "cache_creation_5m_tokens", err: errors.New(`ent: missing required field "UsageLog.cache_creation_5m_tokens"`)}
+ 	}
+@@ -907,6 +991,22 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
+ 		_spec.SetField(usagelog.FieldCacheReadTokens, field.TypeInt, value)
+ 		_node.CacheReadTokens = value
+ 	}
++	if value, ok := _c.mutation.AudioInputTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioInputTokens, field.TypeInt, value)
++		_node.AudioInputTokens = value
++	}
++	if value, ok := _c.mutation.AudioOutputTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioOutputTokens, field.TypeInt, value)
++		_node.AudioOutputTokens = value
++	}
++	if value, ok := _c.mutation.AudioCacheCreationTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioCacheCreationTokens, field.TypeInt, value)
++		_node.AudioCacheCreationTokens = value
++	}
++	if value, ok := _c.mutation.AudioCacheReadTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioCacheReadTokens, field.TypeInt, value)
++		_node.AudioCacheReadTokens = value
++	}
+ 	if value, ok := _c.mutation.CacheCreation5mTokens(); ok {
+ 		_spec.SetField(usagelog.FieldCacheCreation5mTokens, field.TypeInt, value)
+ 		_node.CacheCreation5mTokens = value
+@@ -1422,6 +1522,78 @@ func (u *UsageLogUpsert) AddCacheReadTokens(v int) *UsageLogUpsert {
+ 	return u
+ }
+ 
++// SetAudioInputTokens sets the "audio_input_tokens" field.
++func (u *UsageLogUpsert) SetAudioInputTokens(v int) *UsageLogUpsert {
++	u.Set(usagelog.FieldAudioInputTokens, v)
++	return u
++}
++
++// UpdateAudioInputTokens sets the "audio_input_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsert) UpdateAudioInputTokens() *UsageLogUpsert {
++	u.SetExcluded(usagelog.FieldAudioInputTokens)
++	return u
++}
++
++// AddAudioInputTokens adds v to the "audio_input_tokens" field.
++func (u *UsageLogUpsert) AddAudioInputTokens(v int) *UsageLogUpsert {
++	u.Add(usagelog.FieldAudioInputTokens, v)
++	return u
++}
++
++// SetAudioOutputTokens sets the "audio_output_tokens" field.
++func (u *UsageLogUpsert) SetAudioOutputTokens(v int) *UsageLogUpsert {
++	u.Set(usagelog.FieldAudioOutputTokens, v)
++	return u
++}
++
++// UpdateAudioOutputTokens sets the "audio_output_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsert) UpdateAudioOutputTokens() *UsageLogUpsert {
++	u.SetExcluded(usagelog.FieldAudioOutputTokens)
++	return u
++}
++
++// AddAudioOutputTokens adds v to the "audio_output_tokens" field.
++func (u *UsageLogUpsert) AddAudioOutputTokens(v int) *UsageLogUpsert {
++	u.Add(usagelog.FieldAudioOutputTokens, v)
++	return u
++}
++
++// SetAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field.
++func (u *UsageLogUpsert) SetAudioCacheCreationTokens(v int) *UsageLogUpsert {
++	u.Set(usagelog.FieldAudioCacheCreationTokens, v)
++	return u
++}
++
++// UpdateAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsert) UpdateAudioCacheCreationTokens() *UsageLogUpsert {
++	u.SetExcluded(usagelog.FieldAudioCacheCreationTokens)
++	return u
++}
++
++// AddAudioCacheCreationTokens adds v to the "audio_cache_creation_tokens" field.
++func (u *UsageLogUpsert) AddAudioCacheCreationTokens(v int) *UsageLogUpsert {
++	u.Add(usagelog.FieldAudioCacheCreationTokens, v)
++	return u
++}
++
++// SetAudioCacheReadTokens sets the "audio_cache_read_tokens" field.
++func (u *UsageLogUpsert) SetAudioCacheReadTokens(v int) *UsageLogUpsert {
++	u.Set(usagelog.FieldAudioCacheReadTokens, v)
++	return u
++}
++
++// UpdateAudioCacheReadTokens sets the "audio_cache_read_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsert) UpdateAudioCacheReadTokens() *UsageLogUpsert {
++	u.SetExcluded(usagelog.FieldAudioCacheReadTokens)
++	return u
++}
++
++// AddAudioCacheReadTokens adds v to the "audio_cache_read_tokens" field.
++func (u *UsageLogUpsert) AddAudioCacheReadTokens(v int) *UsageLogUpsert {
++	u.Add(usagelog.FieldAudioCacheReadTokens, v)
++	return u
++}
++
+ // SetCacheCreation5mTokens sets the "cache_creation_5m_tokens" field.
+ func (u *UsageLogUpsert) SetCacheCreation5mTokens(v int) *UsageLogUpsert {
+ 	u.Set(usagelog.FieldCacheCreation5mTokens, v)
+@@ -2216,6 +2388,90 @@ func (u *UsageLogUpsertOne) UpdateCacheReadTokens() *UsageLogUpsertOne {
+ 	})
+ }
+ 
++// SetAudioInputTokens sets the "audio_input_tokens" field.
++func (u *UsageLogUpsertOne) SetAudioInputTokens(v int) *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.SetAudioInputTokens(v)
++	})
++}
++
++// AddAudioInputTokens adds v to the "audio_input_tokens" field.
++func (u *UsageLogUpsertOne) AddAudioInputTokens(v int) *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.AddAudioInputTokens(v)
++	})
++}
++
++// UpdateAudioInputTokens sets the "audio_input_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsertOne) UpdateAudioInputTokens() *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.UpdateAudioInputTokens()
++	})
++}
++
++// SetAudioOutputTokens sets the "audio_output_tokens" field.
++func (u *UsageLogUpsertOne) SetAudioOutputTokens(v int) *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.SetAudioOutputTokens(v)
++	})
++}
++
++// AddAudioOutputTokens adds v to the "audio_output_tokens" field.
++func (u *UsageLogUpsertOne) AddAudioOutputTokens(v int) *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.AddAudioOutputTokens(v)
++	})
++}
++
++// UpdateAudioOutputTokens sets the "audio_output_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsertOne) UpdateAudioOutputTokens() *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.UpdateAudioOutputTokens()
++	})
++}
++
++// SetAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field.
++func (u *UsageLogUpsertOne) SetAudioCacheCreationTokens(v int) *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.SetAudioCacheCreationTokens(v)
++	})
++}
++
++// AddAudioCacheCreationTokens adds v to the "audio_cache_creation_tokens" field.
++func (u *UsageLogUpsertOne) AddAudioCacheCreationTokens(v int) *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.AddAudioCacheCreationTokens(v)
++	})
++}
++
++// UpdateAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsertOne) UpdateAudioCacheCreationTokens() *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.UpdateAudioCacheCreationTokens()
++	})
++}
++
++// SetAudioCacheReadTokens sets the "audio_cache_read_tokens" field.
++func (u *UsageLogUpsertOne) SetAudioCacheReadTokens(v int) *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.SetAudioCacheReadTokens(v)
++	})
++}
++
++// AddAudioCacheReadTokens adds v to the "audio_cache_read_tokens" field.
++func (u *UsageLogUpsertOne) AddAudioCacheReadTokens(v int) *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.AddAudioCacheReadTokens(v)
++	})
++}
++
++// UpdateAudioCacheReadTokens sets the "audio_cache_read_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsertOne) UpdateAudioCacheReadTokens() *UsageLogUpsertOne {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.UpdateAudioCacheReadTokens()
++	})
++}
++
+ // SetCacheCreation5mTokens sets the "cache_creation_5m_tokens" field.
+ func (u *UsageLogUpsertOne) SetCacheCreation5mTokens(v int) *UsageLogUpsertOne {
+ 	return u.Update(func(s *UsageLogUpsert) {
+@@ -3246,6 +3502,90 @@ func (u *UsageLogUpsertBulk) UpdateCacheReadTokens() *UsageLogUpsertBulk {
+ 	})
+ }
+ 
++// SetAudioInputTokens sets the "audio_input_tokens" field.
++func (u *UsageLogUpsertBulk) SetAudioInputTokens(v int) *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.SetAudioInputTokens(v)
++	})
++}
++
++// AddAudioInputTokens adds v to the "audio_input_tokens" field.
++func (u *UsageLogUpsertBulk) AddAudioInputTokens(v int) *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.AddAudioInputTokens(v)
++	})
++}
++
++// UpdateAudioInputTokens sets the "audio_input_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsertBulk) UpdateAudioInputTokens() *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.UpdateAudioInputTokens()
++	})
++}
++
++// SetAudioOutputTokens sets the "audio_output_tokens" field.
++func (u *UsageLogUpsertBulk) SetAudioOutputTokens(v int) *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.SetAudioOutputTokens(v)
++	})
++}
++
++// AddAudioOutputTokens adds v to the "audio_output_tokens" field.
++func (u *UsageLogUpsertBulk) AddAudioOutputTokens(v int) *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.AddAudioOutputTokens(v)
++	})
++}
++
++// UpdateAudioOutputTokens sets the "audio_output_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsertBulk) UpdateAudioOutputTokens() *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.UpdateAudioOutputTokens()
++	})
++}
++
++// SetAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field.
++func (u *UsageLogUpsertBulk) SetAudioCacheCreationTokens(v int) *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.SetAudioCacheCreationTokens(v)
++	})
++}
++
++// AddAudioCacheCreationTokens adds v to the "audio_cache_creation_tokens" field.
++func (u *UsageLogUpsertBulk) AddAudioCacheCreationTokens(v int) *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.AddAudioCacheCreationTokens(v)
++	})
++}
++
++// UpdateAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsertBulk) UpdateAudioCacheCreationTokens() *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.UpdateAudioCacheCreationTokens()
++	})
++}
++
++// SetAudioCacheReadTokens sets the "audio_cache_read_tokens" field.
++func (u *UsageLogUpsertBulk) SetAudioCacheReadTokens(v int) *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.SetAudioCacheReadTokens(v)
++	})
++}
++
++// AddAudioCacheReadTokens adds v to the "audio_cache_read_tokens" field.
++func (u *UsageLogUpsertBulk) AddAudioCacheReadTokens(v int) *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.AddAudioCacheReadTokens(v)
++	})
++}
++
++// UpdateAudioCacheReadTokens sets the "audio_cache_read_tokens" field to the value that was provided on create.
++func (u *UsageLogUpsertBulk) UpdateAudioCacheReadTokens() *UsageLogUpsertBulk {
++	return u.Update(func(s *UsageLogUpsert) {
++		s.UpdateAudioCacheReadTokens()
++	})
++}
++
+ // SetCacheCreation5mTokens sets the "cache_creation_5m_tokens" field.
+ func (u *UsageLogUpsertBulk) SetCacheCreation5mTokens(v int) *UsageLogUpsertBulk {
+ 	return u.Update(func(s *UsageLogUpsert) {
+diff --git a/backend/ent/usagelog_update.go b/backend/ent/usagelog_update.go
+index e8fa003c..430c5865 100644
+--- a/backend/ent/usagelog_update.go
++++ b/backend/ent/usagelog_update.go
+@@ -353,6 +353,90 @@ func (_u *UsageLogUpdate) AddCacheReadTokens(v int) *UsageLogUpdate {
+ 	return _u
+ }
+ 
++// SetAudioInputTokens sets the "audio_input_tokens" field.
++func (_u *UsageLogUpdate) SetAudioInputTokens(v int) *UsageLogUpdate {
++	_u.mutation.ResetAudioInputTokens()
++	_u.mutation.SetAudioInputTokens(v)
++	return _u
++}
++
++// SetNillableAudioInputTokens sets the "audio_input_tokens" field if the given value is not nil.
++func (_u *UsageLogUpdate) SetNillableAudioInputTokens(v *int) *UsageLogUpdate {
++	if v != nil {
++		_u.SetAudioInputTokens(*v)
++	}
++	return _u
++}
++
++// AddAudioInputTokens adds value to the "audio_input_tokens" field.
++func (_u *UsageLogUpdate) AddAudioInputTokens(v int) *UsageLogUpdate {
++	_u.mutation.AddAudioInputTokens(v)
++	return _u
++}
++
++// SetAudioOutputTokens sets the "audio_output_tokens" field.
++func (_u *UsageLogUpdate) SetAudioOutputTokens(v int) *UsageLogUpdate {
++	_u.mutation.ResetAudioOutputTokens()
++	_u.mutation.SetAudioOutputTokens(v)
++	return _u
++}
++
++// SetNillableAudioOutputTokens sets the "audio_output_tokens" field if the given value is not nil.
++func (_u *UsageLogUpdate) SetNillableAudioOutputTokens(v *int) *UsageLogUpdate {
++	if v != nil {
++		_u.SetAudioOutputTokens(*v)
++	}
++	return _u
++}
++
++// AddAudioOutputTokens adds value to the "audio_output_tokens" field.
++func (_u *UsageLogUpdate) AddAudioOutputTokens(v int) *UsageLogUpdate {
++	_u.mutation.AddAudioOutputTokens(v)
++	return _u
++}
++
++// SetAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field.
++func (_u *UsageLogUpdate) SetAudioCacheCreationTokens(v int) *UsageLogUpdate {
++	_u.mutation.ResetAudioCacheCreationTokens()
++	_u.mutation.SetAudioCacheCreationTokens(v)
++	return _u
++}
++
++// SetNillableAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field if the given value is not nil.
++func (_u *UsageLogUpdate) SetNillableAudioCacheCreationTokens(v *int) *UsageLogUpdate {
++	if v != nil {
++		_u.SetAudioCacheCreationTokens(*v)
++	}
++	return _u
++}
++
++// AddAudioCacheCreationTokens adds value to the "audio_cache_creation_tokens" field.
++func (_u *UsageLogUpdate) AddAudioCacheCreationTokens(v int) *UsageLogUpdate {
++	_u.mutation.AddAudioCacheCreationTokens(v)
++	return _u
++}
++
++// SetAudioCacheReadTokens sets the "audio_cache_read_tokens" field.
++func (_u *UsageLogUpdate) SetAudioCacheReadTokens(v int) *UsageLogUpdate {
++	_u.mutation.ResetAudioCacheReadTokens()
++	_u.mutation.SetAudioCacheReadTokens(v)
++	return _u
++}
++
++// SetNillableAudioCacheReadTokens sets the "audio_cache_read_tokens" field if the given value is not nil.
++func (_u *UsageLogUpdate) SetNillableAudioCacheReadTokens(v *int) *UsageLogUpdate {
++	if v != nil {
++		_u.SetAudioCacheReadTokens(*v)
++	}
++	return _u
++}
++
++// AddAudioCacheReadTokens adds value to the "audio_cache_read_tokens" field.
++func (_u *UsageLogUpdate) AddAudioCacheReadTokens(v int) *UsageLogUpdate {
++	_u.mutation.AddAudioCacheReadTokens(v)
++	return _u
++}
++
+ // SetCacheCreation5mTokens sets the "cache_creation_5m_tokens" field.
+ func (_u *UsageLogUpdate) SetCacheCreation5mTokens(v int) *UsageLogUpdate {
+ 	_u.mutation.ResetCacheCreation5mTokens()
+@@ -1072,6 +1156,30 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
+ 	if value, ok := _u.mutation.AddedCacheReadTokens(); ok {
+ 		_spec.AddField(usagelog.FieldCacheReadTokens, field.TypeInt, value)
+ 	}
++	if value, ok := _u.mutation.AudioInputTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioInputTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AddedAudioInputTokens(); ok {
++		_spec.AddField(usagelog.FieldAudioInputTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AudioOutputTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioOutputTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AddedAudioOutputTokens(); ok {
++		_spec.AddField(usagelog.FieldAudioOutputTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AudioCacheCreationTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioCacheCreationTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AddedAudioCacheCreationTokens(); ok {
++		_spec.AddField(usagelog.FieldAudioCacheCreationTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AudioCacheReadTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioCacheReadTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AddedAudioCacheReadTokens(); ok {
++		_spec.AddField(usagelog.FieldAudioCacheReadTokens, field.TypeInt, value)
++	}
+ 	if value, ok := _u.mutation.CacheCreation5mTokens(); ok {
+ 		_spec.SetField(usagelog.FieldCacheCreation5mTokens, field.TypeInt, value)
+ 	}
+@@ -1699,6 +1807,90 @@ func (_u *UsageLogUpdateOne) AddCacheReadTokens(v int) *UsageLogUpdateOne {
+ 	return _u
+ }
+ 
++// SetAudioInputTokens sets the "audio_input_tokens" field.
++func (_u *UsageLogUpdateOne) SetAudioInputTokens(v int) *UsageLogUpdateOne {
++	_u.mutation.ResetAudioInputTokens()
++	_u.mutation.SetAudioInputTokens(v)
++	return _u
++}
++
++// SetNillableAudioInputTokens sets the "audio_input_tokens" field if the given value is not nil.
++func (_u *UsageLogUpdateOne) SetNillableAudioInputTokens(v *int) *UsageLogUpdateOne {
++	if v != nil {
++		_u.SetAudioInputTokens(*v)
++	}
++	return _u
++}
++
++// AddAudioInputTokens adds value to the "audio_input_tokens" field.
++func (_u *UsageLogUpdateOne) AddAudioInputTokens(v int) *UsageLogUpdateOne {
++	_u.mutation.AddAudioInputTokens(v)
++	return _u
++}
++
++// SetAudioOutputTokens sets the "audio_output_tokens" field.
++func (_u *UsageLogUpdateOne) SetAudioOutputTokens(v int) *UsageLogUpdateOne {
++	_u.mutation.ResetAudioOutputTokens()
++	_u.mutation.SetAudioOutputTokens(v)
++	return _u
++}
++
++// SetNillableAudioOutputTokens sets the "audio_output_tokens" field if the given value is not nil.
++func (_u *UsageLogUpdateOne) SetNillableAudioOutputTokens(v *int) *UsageLogUpdateOne {
++	if v != nil {
++		_u.SetAudioOutputTokens(*v)
++	}
++	return _u
++}
++
++// AddAudioOutputTokens adds value to the "audio_output_tokens" field.
++func (_u *UsageLogUpdateOne) AddAudioOutputTokens(v int) *UsageLogUpdateOne {
++	_u.mutation.AddAudioOutputTokens(v)
++	return _u
++}
++
++// SetAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field.
++func (_u *UsageLogUpdateOne) SetAudioCacheCreationTokens(v int) *UsageLogUpdateOne {
++	_u.mutation.ResetAudioCacheCreationTokens()
++	_u.mutation.SetAudioCacheCreationTokens(v)
++	return _u
++}
++
++// SetNillableAudioCacheCreationTokens sets the "audio_cache_creation_tokens" field if the given value is not nil.
++func (_u *UsageLogUpdateOne) SetNillableAudioCacheCreationTokens(v *int) *UsageLogUpdateOne {
++	if v != nil {
++		_u.SetAudioCacheCreationTokens(*v)
++	}
++	return _u
++}
++
++// AddAudioCacheCreationTokens adds value to the "audio_cache_creation_tokens" field.
++func (_u *UsageLogUpdateOne) AddAudioCacheCreationTokens(v int) *UsageLogUpdateOne {
++	_u.mutation.AddAudioCacheCreationTokens(v)
++	return _u
++}
++
++// SetAudioCacheReadTokens sets the "audio_cache_read_tokens" field.
++func (_u *UsageLogUpdateOne) SetAudioCacheReadTokens(v int) *UsageLogUpdateOne {
++	_u.mutation.ResetAudioCacheReadTokens()
++	_u.mutation.SetAudioCacheReadTokens(v)
++	return _u
++}
++
++// SetNillableAudioCacheReadTokens sets the "audio_cache_read_tokens" field if the given value is not nil.
++func (_u *UsageLogUpdateOne) SetNillableAudioCacheReadTokens(v *int) *UsageLogUpdateOne {
++	if v != nil {
++		_u.SetAudioCacheReadTokens(*v)
++	}
++	return _u
++}
++
++// AddAudioCacheReadTokens adds value to the "audio_cache_read_tokens" field.
++func (_u *UsageLogUpdateOne) AddAudioCacheReadTokens(v int) *UsageLogUpdateOne {
++	_u.mutation.AddAudioCacheReadTokens(v)
++	return _u
++}
++
+ // SetCacheCreation5mTokens sets the "cache_creation_5m_tokens" field.
+ func (_u *UsageLogUpdateOne) SetCacheCreation5mTokens(v int) *UsageLogUpdateOne {
+ 	_u.mutation.ResetCacheCreation5mTokens()
+@@ -2448,6 +2640,30 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err
+ 	if value, ok := _u.mutation.AddedCacheReadTokens(); ok {
+ 		_spec.AddField(usagelog.FieldCacheReadTokens, field.TypeInt, value)
+ 	}
++	if value, ok := _u.mutation.AudioInputTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioInputTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AddedAudioInputTokens(); ok {
++		_spec.AddField(usagelog.FieldAudioInputTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AudioOutputTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioOutputTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AddedAudioOutputTokens(); ok {
++		_spec.AddField(usagelog.FieldAudioOutputTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AudioCacheCreationTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioCacheCreationTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AddedAudioCacheCreationTokens(); ok {
++		_spec.AddField(usagelog.FieldAudioCacheCreationTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AudioCacheReadTokens(); ok {
++		_spec.SetField(usagelog.FieldAudioCacheReadTokens, field.TypeInt, value)
++	}
++	if value, ok := _u.mutation.AddedAudioCacheReadTokens(); ok {
++		_spec.AddField(usagelog.FieldAudioCacheReadTokens, field.TypeInt, value)
++	}
+ 	if value, ok := _u.mutation.CacheCreation5mTokens(); ok {
+ 		_spec.SetField(usagelog.FieldCacheCreation5mTokens, field.TypeInt, value)
+ 	}
+diff --git a/backend/migrations/142_usage_log_audio_fields.sql b/backend/migrations/142_usage_log_audio_fields.sql
+new file mode 100644
+index 00000000..36473bf3
+--- /dev/null
++++ b/backend/migrations/142_usage_log_audio_fields.sql
+@@ -0,0 +1,19 @@
++-- Persist OpenAI audio usage breakdowns on raw usage logs and dashboard aggregates.
++
++ALTER TABLE usage_logs
++    ADD COLUMN IF NOT EXISTS audio_input_tokens INT NOT NULL DEFAULT 0,
++    ADD COLUMN IF NOT EXISTS audio_output_tokens INT NOT NULL DEFAULT 0,
++    ADD COLUMN IF NOT EXISTS audio_cache_creation_tokens INT NOT NULL DEFAULT 0,
++    ADD COLUMN IF NOT EXISTS audio_cache_read_tokens INT NOT NULL DEFAULT 0;
++
++ALTER TABLE usage_dashboard_hourly
++    ADD COLUMN IF NOT EXISTS audio_input_tokens BIGINT NOT NULL DEFAULT 0,
++    ADD COLUMN IF NOT EXISTS audio_output_tokens BIGINT NOT NULL DEFAULT 0,
++    ADD COLUMN IF NOT EXISTS audio_cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
++    ADD COLUMN IF NOT EXISTS audio_cache_read_tokens BIGINT NOT NULL DEFAULT 0;
++
++ALTER TABLE usage_dashboard_daily
++    ADD COLUMN IF NOT EXISTS audio_input_tokens BIGINT NOT NULL DEFAULT 0,
++    ADD COLUMN IF NOT EXISTS audio_output_tokens BIGINT NOT NULL DEFAULT 0,
++    ADD COLUMN IF NOT EXISTS audio_cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
++    ADD COLUMN IF NOT EXISTS audio_cache_read_tokens BIGINT NOT NULL DEFAULT 0;
