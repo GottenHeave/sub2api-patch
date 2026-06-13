@@ -11,7 +11,7 @@ status_file="$tmpdir/status.json"
 checks_file="$tmpdir/checks.json"
 
 gh api "repos/$repo/commits/$sha/status" >"$status_file" 2>/dev/null || printf '{}\n' >"$status_file"
-gh api "repos/$repo/commits/$sha/check-runs" --paginate >"$checks_file" 2>/dev/null || printf '{"check_runs":[]}\n' >"$checks_file"
+gh api "repos/$repo/commits/$sha/check-runs" --paginate --slurp >"$checks_file" 2>/dev/null || printf '[{"check_runs":[]}]\n' >"$checks_file"
 
 python3 - "$status_file" "$checks_file" <<'PY'
 import json
@@ -19,11 +19,17 @@ import sys
 from pathlib import Path
 
 status = json.loads(Path(sys.argv[1]).read_text() or '{}')
-checks = json.loads(Path(sys.argv[2]).read_text() or '{"check_runs":[]}')
+checks_payload = json.loads(Path(sys.argv[2]).read_text() or '[{"check_runs":[]}]')
 
 combined = status.get('state')
 statuses = status.get('statuses') or []
-runs = checks.get('check_runs') or []
+if isinstance(checks_payload, list):
+    runs = []
+    for page in checks_payload:
+        if isinstance(page, dict):
+            runs.extend(page.get('check_runs') or [])
+else:
+    runs = checks_payload.get('check_runs') or []
 
 bad_statuses = [s for s in statuses if s.get('state') not in ('success',)]
 bad_runs = [
