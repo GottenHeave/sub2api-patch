@@ -1,0 +1,974 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sat, 13 Jun 2026 18:23:49 +0000
+Subject: [PATCH] test: cover OpenAI realtime gateway routing
+
+
+diff --git a/backend/internal/handler/endpoint_test.go b/backend/internal/handler/endpoint_test.go
+index 42b6d6e7..8c694630 100644
+--- a/backend/internal/handler/endpoint_test.go
++++ b/backend/internal/handler/endpoint_test.go
+@@ -26,6 +26,19 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
+ 		{"/v1/chat/completions", EndpointChatCompletions},
+ 		{"/v1/embeddings", EndpointEmbeddings},
+ 		{"/v1/responses", EndpointResponses},
++		{"/v1/realtime", EndpointRealtime},
++		{"/v1/realtime/calls/call_123/accept", EndpointRealtimeCallsAccept},
++		{"/v1/realtime/client_secrets", EndpointRealtimeREST},
++		{"/v1/realtime/translations/client_secrets", EndpointRealtimeREST},
++		{"/v1/realtime/calls", EndpointRealtimeREST},
++		{"/v1/realtime/translations/calls", EndpointRealtimeREST},
++		{"/v1/realtime/calls/call_123/hangup", EndpointRealtimeREST},
++		{"/v1/realtime/calls/call_123/refer", EndpointRealtimeREST},
++		{"/v1/realtime/calls/call_123/reject", EndpointRealtimeREST},
++		{"/v1/realtime/sessions", EndpointRealtimeREST},
++		{"/v1/realtime/transcription_sessions", EndpointRealtimeREST},
++		{"/v1/audio/transcriptions", EndpointAudioTranscriptions},
++		{"/transcribe", EndpointTranscribe},
+ 		{"/v1/images/generations", EndpointImagesGenerations},
+ 		{"/v1/images/edits", EndpointImagesEdits},
+ 		{"/v1beta/models", EndpointGeminiModels},
+@@ -34,6 +47,10 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
+ 		{"/antigravity/v1/messages", EndpointMessages},
+ 		{"/openai/v1/responses", EndpointResponses},
+ 		{"/openai/v1/responses/compact", EndpointResponses},
++		{"/openai/v1/realtime/calls/call_123/accept", EndpointRealtimeCallsAccept},
++		{"/openai/v1/realtime/client_secrets", EndpointRealtimeREST},
++		{"/openai/v1/realtime/calls/call_123/reject", EndpointRealtimeREST},
++		{"/openai/v1/audio/transcriptions", EndpointAudioTranscriptions},
+ 		{"/openai/v1/images/generations", EndpointImagesGenerations},
+ 		{"/openai/v1/images/edits", EndpointImagesEdits},
+ 		{"/antigravity/v1beta/models/gemini:generateContent", EndpointGeminiModels},
+@@ -78,6 +95,22 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
+ 		{"openai responses nested", EndpointResponses, "/openai/v1/responses/compact/detail", service.PlatformOpenAI, "/v1/responses/compact/detail"},
+ 		{"openai from messages", EndpointMessages, "/v1/messages", service.PlatformOpenAI, EndpointResponses},
+ 		{"openai from completions", EndpointChatCompletions, "/v1/chat/completions", service.PlatformOpenAI, EndpointResponses},
++		{"openai realtime", EndpointRealtime, "/v1/realtime", service.PlatformOpenAI, EndpointRealtime},
++		{"openai realtime calls accept", EndpointRealtimeCallsAccept, "/v1/realtime/calls/call_123/accept", service.PlatformOpenAI, "/v1/realtime/calls/call_123/accept"},
++		{"openai prefixed realtime calls accept", EndpointRealtimeCallsAccept, "/openai/v1/realtime/calls/call_456/accept", service.PlatformOpenAI, "/v1/realtime/calls/call_456/accept"},
++		{"openai realtime client secrets", EndpointRealtimeREST, "/v1/realtime/client_secrets", service.PlatformOpenAI, "/v1/realtime/client_secrets"},
++		{"openai realtime translation client secrets", EndpointRealtimeREST, "/v1/realtime/translations/client_secrets", service.PlatformOpenAI, "/v1/realtime/translations/client_secrets"},
++		{"openai realtime calls create", EndpointRealtimeREST, "/v1/realtime/calls", service.PlatformOpenAI, "/v1/realtime/calls"},
++		{"openai realtime translation calls create", EndpointRealtimeREST, "/v1/realtime/translations/calls", service.PlatformOpenAI, "/v1/realtime/translations/calls"},
++		{"openai realtime calls hangup", EndpointRealtimeREST, "/v1/realtime/calls/call_123/hangup", service.PlatformOpenAI, "/v1/realtime/calls/call_123/hangup"},
++		{"openai realtime calls refer", EndpointRealtimeREST, "/v1/realtime/calls/call_123/refer", service.PlatformOpenAI, "/v1/realtime/calls/call_123/refer"},
++		{"openai realtime calls reject", EndpointRealtimeREST, "/v1/realtime/calls/call_123/reject", service.PlatformOpenAI, "/v1/realtime/calls/call_123/reject"},
++		{"openai realtime sessions", EndpointRealtimeREST, "/v1/realtime/sessions", service.PlatformOpenAI, "/v1/realtime/sessions"},
++		{"openai realtime transcription sessions", EndpointRealtimeREST, "/v1/realtime/transcription_sessions", service.PlatformOpenAI, "/v1/realtime/transcription_sessions"},
++		{"openai prefixed realtime reject", EndpointRealtimeREST, "/openai/v1/realtime/calls/call_789/reject", service.PlatformOpenAI, "/v1/realtime/calls/call_789/reject"},
++		{"openai prefixed realtime translation calls", EndpointRealtimeREST, "/openai/v1/realtime/translations/calls", service.PlatformOpenAI, "/v1/realtime/translations/calls"},
++		{"openai audio transcriptions", EndpointAudioTranscriptions, "/v1/audio/transcriptions", service.PlatformOpenAI, EndpointAudioTranscriptions},
++		{"openai transcribe alias", EndpointTranscribe, "/transcribe", service.PlatformOpenAI, EndpointAudioTranscriptions},
+ 		{"openai embeddings", EndpointEmbeddings, "/v1/embeddings", service.PlatformOpenAI, EndpointEmbeddings},
+ 		{"openai image generations", EndpointImagesGenerations, "/v1/images/generations", service.PlatformOpenAI, EndpointImagesGenerations},
+ 		{"openai image edits", EndpointImagesEdits, "/openai/v1/images/edits", service.PlatformOpenAI, EndpointImagesEdits},
+diff --git a/backend/internal/handler/failover_loop_test.go b/backend/internal/handler/failover_loop_test.go
+index 2c65ebc2..89f4811d 100644
+--- a/backend/internal/handler/failover_loop_test.go
++++ b/backend/internal/handler/failover_loop_test.go
+@@ -2,6 +2,7 @@ package handler
+ 
+ import (
+ 	"context"
++	"fmt"
+ 	"testing"
+ 	"time"
+ 
+@@ -364,6 +365,66 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
+ 	})
+ }
+ 
++func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T) {
++	t.Run("401_403_429同账号重试到上限后切换账号", func(t *testing.T) {
++		for _, statusCode := range []int{401, 403, 429} {
++			t.Run(fmt.Sprintf("status_%d", statusCode), func(t *testing.T) {
++				mock := &mockTempUnscheduler{}
++				fs := NewFailoverState(2, false)
++				err := newTestFailoverErr(statusCode, true, false)
++
++				for i := 1; i <= maxSameAccountRetries; i++ {
++					action := fs.HandleFailoverError(context.Background(), mock, 101, service.PlatformOpenAI, err)
++					require.Equal(t, FailoverContinue, action)
++					require.Equal(t, i, fs.SameAccountRetryCount[101])
++					require.NotContains(t, fs.FailedAccountIDs, int64(101))
++				}
++
++				action := fs.HandleFailoverError(context.Background(), mock, 101, service.PlatformOpenAI, err)
++				require.Equal(t, FailoverContinue, action)
++				require.Equal(t, 1, fs.SwitchCount)
++				require.Contains(t, fs.FailedAccountIDs, int64(101))
++				require.Len(t, mock.calls, 1)
++				require.Equal(t, int64(101), mock.calls[0].accountID)
++				require.Equal(t, statusCode, mock.calls[0].failoverErr.StatusCode)
++			})
++		}
++	})
++
++	t.Run("5xx直接切换账号不做同账号重试", func(t *testing.T) {
++		for _, statusCode := range []int{500, 502, 503} {
++			t.Run(fmt.Sprintf("status_%d", statusCode), func(t *testing.T) {
++				mock := &mockTempUnscheduler{}
++				fs := NewFailoverState(2, false)
++				err := newTestFailoverErr(statusCode, false, false)
++
++				action := fs.HandleFailoverError(context.Background(), mock, 201, service.PlatformOpenAI, err)
++
++				require.Equal(t, FailoverContinue, action)
++				require.Equal(t, 1, fs.SwitchCount)
++				require.Empty(t, fs.SameAccountRetryCount)
++				require.Contains(t, fs.FailedAccountIDs, int64(201))
++				require.Empty(t, mock.calls)
++			})
++		}
++	})
++
++	t.Run("切换次数耗尽返回失败", func(t *testing.T) {
++		mock := &mockTempUnscheduler{}
++		fs := NewFailoverState(1, false)
++
++		action := fs.HandleFailoverError(context.Background(), mock, 301, service.PlatformOpenAI, newTestFailoverErr(500, false, false))
++		require.Equal(t, FailoverContinue, action)
++		require.Equal(t, 1, fs.SwitchCount)
++
++		action = fs.HandleFailoverError(context.Background(), mock, 302, service.PlatformOpenAI, newTestFailoverErr(503, false, false))
++		require.Equal(t, FailoverExhausted, action)
++		require.Equal(t, 1, fs.SwitchCount)
++		require.Contains(t, fs.FailedAccountIDs, int64(301))
++		require.Contains(t, fs.FailedAccountIDs, int64(302))
++	})
++}
++
+ // ---------------------------------------------------------------------------
+ // HandleFailoverError — TempUnschedule 调用验证
+ // ---------------------------------------------------------------------------
+diff --git a/backend/internal/handler/openai_gateway_endpoint_normalization_test.go b/backend/internal/handler/openai_gateway_endpoint_normalization_test.go
+index 0dacd74d..b99a398c 100644
+--- a/backend/internal/handler/openai_gateway_endpoint_normalization_test.go
++++ b/backend/internal/handler/openai_gateway_endpoint_normalization_test.go
+@@ -41,6 +41,16 @@ func TestOpenAIUpstreamEndpoint_ViaGetUpstreamEndpoint(t *testing.T) {
+ 			path: "/v1/messages",
+ 			want: EndpointResponses,
+ 		},
++		{
++			name: "audio transcriptions stays on audio upstream",
++			path: "/v1/audio/transcriptions",
++			want: EndpointAudioTranscriptions,
++		},
++		{
++			name: "transcribe alias uses audio upstream",
++			path: "/transcribe",
++			want: EndpointAudioTranscriptions,
++		},
+ 	}
+ 
+ 	for _, tt := range tests {
+diff --git a/backend/internal/handler/openai_gateway_handler_test.go b/backend/internal/handler/openai_gateway_handler_test.go
+index 7743d6ab..bc7c6ac8 100644
+--- a/backend/internal/handler/openai_gateway_handler_test.go
++++ b/backend/internal/handler/openai_gateway_handler_test.go
+@@ -94,6 +94,40 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
+ 	}
+ }
+ 
++func TestResolveOpenAIWebSocketRequestModelRealtime(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime?model=gpt-realtime-query", nil)
++
++	got := resolveOpenAIWebSocketRequestModel(c, []byte(`{"type":"session.update","session":{"model":"gpt-realtime-session"}}`), openAIWebSocketEndpointOptions{Realtime: true})
++	require.Equal(t, "gpt-realtime-query", got)
++
++	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
++	got = resolveOpenAIWebSocketRequestModel(c, []byte(`{"type":"session.update","session":{"model":"gpt-realtime-session"}}`), openAIWebSocketEndpointOptions{Realtime: true})
++	require.Equal(t, "gpt-realtime-session", got)
++}
++
++func TestResolveOpenAIWebSocketRequestModelResponsesRequiresTopLevelModel(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
++
++	got := resolveOpenAIWebSocketRequestModel(c, []byte(`{"type":"session.update","session":{"model":"gpt-realtime-session"}}`), openAIWebSocketEndpointOptions{})
++	require.Empty(t, got)
++}
++
++func TestOpenAIWebSocketRequiredAccountTypeAllowsRealtimeOAuth(t *testing.T) {
++	require.Empty(t, openAIWebSocketRequiredAccountType(openAIWebSocketEndpointOptions{Realtime: true}))
++	require.Empty(t, openAIWebSocketRequiredAccountType(openAIWebSocketEndpointOptions{}))
++}
++
++func TestOpenAIWebSocketEndpointOptionsRealtimeTranslationEndpoint(t *testing.T) {
++	require.Equal(t, "/v1/realtime", openAIWebSocketEndpointOptions{Realtime: true}.RealtimeUpstreamEndpoint())
++	require.Equal(t, "/v1/realtime/translations", openAIWebSocketEndpointOptions{Realtime: true, Translation: true}.RealtimeUpstreamEndpoint())
++}
++
+ func TestResolveOpenAIMessagesMetadataSession_DoesNotDerivePromptCacheKey(t *testing.T) {
+ 	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
+ 
+diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
+index 19ef5686..95570bbf 100644
+--- a/backend/internal/server/routes/gateway_test.go
++++ b/backend/internal/server/routes/gateway_test.go
+@@ -42,6 +42,34 @@ func newGatewayRoutesTestRouter() *gin.Engine {
+ 	return router
+ }
+ 
++func newGatewayRoutesTestRouterForPlatform(platform string) *gin.Engine {
++	gin.SetMode(gin.TestMode)
++	router := gin.New()
++
++	RegisterGatewayRoutes(
++		router,
++		&handler.Handlers{
++			Gateway:       &handler.GatewayHandler{},
++			OpenAIGateway: &handler.OpenAIGatewayHandler{},
++		},
++		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
++			groupID := int64(1)
++			c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
++				GroupID: &groupID,
++				Group:   &service.Group{Platform: platform},
++			})
++			c.Next()
++		}),
++		nil,
++		nil,
++		nil,
++		nil,
++		&config.Config{},
++	)
++
++	return router
++}
++
+ func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
+ 	router := newGatewayRoutesTestRouter()
+ 
+@@ -77,3 +105,127 @@ func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
+ 		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI images handler", path)
+ 	}
+ }
++
++func TestGatewayRoutesOpenAIRealtimePathIsRegistered(t *testing.T) {
++	router := newGatewayRoutesTestRouter()
++
++	req := httptest.NewRequest(http.MethodGet, "/v1/realtime?model=gpt-realtime", nil)
++	w := httptest.NewRecorder()
++
++	router.ServeHTTP(w, req)
++	require.NotEqual(t, http.StatusNotFound, w.Code)
++	require.Equal(t, http.StatusUpgradeRequired, w.Code)
++}
++
++func TestGatewayRoutesOpenAIRealtimeTranslationPathIsRegistered(t *testing.T) {
++	router := newGatewayRoutesTestRouter()
++
++	req := httptest.NewRequest(http.MethodGet, "/v1/realtime/translations?model=gpt-realtime-translate", nil)
++	w := httptest.NewRecorder()
++
++	router.ServeHTTP(w, req)
++	require.NotEqual(t, http.StatusNotFound, w.Code)
++	require.Equal(t, http.StatusUpgradeRequired, w.Code)
++}
++
++func TestGatewayRoutesOpenAIRealtimeRejectsNonOpenAIPlatform(t *testing.T) {
++	router := newGatewayRoutesTestRouterForPlatform(service.PlatformAnthropic)
++
++	req := httptest.NewRequest(http.MethodGet, "/v1/realtime?model=gpt-realtime", nil)
++	w := httptest.NewRecorder()
++
++	router.ServeHTTP(w, req)
++	require.Equal(t, http.StatusNotFound, w.Code)
++	require.Contains(t, w.Body.String(), "Realtime API is not supported for this platform")
++}
++
++func TestGatewayRoutesOpenAIRealtimeTranslationRejectsNonOpenAIPlatform(t *testing.T) {
++	router := newGatewayRoutesTestRouterForPlatform(service.PlatformAnthropic)
++
++	req := httptest.NewRequest(http.MethodGet, "/v1/realtime/translations?model=gpt-realtime-translate", nil)
++	w := httptest.NewRecorder()
++
++	router.ServeHTTP(w, req)
++	require.Equal(t, http.StatusNotFound, w.Code)
++	require.Contains(t, w.Body.String(), "Realtime API is not supported for this platform")
++}
++
++func TestGatewayRoutesOpenAIRealtimeCallsAcceptPathIsRegistered(t *testing.T) {
++	router := newGatewayRoutesTestRouter()
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/realtime/calls/call_123/accept", strings.NewReader(`{"type":"realtime","model":"gpt-realtime"}`))
++	req.Header.Set("Content-Type", "application/json")
++	w := httptest.NewRecorder()
++
++	router.ServeHTTP(w, req)
++	require.NotEqual(t, http.StatusNotFound, w.Code)
++}
++
++func TestGatewayRoutesOpenAIRealtimeRESTPathsAreRegistered(t *testing.T) {
++	router := newGatewayRoutesTestRouter()
++
++	tests := []struct {
++		path string
++		body string
++	}{
++		{"/v1/realtime/client_secrets", `{"session":{"type":"realtime","model":"gpt-realtime"}}`},
++		{"/v1/realtime/translations/client_secrets", `{"session":{"model":"gpt-realtime-translate"}}`},
++		{"/v1/realtime/calls", `{"model":"gpt-realtime"}`},
++		{"/v1/realtime/translations/calls", `{"model":"gpt-realtime-translate"}`},
++		{"/v1/realtime/calls/call_123/hangup", `{}`},
++		{"/v1/realtime/calls/call_123/refer", `{"target_uri":"tel:+15551234567"}`},
++		{"/v1/realtime/calls/call_123/reject", `{"status_code":603}`},
++		{"/v1/realtime/sessions", `{"model":"gpt-realtime"}`},
++		{"/v1/realtime/transcription_sessions", `{"input_audio_transcription":{"model":"gpt-4o-transcribe"}}`},
++	}
++	for _, tt := range tests {
++		t.Run(tt.path, func(t *testing.T) {
++			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
++			req.Header.Set("Content-Type", "application/json")
++			w := httptest.NewRecorder()
++
++			router.ServeHTTP(w, req)
++			require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI realtime REST handler", tt.path)
++		})
++	}
++}
++
++func TestGatewayRoutesOpenAIRealtimeCallsAcceptRejectsNonOpenAIPlatform(t *testing.T) {
++	router := newGatewayRoutesTestRouterForPlatform(service.PlatformAnthropic)
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/realtime/calls/call_123/accept", strings.NewReader(`{"type":"realtime","model":"gpt-realtime"}`))
++	req.Header.Set("Content-Type", "application/json")
++	w := httptest.NewRecorder()
++
++	router.ServeHTTP(w, req)
++	require.Equal(t, http.StatusNotFound, w.Code)
++	require.Contains(t, w.Body.String(), "Realtime API is not supported for this platform")
++}
++
++func TestGatewayRoutesOpenAIRealtimeRESTRejectsNonOpenAIPlatform(t *testing.T) {
++	router := newGatewayRoutesTestRouterForPlatform(service.PlatformAnthropic)
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/realtime/client_secrets", strings.NewReader(`{"session":{"model":"gpt-realtime"}}`))
++	req.Header.Set("Content-Type", "application/json")
++	w := httptest.NewRecorder()
++
++	router.ServeHTTP(w, req)
++	require.Equal(t, http.StatusNotFound, w.Code)
++	require.Contains(t, w.Body.String(), "Realtime API is not supported for this platform")
++}
++
++func TestGatewayRoutesOpenAIAudioTranscriptionsPathsAreRegistered(t *testing.T) {
++	router := newGatewayRoutesTestRouter()
++
++	for _, path := range []string{
++		"/v1/audio/transcriptions",
++		"/transcribe",
++	} {
++		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("invalid"))
++		req.Header.Set("Content-Type", "multipart/form-data; boundary=test")
++		w := httptest.NewRecorder()
++
++		router.ServeHTTP(w, req)
++		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI audio transcriptions handler", path)
++	}
++}
+diff --git a/backend/internal/service/openai_fast_policy_ws_test.go b/backend/internal/service/openai_fast_policy_ws_test.go
+index 4624e7a5..6456e593 100644
+--- a/backend/internal/service/openai_fast_policy_ws_test.go
++++ b/backend/internal/service/openai_fast_policy_ws_test.go
+@@ -50,6 +50,26 @@ func TestWSResponseCreate_DefaultPassesPriorityAndNormalizesFast(t *testing.T) {
+ 	require.Equal(t, "priority", gjson.GetBytes(updated, "service_tier").String())
+ }
+ 
++func TestOpenAIRealtimeSessionUpdateRewritesToUpstreamModel(t *testing.T) {
++	account := &Account{
++		Platform: PlatformOpenAI,
++		Type:     AccountTypeAPIKey,
++		Credentials: map[string]any{
++			"model_mapping": map[string]any{
++				"client-realtime": "gpt-realtime",
++			},
++		},
++	}
++	payload := []byte(`{"type":"session.update","session":{"model":"client-realtime","instructions":"hi"}}`)
++
++	upstreamModel := openAIRealtimeUpstreamModel(account, "client-realtime")
++	updated := rewriteOpenAIRealtimeSessionModel(payload, upstreamModel)
++
++	require.Equal(t, "gpt-realtime", upstreamModel)
++	require.Equal(t, "gpt-realtime", gjson.GetBytes(updated, "session.model").String())
++	require.Equal(t, "hi", gjson.GetBytes(updated, "session.instructions").String())
++}
++
+ func TestWSResponseCreate_ExplicitFilterStripsServiceTier(t *testing.T) {
+ 	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastFilterPriorityPolicy())
+ 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
+index 9866ddef..d687f32e 100644
+--- a/backend/internal/service/openai_gateway_service_test.go
++++ b/backend/internal/service/openai_gateway_service_test.go
+@@ -2483,17 +2483,23 @@ func TestParseSSEUsage_SelectiveParsing(t *testing.T) {
+ }
+ 
+ func TestExtractOpenAIUsageFromJSONBytes_AcceptsResponseAndChatUsageShapes(t *testing.T) {
+-	usage, ok := extractOpenAIUsageFromJSONBytes([]byte(`{"id":"resp_1","usage":{"input_tokens":3,"output_tokens":5,"input_tokens_details":{"cached_tokens":2}}}`))
++	usage, ok := extractOpenAIUsageFromJSONBytes([]byte(`{"id":"resp_1","usage":{"input_tokens":30,"output_tokens":50,"input_token_details":{"audio_tokens":7,"cached_tokens":2,"cached_tokens_details":{"audio_tokens":1}},"output_token_details":{"audio_tokens":9}}}`))
+ 	require.True(t, ok)
+-	require.Equal(t, 3, usage.InputTokens)
+-	require.Equal(t, 5, usage.OutputTokens)
++	require.Equal(t, 30, usage.InputTokens)
++	require.Equal(t, 50, usage.OutputTokens)
+ 	require.Equal(t, 2, usage.CacheReadInputTokens)
++	require.Equal(t, 7, usage.InputAudioTokens)
++	require.Equal(t, 9, usage.OutputAudioTokens)
++	require.Equal(t, 1, usage.CacheReadAudioTokens)
+ 
+-	usage, ok = extractOpenAIUsageFromJSONBytes([]byte(`{"type":"response.completed","response":{"usage":{"prompt_tokens":13,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":4}}}}`))
++	usage, ok = extractOpenAIUsageFromJSONBytes([]byte(`{"type":"response.completed","response":{"usage":{"prompt_tokens":13,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":4,"audio_tokens":5,"cached_tokens_details":{"audio_tokens":2}},"completion_tokens_details":{"audio_tokens":3}}}}`))
+ 	require.True(t, ok)
+ 	require.Equal(t, 13, usage.InputTokens)
+ 	require.Equal(t, 7, usage.OutputTokens)
+ 	require.Equal(t, 4, usage.CacheReadInputTokens)
++	require.Equal(t, 5, usage.InputAudioTokens)
++	require.Equal(t, 3, usage.OutputAudioTokens)
++	require.Equal(t, 2, usage.CacheReadAudioTokens)
+ }
+ 
+ func TestExtractCodexFinalResponse_SampleReplay(t *testing.T) {
+diff --git a/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go b/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go
+index 2622f7f2..69ecf613 100644
+--- a/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go
++++ b/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go
+@@ -37,6 +37,18 @@ func TestParseOpenAIWSResponseUsageFromCompletedEvent(t *testing.T) {
+ 	require.Equal(t, 19, usage.InputTokens)
+ 	require.Equal(t, 5, usage.OutputTokens)
+ 	require.Equal(t, 4, usage.CacheReadInputTokens)
++
++	parseOpenAIWSResponseUsageFromCompletedEvent(
++		[]byte(`{"type":"response.incomplete","response":{"usage":{"prompt_tokens":21,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":5,"audio_tokens":7,"cached_tokens_details":{"audio_tokens":2},"cache_creation":{"audio_tokens":1}},"completion_tokens_details":{"audio_tokens":3}}}}`),
++		usage,
++	)
++	require.Equal(t, 21, usage.InputTokens)
++	require.Equal(t, 9, usage.OutputTokens)
++	require.Equal(t, 5, usage.CacheReadInputTokens)
++	require.Equal(t, 7, usage.InputAudioTokens)
++	require.Equal(t, 3, usage.OutputAudioTokens)
++	require.Equal(t, 1, usage.CacheCreationAudioTokens)
++	require.Equal(t, 2, usage.CacheReadAudioTokens)
+ }
+ 
+ func TestOpenAIWSEventShouldParseUsageTerminalEvents(t *testing.T) {
+diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
+index bd262207..c11b13a4 100644
+--- a/backend/internal/service/openai_ws_forwarder_success_test.go
++++ b/backend/internal/service/openai_ws_forwarder_success_test.go
+@@ -77,6 +77,16 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
+ 					"output_tokens": 7,
+ 					"input_tokens_details": map[string]any{
+ 						"cached_tokens": 3,
++						"audio_tokens":  5,
++						"cached_tokens_details": map[string]any{
++							"audio_tokens": 2,
++						},
++						"cache_creation": map[string]any{
++							"audio_tokens": 1,
++						},
++					},
++					"output_tokens_details": map[string]any{
++						"audio_tokens": 4,
+ 					},
+ 				},
+ 			},
+@@ -149,6 +159,10 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
+ 	require.Equal(t, 12, result.Usage.InputTokens)
+ 	require.Equal(t, 7, result.Usage.OutputTokens)
+ 	require.Equal(t, 3, result.Usage.CacheReadInputTokens)
++	require.Equal(t, 5, result.Usage.InputAudioTokens)
++	require.Equal(t, 4, result.Usage.OutputAudioTokens)
++	require.Equal(t, 1, result.Usage.CacheCreationAudioTokens)
++	require.Equal(t, 2, result.Usage.CacheReadAudioTokens)
+ 	require.Equal(t, "resp_new_1", result.RequestID)
+ 	require.True(t, result.OpenAIWSMode)
+ 	require.False(t, gjson.GetBytes(upstream.lastBody, "model").Exists(), "WSv2 成功时不应回落 HTTP 上游")
+@@ -171,6 +185,271 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
+ 	require.Equal(t, "resp_new_1", gjson.GetBytes(responseBody, "id").String())
+ }
+ 
++func TestOpenAIGatewayService_BuildOpenAIRealtimeWSURL(t *testing.T) {
++	svc := &OpenAIGatewayService{
++		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
++	}
++	account := &Account{
++		ID:          1,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Status:      StatusActive,
++		Schedulable: true,
++		Credentials: map[string]any{"api_key": "sk-test"},
++	}
++
++	got, err := svc.buildOpenAIRealtimeWSURL(account, "gpt-realtime")
++	require.NoError(t, err)
++	require.Equal(t, "wss://api.openai.com/v1/realtime?model=gpt-realtime", got)
++}
++
++func TestOpenAIGatewayService_BuildOpenAIRealtimeWSURLAllowsOAuth(t *testing.T) {
++	svc := &OpenAIGatewayService{}
++	account := &Account{
++		ID:          1,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++
++	got, err := svc.buildOpenAIRealtimeWSURL(account, "gpt-realtime")
++	require.NoError(t, err)
++	require.Equal(t, "wss://api.openai.com/v1/realtime?model=gpt-realtime", got)
++}
++
++func TestOpenAIGatewayService_BuildOpenAIRealtimeTranslationWSURL(t *testing.T) {
++	svc := &OpenAIGatewayService{
++		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
++	}
++	tests := []struct {
++		name    string
++		account *Account
++	}{
++		{
++			name: "api key",
++			account: &Account{
++				ID:          1,
++				Platform:    PlatformOpenAI,
++				Type:        AccountTypeAPIKey,
++				Status:      StatusActive,
++				Schedulable: true,
++				Credentials: map[string]any{"api_key": "sk-test"},
++			},
++		},
++		{
++			name: "oauth",
++			account: &Account{
++				ID:          2,
++				Platform:    PlatformOpenAI,
++				Type:        AccountTypeOAuth,
++				Status:      StatusActive,
++				Schedulable: true,
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got, err := svc.buildOpenAIRealtimeTranslationWSURL(tt.account, "gpt-realtime-translate")
++			require.NoError(t, err)
++			require.Equal(t, "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate", got)
++		})
++	}
++}
++
++func TestOpenAIGatewayService_BuildOpenAIRealtimeWSURLRejectsUnsupportedAccountType(t *testing.T) {
++	svc := &OpenAIGatewayService{}
++	account := &Account{
++		ID:          1,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeSetupToken,
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++
++	_, err := svc.buildOpenAIRealtimeWSURL(account, "gpt-realtime")
++	require.ErrorContains(t, err, "OpenAI API key or OAuth account")
++}
++
++func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOmitsResponsesBeta(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime?model=gpt-realtime", nil)
++
++	svc := &OpenAIGatewayService{}
++	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
++	headers, _ := svc.buildOpenAIWSHeaders(c, account, "sk-test", OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2}, false, "", "", "")
++
++	require.Equal(t, "Bearer sk-test", headers.Get("Authorization"))
++	require.Empty(t, headers.Get("OpenAI-Beta"))
++}
++
++func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOAuthUsesCodexHeaders(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime?model=gpt-realtime", nil)
++	c.Request.Header.Set("User-Agent", "Desktop/1.0")
++
++	svc := &OpenAIGatewayService{}
++	account := &Account{
++		ID:       1,
++		Platform: PlatformOpenAI,
++		Type:     AccountTypeOAuth,
++		Credentials: map[string]any{
++			"chatgpt_account_id": "chatgpt-account",
++		},
++	}
++	headers, _ := svc.buildOpenAIWSHeaders(c, account, "oauth-token", OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2}, false, "", "", "")
++
++	require.Equal(t, "Bearer oauth-token", headers.Get("Authorization"))
++	require.Equal(t, "chatgpt-account", headers.Get("chatgpt-account-id"))
++	require.NotEmpty(t, headers.Get("originator"))
++	require.Equal(t, codexCLIUserAgent, headers.Get("User-Agent"))
++	require.Empty(t, headers.Get("OpenAI-Beta"))
++}
++
++func TestOpenAIGatewayService_ProxyRealtimeWebSocketFromClient_RewritesSessionUpdateModel(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++
++	cfg := &config.Config{}
++	cfg.Security.URLAllowlist.Enabled = false
++	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
++	cfg.Gateway.OpenAIWS.Enabled = true
++	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
++	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
++	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 3
++	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
++	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
++
++	captureConn := &openAIWSCaptureConn{
++		readDelays: []time.Duration{200 * time.Millisecond},
++		events: [][]byte{
++			[]byte(`{"type":"session.created","session":{"id":"sess_1","model":"gpt-realtime"}}`),
++		},
++	}
++	captureDialer := &openAIWSCaptureDialer{conn: captureConn}
++	svc := &OpenAIGatewayService{
++		cfg:                       cfg,
++		openaiWSResolver:          NewOpenAIWSProtocolResolver(cfg),
++		openaiWSPassthroughDialer: captureDialer,
++	}
++
++	account := &Account{
++		ID:          1,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Status:      StatusActive,
++		Schedulable: true,
++		Credentials: map[string]any{
++			"api_key": "sk-test",
++			"model_mapping": map[string]any{
++				"client-realtime":      "gpt-realtime",
++				"client-realtime-next": "gpt-realtime-next",
++			},
++		},
++		Extra: map[string]any{
++			"responses_websockets_v2_enabled": true,
++		},
++	}
++
++	type hookPayload struct {
++		Turn          int
++		OriginalModel string
++		Payload       []byte
++	}
++	hookCh := make(chan hookPayload, 2)
++	hooks := &OpenAIWSIngressHooks{
++		InitialRequestModel: "client-realtime",
++		BeforeRequest: func(turn int, payload []byte, originalModel string) error {
++			payloadCopy := append([]byte(nil), payload...)
++			hookCh <- hookPayload{
++				Turn:          turn,
++				OriginalModel: originalModel,
++				Payload:       payloadCopy,
++			}
++			return nil
++		},
++	}
++
++	serverErrCh := make(chan error, 1)
++	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		conn, err := coderws.Accept(w, r, nil)
++		if err != nil {
++			serverErrCh <- err
++			return
++		}
++		defer func() {
++			_ = conn.CloseNow()
++		}()
++
++		rec := httptest.NewRecorder()
++		ginCtx, _ := gin.CreateTestContext(rec)
++		req := r.Clone(r.Context())
++		req.URL.Path = "/v1/realtime"
++		req.URL.RawQuery = "model=client-realtime"
++		ginCtx.Request = req
++
++		serverErrCh <- svc.ProxyRealtimeWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", nil, "client-realtime", "/v1/realtime", hooks)
++	}))
++	defer wsServer.Close()
++
++	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
++	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http"), nil)
++	cancelDial()
++	require.NoError(t, err)
++
++	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
++	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"session.update","session":{"model":"client-realtime","instructions":"hi"}}`))
++	cancelWrite()
++	require.NoError(t, err)
++
++	writeNextCtx, cancelWriteNext := context.WithTimeout(context.Background(), 3*time.Second)
++	err = clientConn.Write(writeNextCtx, coderws.MessageText, []byte(`{"type":"session.update","session":{"model":"client-realtime-next","instructions":"next"}}`))
++	cancelWriteNext()
++	require.NoError(t, err)
++
++	require.Eventually(t, func() bool {
++		return len(captureConn.Writes()) >= 2
++	}, time.Second, 10*time.Millisecond)
++
++	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
++	<-serverErrCh
++
++	require.Equal(t, "wss://api.openai.com/v1/realtime?model=gpt-realtime", captureDialer.LastURL())
++	headers := captureDialer.LastHeaders()
++	require.Equal(t, "Bearer sk-test", headers.Get("Authorization"))
++	require.Empty(t, headers.Get("OpenAI-Beta"))
++
++	writes := captureConn.Writes()
++	require.Len(t, writes, 2)
++	require.Equal(t, "gpt-realtime", gjson.Get(requestToJSONString(writes[0]), "session.model").String())
++	require.Equal(t, "hi", gjson.Get(requestToJSONString(writes[0]), "session.instructions").String())
++	require.Equal(t, "gpt-realtime-next", gjson.Get(requestToJSONString(writes[1]), "session.model").String())
++	require.Equal(t, "next", gjson.Get(requestToJSONString(writes[1]), "session.instructions").String())
++
++	var hookPayloads []hookPayload
++	for len(hookPayloads) < 2 {
++		select {
++		case got := <-hookCh:
++			hookPayloads = append(hookPayloads, got)
++		case <-time.After(time.Second):
++			t.Fatal("expected BeforeRequest hooks for session.update frames")
++		}
++	}
++	require.Equal(t, 2, hookPayloads[0].Turn)
++	require.Equal(t, "gpt-realtime", hookPayloads[0].OriginalModel)
++	require.Equal(t, "session.update", gjson.GetBytes(hookPayloads[0].Payload, "type").String())
++	require.Equal(t, "gpt-realtime", gjson.GetBytes(hookPayloads[0].Payload, "session.model").String())
++	require.Equal(t, "hi", gjson.GetBytes(hookPayloads[0].Payload, "session.instructions").String())
++	require.Equal(t, 2, hookPayloads[1].Turn)
++	require.Equal(t, "gpt-realtime-next", hookPayloads[1].OriginalModel)
++	require.Equal(t, "session.update", gjson.GetBytes(hookPayloads[1].Payload, "type").String())
++	require.Equal(t, "gpt-realtime-next", gjson.GetBytes(hookPayloads[1].Payload, "session.model").String())
++	require.Equal(t, "next", gjson.GetBytes(hookPayloads[1].Payload, "session.instructions").String())
++}
++
+ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 
+@@ -255,7 +534,6 @@ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(
+ 	received := <-receivedCh
+ 	require.False(t, received.MaxCompletionTokensExists)
+ }
+-
+ func TestOpenAIGatewayService_Forward_WSv2_ImageGenerationCountsOutputs(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 
+@@ -1544,6 +1822,7 @@ func TestOpenAIGatewayService_Forward_WSv2ReadTimeoutAppliesPerRead(t *testing.T
+ type openAIWSCaptureDialer struct {
+ 	mu          sync.Mutex
+ 	conn        *openAIWSCaptureConn
++	lastURL     string
+ 	lastHeaders http.Header
+ 	handshake   http.Header
+ 	dialCount   int
+@@ -1556,9 +1835,9 @@ func (d *openAIWSCaptureDialer) Dial(
+ 	proxyURL string,
+ ) (openAIWSClientConn, int, http.Header, error) {
+ 	_ = ctx
+-	_ = wsURL
+ 	_ = proxyURL
+ 	d.mu.Lock()
++	d.lastURL = wsURL
+ 	d.lastHeaders = cloneHeader(headers)
+ 	d.dialCount++
+ 	respHeaders := cloneHeader(d.handshake)
+@@ -1566,6 +1845,18 @@ func (d *openAIWSCaptureDialer) Dial(
+ 	return d.conn, 0, respHeaders, nil
+ }
+ 
++func (d *openAIWSCaptureDialer) LastURL() string {
++	d.mu.Lock()
++	defer d.mu.Unlock()
++	return d.lastURL
++}
++
++func (d *openAIWSCaptureDialer) LastHeaders() http.Header {
++	d.mu.Lock()
++	defer d.mu.Unlock()
++	return cloneHeader(d.lastHeaders)
++}
++
+ func (d *openAIWSCaptureDialer) DialCount() int {
+ 	d.mu.Lock()
+ 	defer d.mu.Unlock()
+@@ -1665,6 +1956,16 @@ func (c *openAIWSCaptureConn) Close() error {
+ 	return nil
+ }
+ 
++func (c *openAIWSCaptureConn) Writes() []map[string]any {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	out := make([]map[string]any, len(c.writes))
++	for i := range c.writes {
++		out[i] = cloneMapStringAny(c.writes[i])
++	}
++	return out
++}
++
+ func cloneMapStringAny(src map[string]any) map[string]any {
+ 	if src == nil {
+ 		return nil
+diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go b/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
+index 13c51f66..5c30edb1 100644
+--- a/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
++++ b/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
+@@ -307,17 +307,102 @@ func TestParseUsageAndEnrichCoverage(t *testing.T) {
+ 	require.Equal(t, 4, state.usage.CacheCreationInputTokens)
+ 	require.Equal(t, 3, state.usage.ImageOutputTokens)
+ 
++	parsedAudio := parseUsageAndAccumulate(
++		state,
++		[]byte(`{"type":"response.incomplete","response":{"usage":{"prompt_tokens":20,"completion_tokens":8,"cache_creation_input_tokens":3,"prompt_tokens_details":{"cached_tokens":6,"audio_tokens":5,"cached_tokens_details":{"audio_tokens":2},"cache_creation":{"audio_tokens":1}},"completion_tokens_details":{"audio_tokens":4}}}}`),
++		"response.incomplete",
++		nil,
++	)
++	require.Equal(t, 20, parsedAudio.InputTokens)
++	require.Equal(t, 8, parsedAudio.OutputTokens)
++	require.Equal(t, 3, parsedAudio.CacheCreationInputTokens)
++	require.Equal(t, 6, parsedAudio.CacheReadInputTokens)
++	require.Equal(t, 5, parsedAudio.InputAudioTokens)
++	require.Equal(t, 4, parsedAudio.OutputAudioTokens)
++	require.Equal(t, 1, parsedAudio.CacheCreationAudioTokens)
++	require.Equal(t, 2, parsedAudio.CacheReadAudioTokens)
++	require.Equal(t, 22, state.usage.InputTokens)
++	require.Equal(t, 9, state.usage.OutputTokens)
++	require.Equal(t, 7, state.usage.CacheCreationInputTokens)
++	require.Equal(t, 7, state.usage.CacheReadInputTokens)
++	require.Equal(t, 5, state.usage.InputAudioTokens)
++	require.Equal(t, 4, state.usage.OutputAudioTokens)
++	require.Equal(t, 1, state.usage.CacheCreationAudioTokens)
++	require.Equal(t, 2, state.usage.CacheReadAudioTokens)
++
+ 	result := &RelayResult{}
+ 	enrichResult(result, state, 5*time.Millisecond)
+ 	require.Equal(t, state.usage.InputTokens, result.Usage.InputTokens)
++	require.Equal(t, state.usage.InputAudioTokens, result.Usage.InputAudioTokens)
+ 	require.Equal(t, state.usage.CacheCreationInputTokens, result.Usage.CacheCreationInputTokens)
+ 	require.Equal(t, state.usage.ImageOutputTokens, result.Usage.ImageOutputTokens)
+ 	require.Equal(t, 5*time.Millisecond, result.Duration)
+ 	parseUsageAndAccumulate(state, []byte(`{"type":"response.in_progress","response":{"usage":{"input_tokens":9}}}`), "response.in_progress", nil)
+-	require.Equal(t, 2, state.usage.InputTokens)
++	require.Equal(t, 22, state.usage.InputTokens)
+ 	enrichResult(nil, state, 0)
+ }
+ 
++func TestParseUsageAndAccumulateAudioVariants(t *testing.T) {
++	t.Parallel()
++
++	tests := []struct {
++		name                         string
++		usage                        string
++		wantInputAudioTokens         int
++		wantOutputAudioTokens        int
++		wantCacheCreationAudioTokens int
++		wantCacheReadAudioTokens     int
++	}{
++		{
++			name:                         "singular input and output details",
++			usage:                        `{"input_tokens":10,"output_tokens":5,"input_token_details":{"audio_tokens":3,"cached_tokens_details":{"audio_tokens":1},"cache_creation":{"audio_tokens":2}},"output_token_details":{"audio_tokens":4}}`,
++			wantInputAudioTokens:         3,
++			wantOutputAudioTokens:        4,
++			wantCacheCreationAudioTokens: 2,
++			wantCacheReadAudioTokens:     1,
++		},
++		{
++			name:                         "plural input and output details",
++			usage:                        `{"input_tokens":10,"output_tokens":5,"input_tokens_details":{"audio_tokens":6,"cached_tokens_details":{"audio_tokens":2},"cache_creation":{"audio_tokens":3}},"output_tokens_details":{"audio_tokens":7}}`,
++			wantInputAudioTokens:         6,
++			wantOutputAudioTokens:        7,
++			wantCacheCreationAudioTokens: 3,
++			wantCacheReadAudioTokens:     2,
++		},
++		{
++			name:                         "prompt and completion details",
++			usage:                        `{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"audio_tokens":8,"cached_tokens_details":{"audio_tokens":3},"cache_creation":{"audio_tokens":4}},"completion_tokens_details":{"audio_tokens":9}}`,
++			wantInputAudioTokens:         8,
++			wantOutputAudioTokens:        9,
++			wantCacheCreationAudioTokens: 4,
++			wantCacheReadAudioTokens:     3,
++		},
++		{
++			name:                         "cache creation detail fallback",
++			usage:                        `{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens_details":{"audio_tokens":11}}`,
++			wantCacheCreationAudioTokens: 11,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			t.Parallel()
++
++			state := &relayState{}
++			usage := parseUsageAndAccumulate(
++				state,
++				[]byte(`{"type":"response.canceled","response":{"usage":`+tt.usage+`}}`),
++				"response.canceled",
++				nil,
++			)
++			require.Equal(t, tt.wantInputAudioTokens, usage.InputAudioTokens)
++			require.Equal(t, tt.wantOutputAudioTokens, usage.OutputAudioTokens)
++			require.Equal(t, tt.wantCacheCreationAudioTokens, usage.CacheCreationAudioTokens)
++			require.Equal(t, tt.wantCacheReadAudioTokens, usage.CacheReadAudioTokens)
++		})
++	}
++}
++
+ func TestParseUsageAndAccumulateAcceptsChatUsageAliases(t *testing.T) {
+ 	t.Parallel()
+ 
+diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay_test.go b/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
+index cdd41a05..6f56d137 100644
+--- a/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
++++ b/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
+@@ -199,6 +199,32 @@ func TestRelay_BasicRelayAndUsage(t *testing.T) {
+ 	require.JSONEq(t, `{"type":"response.completed","response":{"id":"resp_123","usage":{"input_tokens":7,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}}}}`, string(clientWrites[0].payload))
+ }
+ 
++func TestRelay_EmptyFirstMessageAllowsServerFirstRealtime(t *testing.T) {
++	t.Parallel()
++
++	clientConn := newPassthroughTestFrameConn(nil, false)
++	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
++		{
++			msgType: coderws.MessageText,
++			payload: []byte(`{"type":"session.created","session":{"id":"sess_123","model":"gpt-realtime"}}`),
++		},
++	}, true)
++
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++	defer cancel()
++
++	result, relayExit := Relay(ctx, clientConn, upstreamConn, nil, RelayOptions{InitialRequestModel: "gpt-realtime"})
++	require.Nil(t, relayExit)
++	require.Equal(t, "gpt-realtime", result.RequestModel)
++	require.Equal(t, int64(0), result.ClientToUpstreamFrames)
++	require.Equal(t, int64(1), result.UpstreamToClientFrames)
++	require.Empty(t, upstreamConn.Writes())
++
++	clientWrites := clientConn.Writes()
++	require.Len(t, clientWrites, 1)
++	require.JSONEq(t, `{"type":"session.created","session":{"id":"sess_123","model":"gpt-realtime"}}`, string(clientWrites[0].payload))
++}
++
+ func TestRelay_FunctionCallOutputBytesPreserved(t *testing.T) {
+ 	t.Parallel()
+ 

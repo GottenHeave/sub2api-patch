@@ -1,0 +1,642 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sat, 13 Jun 2026 18:23:49 +0000
+Subject: [PATCH] feat: route OpenAI realtime gateway requests
+
+
+diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
+index 0d6f4b3c..e18d8a2d 100644
+--- a/backend/internal/handler/endpoint.go
++++ b/backend/internal/handler/endpoint.go
+@@ -15,13 +15,18 @@ import (
+ // ──────────────────────────────────────────────────────────
+ 
+ const (
+-	EndpointMessages          = "/v1/messages"
+-	EndpointChatCompletions   = "/v1/chat/completions"
+-	EndpointEmbeddings        = "/v1/embeddings"
+-	EndpointResponses         = "/v1/responses"
+-	EndpointImagesGenerations = "/v1/images/generations"
+-	EndpointImagesEdits       = "/v1/images/edits"
+-	EndpointGeminiModels      = "/v1beta/models"
++	EndpointMessages            = "/v1/messages"
++	EndpointChatCompletions     = "/v1/chat/completions"
++	EndpointEmbeddings          = "/v1/embeddings"
++	EndpointResponses           = "/v1/responses"
++	EndpointRealtime            = "/v1/realtime"
++	EndpointRealtimeREST        = "/v1/realtime/rest"
++	EndpointRealtimeCallsAccept = EndpointRealtimeREST
++	EndpointAudioTranscriptions = "/v1/audio/transcriptions"
++	EndpointTranscribe          = "/transcribe"
++	EndpointImagesGenerations   = "/v1/images/generations"
++	EndpointImagesEdits         = "/v1/images/edits"
++	EndpointGeminiModels        = "/v1beta/models"
+ )
+ 
+ // gin.Context keys used by the middleware and helpers below.
+@@ -53,8 +58,16 @@ func NormalizeInboundEndpoint(path string) string {
+ 		return EndpointImagesGenerations
+ 	case strings.Contains(path, EndpointImagesEdits) || strings.Contains(path, "/images/edits"):
+ 		return EndpointImagesEdits
++	case strings.Contains(path, EndpointAudioTranscriptions) || strings.Contains(path, "/audio/transcriptions"):
++		return EndpointAudioTranscriptions
++	case path == EndpointTranscribe:
++		return EndpointTranscribe
+ 	case strings.Contains(path, EndpointResponses):
+ 		return EndpointResponses
++	case isRealtimeRESTEndpoint(path):
++		return EndpointRealtimeREST
++	case strings.Contains(path, EndpointRealtime):
++		return EndpointRealtime
+ 	case strings.Contains(path, EndpointGeminiModels):
+ 		return EndpointGeminiModels
+ 	default:
+@@ -81,6 +94,15 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
+ 		if inbound == EndpointEmbeddings || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits {
+ 			return inbound
+ 		}
++		if inbound == EndpointAudioTranscriptions || inbound == EndpointTranscribe {
++			return EndpointAudioTranscriptions
++		}
++		if inbound == EndpointRealtime {
++			return EndpointRealtime
++		}
++		if inbound == EndpointRealtimeREST {
++			return realtimeRESTUpstreamPath(rawRequestPath)
++		}
+ 		// OpenAI forwards everything to the Responses API.
+ 		// Preserve subresource suffix (e.g. /v1/responses/compact).
+ 		if suffix := responsesSubpathSuffix(rawRequestPath); suffix != "" {
+@@ -125,6 +147,41 @@ func responsesSubpathSuffix(rawPath string) string {
+ 	return suffix
+ }
+ 
++func isRealtimeRESTEndpoint(path string) bool {
++	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
++	if trimmed == "" {
++		return false
++	}
++	switch {
++	case strings.Contains(trimmed, "/realtime/client_secrets"):
++		return true
++	case strings.Contains(trimmed, "/realtime/translations/client_secrets"):
++		return true
++	case strings.Contains(trimmed, "/realtime/translations/calls"):
++		return true
++	case strings.Contains(trimmed, "/realtime/sessions"):
++		return true
++	case strings.Contains(trimmed, "/realtime/transcription_sessions"):
++		return true
++	case strings.Contains(trimmed, "/realtime/calls"):
++		return true
++	default:
++		return false
++	}
++}
++
++func realtimeRESTUpstreamPath(rawPath string) string {
++	trimmed := strings.TrimRight(strings.TrimSpace(rawPath), "/")
++	idx := strings.LastIndex(trimmed, "/realtime/")
++	if idx < 0 {
++		if strings.HasSuffix(trimmed, "/realtime") {
++			return EndpointRealtime
++		}
++		return EndpointRealtimeREST
++	}
++	return "/v1" + trimmed[idx:]
++}
++
+ // ──────────────────────────────────────────────────────────
+ // Middleware
+ // ──────────────────────────────────────────────────────────
+diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
+index 65bf172e..4466242c 100644
+--- a/backend/internal/handler/openai_gateway_handler.go
++++ b/backend/internal/handler/openai_gateway_handler.go
+@@ -1148,9 +1148,30 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
+ 	return wrapReleaseOnDone(ctx, accountReleaseFunc), true
+ }
+ 
++type openAIWebSocketEndpointOptions struct {
++	Realtime    bool
++	Translation bool
++}
++
+ // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
+ // GET /openai/v1/responses (Upgrade: websocket)
+ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
++	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{})
++}
++
++// RealtimeWebSocket handles OpenAI Realtime API WebSocket ingress endpoint
++// GET /v1/realtime?model=... (Upgrade: websocket)
++func (h *OpenAIGatewayHandler) RealtimeWebSocket(c *gin.Context) {
++	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{Realtime: true})
++}
++
++// RealtimeTranslationWebSocket handles OpenAI Realtime translation WebSocket ingress endpoint.
++// GET /v1/realtime/translations?model=... (Upgrade: websocket)
++func (h *OpenAIGatewayHandler) RealtimeTranslationWebSocket(c *gin.Context) {
++	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{Realtime: true, Translation: true})
++}
++
++func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSocketEndpointOptions) {
+ 	if !isOpenAIWSUpgradeRequest(c.Request) {
+ 		h.errorResponse(c, http.StatusUpgradeRequired, "invalid_request_error", "WebSocket upgrade required (Upgrade: websocket)")
+ 		return
+@@ -1170,11 +1191,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 
+ 	reqLog := requestLogger(
+ 		c,
+-		"handler.openai_gateway.responses_ws",
++		openAIWebSocketLoggerName(opts),
+ 		zap.Int64("user_id", subject.UserID),
+ 		zap.Int64("api_key_id", apiKey.ID),
+ 		zap.Any("group_id", apiKey.GroupID),
+ 		zap.Bool("openai_ws_mode", true),
++		zap.Bool("realtime", opts.Realtime),
+ 	)
+ 	if !h.ensureResponsesDependencies(c, reqLog) {
+ 		return
+@@ -1204,33 +1226,42 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 	wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
+ 
+ 	ctx := c.Request.Context()
+-	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+-	msgType, firstMessage, err := wsConn.Read(readCtx)
+-	cancel()
+-	if err != nil {
+-		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
+-		reqLog.Warn("openai.websocket_read_first_message_failed",
+-			zap.Error(err),
+-			zap.String("client_ip", clientIP),
+-			zap.String("close_status", closeStatus),
+-			zap.String("close_reason", closeReason),
+-			zap.Duration("read_timeout", 30*time.Second),
+-		)
+-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "missing first response.create message")
+-		return
+-	}
+-	if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
+-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "unsupported websocket message type")
+-		return
++	var (
++		msgType      coderws.MessageType
++		firstMessage []byte
++	)
++	queryModel := strings.TrimSpace(c.Request.URL.Query().Get("model"))
++	if !opts.Realtime || queryModel == "" {
++		readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
++		var readErr error
++		msgType, firstMessage, readErr = wsConn.Read(readCtx)
++		cancel()
++		if readErr != nil {
++			closeStatus, closeReason := summarizeWSCloseErrorForLog(readErr)
++			reqLog.Warn("openai.websocket_read_first_message_failed",
++				zap.Error(readErr),
++				zap.String("client_ip", clientIP),
++				zap.String("close_status", closeStatus),
++				zap.String("close_reason", closeReason),
++				zap.Duration("read_timeout", 30*time.Second),
++			)
++			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, openAIWebSocketMissingFirstMessageReason(opts))
++			return
++		}
+ 	}
+-	if !gjson.ValidBytes(firstMessage) {
+-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid JSON payload")
+-		return
++	if len(firstMessage) > 0 {
++		if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
++			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "unsupported websocket message type")
++			return
++		}
++		if !gjson.ValidBytes(firstMessage) {
++			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid JSON payload")
++			return
++		}
+ 	}
+-
+-	reqModel := strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
++	reqModel := resolveOpenAIWebSocketRequestModel(c, firstMessage, opts)
+ 	if reqModel == "" {
+-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "model is required in first response.create payload")
++		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, openAIWebSocketMissingModelReason(opts))
+ 		return
+ 	}
+ 	previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String())
+@@ -1248,13 +1279,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 	setOpsRequestContext(c, reqModel, true)
+ 	setOpsEndpointContext(c, "", int16(service.RequestTypeWSV2))
+ 
+-	if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage); decision != nil && decision.Blocked {
+-		writeContentModerationWSError(ctx, wsConn, decision)
+-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, decision.Message)
+-		return
++	if len(firstMessage) > 0 {
++		if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage); decision != nil && decision.Blocked {
++			writeContentModerationWSError(ctx, wsConn, decision)
++			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, decision.Message)
++			return
++		}
+ 	}
+ 
+-	if service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage) && !service.GroupAllowsImageGeneration(apiKey.Group) {
++	if !opts.Realtime && service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage) && !service.GroupAllowsImageGeneration(apiKey.Group) {
+ 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
+ 		return
+ 	}
+@@ -1328,15 +1361,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 
+ 	for {
+ 		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
++		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityAndAccountType(
+ 			ctx,
+ 			apiKey.GroupID,
+-			previousResponseID,
++			openAIWebSocketPreviousResponseID(previousResponseID, opts),
+ 			sessionHash,
+ 			reqModel,
+ 			failedAccountIDs,
+ 			service.OpenAIUpstreamTransportResponsesWebsocketV2,
+ 			service.OpenAIEndpointCapabilityChatCompletions,
++			openAIWebSocketRequiredAccountType(opts),
+ 			false,
+ 		)
+ 		if err != nil {
+@@ -1527,9 +1561,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 		// WebSocket 首包可能很大，hash 必须在 hooks 外算成字符串，避免 AfterTurn 闭包保活请求体。
+ 		requestPayloadHash = service.HashUsageRequestPayload(wsFirstMessage)
+ 
+-		if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
++		var proxyErr error
++		if opts.Realtime {
++			realtimeModel := reqModel
++			if channelMappingWS.Mapped && strings.TrimSpace(channelMappingWS.MappedModel) != "" {
++				realtimeModel = channelMappingWS.MappedModel
++			}
++			proxyErr = h.gatewayService.ProxyRealtimeWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, realtimeModel, opts.RealtimeUpstreamEndpoint(), hooks)
++		} else {
++			proxyErr = h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks)
++		}
++		if proxyErr != nil {
+ 			var failoverErr *service.UpstreamFailoverError
+-			if errors.As(err, &failoverErr) {
++			if errors.As(proxyErr, &failoverErr) {
+ 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+ 				releaseAccountSlot()
+ 				failedAccountIDs[account.ID] = struct{}{}
+@@ -1557,15 +1601,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 			}
+ 
+ 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+-			closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
++			closeStatus, closeReason := summarizeWSCloseErrorForLog(proxyErr)
+ 			reqLog.Warn("openai.websocket_proxy_failed",
+ 				zap.Int64("account_id", account.ID),
+-				zap.Error(err),
++				zap.Error(proxyErr),
+ 				zap.String("close_status", closeStatus),
+ 				zap.String("close_reason", closeReason),
+ 			)
+ 			var closeErr *service.OpenAIWSClientCloseError
+-			if errors.As(err, &closeErr) {
++			if errors.As(proxyErr, &closeErr) {
+ 				closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
+ 				return
+ 			}
+@@ -1578,6 +1622,62 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 
+ }
+ 
++func openAIWebSocketLoggerName(opts openAIWebSocketEndpointOptions) string {
++	if opts.Realtime {
++		if opts.Translation {
++			return "handler.openai_gateway.realtime_translation_ws"
++		}
++		return "handler.openai_gateway.realtime_ws"
++	}
++	return "handler.openai_gateway.responses_ws"
++}
++
++func (opts openAIWebSocketEndpointOptions) RealtimeUpstreamEndpoint() string {
++	if opts.Realtime && opts.Translation {
++		return "/v1/realtime/translations"
++	}
++	return "/v1/realtime"
++}
++
++func openAIWebSocketMissingFirstMessageReason(opts openAIWebSocketEndpointOptions) string {
++	if opts.Realtime {
++		return "missing first realtime message"
++	}
++	return "missing first response.create message"
++}
++
++func openAIWebSocketMissingModelReason(opts openAIWebSocketEndpointOptions) string {
++	if opts.Realtime {
++		return "model is required in realtime query or session.update payload"
++	}
++	return "model is required in first response.create payload"
++}
++
++func resolveOpenAIWebSocketRequestModel(c *gin.Context, firstMessage []byte, opts openAIWebSocketEndpointOptions) string {
++	if opts.Realtime {
++		if c != nil && c.Request != nil && c.Request.URL != nil {
++			if model := strings.TrimSpace(c.Request.URL.Query().Get("model")); model != "" {
++				return model
++			}
++		}
++		if model := strings.TrimSpace(gjson.GetBytes(firstMessage, "session.model").String()); model != "" {
++			return model
++		}
++	}
++	return strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
++}
++
++func openAIWebSocketPreviousResponseID(previousResponseID string, opts openAIWebSocketEndpointOptions) string {
++	if opts.Realtime {
++		return ""
++	}
++	return previousResponseID
++}
++
++func openAIWebSocketRequiredAccountType(opts openAIWebSocketEndpointOptions) string {
++	return ""
++}
++
+ func (h *OpenAIGatewayHandler) recoverResponsesPanic(c *gin.Context, streamStarted *bool) {
+ 	recovered := recover()
+ 	if recovered == nil {
+diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
+index b039a6ec..ae72d566 100644
+--- a/backend/internal/server/routes/gateway.go
++++ b/backend/internal/server/routes/gateway.go
+@@ -81,6 +81,64 @@ func RegisterGatewayRoutes(
+ 			h.Gateway.Responses(c)
+ 		})
+ 		gateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
++		gateway.GET("/realtime", func(c *gin.Context) {
++			if getGroupPlatform(c) != service.PlatformOpenAI {
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeWebSocket(c)
++		})
++		gateway.GET("/realtime/translations", func(c *gin.Context) {
++			if getGroupPlatform(c) != service.PlatformOpenAI {
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeTranslationWebSocket(c)
++		})
++		realtimeRESTHandler := func(c *gin.Context) {
++			if getGroupPlatform(c) != service.PlatformOpenAI {
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeREST(c)
++		}
++		gateway.POST("/realtime/client_secrets", realtimeRESTHandler)
++		gateway.POST("/realtime/translations/client_secrets", realtimeRESTHandler)
++		gateway.POST("/realtime/calls", realtimeRESTHandler)
++		gateway.POST("/realtime/translations/calls", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/accept", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/hangup", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/refer", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/reject", realtimeRESTHandler)
++		gateway.POST("/realtime/sessions", realtimeRESTHandler)
++		gateway.POST("/realtime/transcription_sessions", realtimeRESTHandler)
++		gateway.POST("/audio/transcriptions", func(c *gin.Context) {
++			if getGroupPlatform(c) != service.PlatformOpenAI {
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Audio transcriptions API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.AudioTranscriptions(c)
++		})
+ 		// OpenAI Chat Completions API: auto-route based on group platform
+ 		gateway.POST("/chat/completions", func(c *gin.Context) {
+ 			if getGroupPlatform(c) == service.PlatformOpenAI {
+@@ -210,6 +268,18 @@ func RegisterGatewayRoutes(
+ 		}
+ 		h.OpenAIGateway.Images(c)
+ 	})
++	r.POST("/transcribe", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
++		if getGroupPlatform(c) != service.PlatformOpenAI {
++			c.JSON(http.StatusNotFound, gin.H{
++				"error": gin.H{
++					"type":    "not_found_error",
++					"message": "Audio transcriptions API is not supported for this platform",
++				},
++			})
++			return
++		}
++		h.OpenAIGateway.AudioTranscriptions(c)
++	})
+ 
+ 	// Antigravity 模型列表
+ 	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)
+diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
+index 6374ee91..3205a0dd 100644
+--- a/backend/internal/service/openai_gateway_service.go
++++ b/backend/internal/service/openai_gateway_service.go
+@@ -40,8 +40,9 @@ const (
+ 	// ChatGPT internal API for OAuth accounts
+ 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
+ 	// OpenAI Platform API for API Key accounts (fallback)
+-	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
+-	openaiStickySessionTTL = time.Hour // 粘性会话TTL
++	openaiPlatformAPIURL         = "https://api.openai.com/v1/responses"
++	openaiPlatformRealtimeAPIURL = "https://api.openai.com/v1/realtime"
++	openaiStickySessionTTL       = time.Hour // 粘性会话TTL
+ 	// 与真实 Codex CLI 的 User-Agent 结构对齐：
+ 	// {originator}/{version} ({OS} {OS_version}; {arch}) {terminal}
+ 	// 旧值 "codex_cli_rs/0.125.0" 缺少 OS/架构/终端后缀，易被上游指纹识别为非官方客户端。
+@@ -216,6 +217,10 @@ type OpenAIUsage struct {
+ 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+ 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+ 	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
++	InputAudioTokens         int `json:"input_audio_tokens,omitempty"`
++	OutputAudioTokens        int `json:"output_audio_tokens,omitempty"`
++	CacheCreationAudioTokens int `json:"cache_creation_audio_tokens,omitempty"`
++	CacheReadAudioTokens     int `json:"cache_read_audio_tokens,omitempty"`
+ }
+ 
+ // OpenAIForwardResult represents the result of forwarding
+@@ -5138,6 +5143,9 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+ 		outputTokens = value.Get("completion_tokens").Int()
+ 	}
+ 	cacheReadTokens := value.Get("input_tokens_details.cached_tokens").Int()
++	if cacheReadTokens == 0 {
++		cacheReadTokens = value.Get("input_token_details.cached_tokens").Int()
++	}
+ 	if cacheReadTokens == 0 {
+ 		cacheReadTokens = value.Get("prompt_tokens_details.cached_tokens").Int()
+ 	}
+@@ -5145,15 +5153,51 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+ 	if imageOutputTokens == 0 {
+ 		imageOutputTokens = value.Get("completion_tokens_details.image_tokens").Int()
+ 	}
++	inputAudioTokens := firstGJSONInt(value,
++		"input_token_details.audio_tokens",
++		"input_tokens_details.audio_tokens",
++		"prompt_tokens_details.audio_tokens",
++	)
++	outputAudioTokens := firstGJSONInt(value,
++		"output_token_details.audio_tokens",
++		"output_tokens_details.audio_tokens",
++		"completion_tokens_details.audio_tokens",
++	)
++	cacheReadAudioTokens := firstGJSONInt(value,
++		"input_token_details.cached_tokens_details.audio_tokens",
++		"input_tokens_details.cached_tokens_details.audio_tokens",
++		"prompt_tokens_details.cached_tokens_details.audio_tokens",
++	)
++	cacheCreationAudioTokens := firstGJSONInt(value,
++		"input_token_details.cache_creation.audio_tokens",
++		"input_tokens_details.cache_creation.audio_tokens",
++		"prompt_tokens_details.cache_creation.audio_tokens",
++		"cache_creation_input_token_details.audio_tokens",
++		"cache_creation_input_tokens_details.audio_tokens",
++	)
+ 	return OpenAIUsage{
+ 		InputTokens:              int(inputTokens),
+ 		OutputTokens:             int(outputTokens),
+ 		CacheCreationInputTokens: int(value.Get("cache_creation_input_tokens").Int()),
+ 		CacheReadInputTokens:     int(cacheReadTokens),
+ 		ImageOutputTokens:        int(imageOutputTokens),
++		InputAudioTokens:         int(inputAudioTokens),
++		OutputAudioTokens:        int(outputAudioTokens),
++		CacheCreationAudioTokens: int(cacheCreationAudioTokens),
++		CacheReadAudioTokens:     int(cacheReadAudioTokens),
+ 	}, true
+ }
+ 
++func firstGJSONInt(value gjson.Result, paths ...string) int64 {
++	for _, path := range paths {
++		result := value.Get(path)
++		if result.Exists() && result.Type == gjson.Number {
++			return result.Int()
++		}
++	}
++	return 0
++}
++
+ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
+ 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+ 	if err != nil {
+@@ -5503,6 +5547,10 @@ func buildOpenAIResponsesURL(base string) string {
+ 	return buildOpenAIEndpointURL(base, "/v1/responses")
+ }
+ 
++func buildOpenAIRealtimeEndpointURL(base string, endpoint string) string {
++	return buildOpenAIEndpointURL(base, endpoint)
++}
++
+ func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {
+ 	if len(reqBody) == 0 {
+ 		return false
+@@ -5759,14 +5807,22 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
+ 	if actualInputTokens < 0 {
+ 		actualInputTokens = 0
+ 	}
++	actualAudioInputTokens := result.Usage.InputAudioTokens - result.Usage.CacheReadAudioTokens
++	if actualAudioInputTokens < 0 {
++		actualAudioInputTokens = 0
++	}
+ 
+ 	// Calculate cost
+ 	tokens := UsageTokens{
+-		InputTokens:         actualInputTokens,
+-		OutputTokens:        result.Usage.OutputTokens,
+-		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
+-		CacheReadTokens:     result.Usage.CacheReadInputTokens,
+-		ImageOutputTokens:   result.Usage.ImageOutputTokens,
++		InputTokens:              actualInputTokens,
++		OutputTokens:             result.Usage.OutputTokens,
++		CacheCreationTokens:      result.Usage.CacheCreationInputTokens,
++		CacheReadTokens:          result.Usage.CacheReadInputTokens,
++		ImageOutputTokens:        result.Usage.ImageOutputTokens,
++		AudioInputTokens:         actualAudioInputTokens,
++		AudioOutputTokens:        result.Usage.OutputAudioTokens,
++		AudioCacheCreationTokens: result.Usage.CacheCreationAudioTokens,
++		AudioCacheReadTokens:     result.Usage.CacheReadAudioTokens,
+ 	}
+ 
+ 	// Get rate multiplier
+@@ -5848,28 +5904,32 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
+ 	}
+ 
+ 	usageLog := &UsageLog{
+-		UserID:              user.ID,
+-		APIKeyID:            apiKey.ID,
+-		AccountID:           account.ID,
+-		RequestID:           requestID,
+-		Model:               result.Model,
+-		RequestedModel:      requestedModel,
+-		UpstreamModel:       optionalNonEqualStringPtr(result.UpstreamModel, result.Model),
+-		ServiceTier:         result.ServiceTier,
+-		ReasoningEffort:     result.ReasoningEffort,
+-		InboundEndpoint:     optionalTrimmedStringPtr(input.InboundEndpoint),
+-		UpstreamEndpoint:    optionalTrimmedStringPtr(input.UpstreamEndpoint),
+-		InputTokens:         actualInputTokens,
+-		OutputTokens:        result.Usage.OutputTokens,
+-		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
+-		CacheReadTokens:     result.Usage.CacheReadInputTokens,
+-		ImageOutputTokens:   result.Usage.ImageOutputTokens,
+-		ImageCount:          result.ImageCount,
+-		ImageSize:           optionalTrimmedStringPtr(result.ImageSize),
+-		ImageInputSize:      optionalTrimmedStringPtr(result.ImageInputSize),
+-		ImageOutputSize:     optionalTrimmedStringPtr(result.ImageOutputSize),
+-		ImageSizeSource:     optionalTrimmedStringPtr(result.ImageSizeSource),
+-		ImageSizeBreakdown:  result.ImageSizeBreakdown,
++		UserID:                   user.ID,
++		APIKeyID:                 apiKey.ID,
++		AccountID:                account.ID,
++		RequestID:                requestID,
++		Model:                    result.Model,
++		RequestedModel:           requestedModel,
++		UpstreamModel:            optionalNonEqualStringPtr(result.UpstreamModel, result.Model),
++		ServiceTier:              result.ServiceTier,
++		ReasoningEffort:          result.ReasoningEffort,
++		InboundEndpoint:          optionalTrimmedStringPtr(input.InboundEndpoint),
++		UpstreamEndpoint:         optionalTrimmedStringPtr(input.UpstreamEndpoint),
++		InputTokens:              actualInputTokens,
++		OutputTokens:             result.Usage.OutputTokens,
++		CacheCreationTokens:      result.Usage.CacheCreationInputTokens,
++		CacheReadTokens:          result.Usage.CacheReadInputTokens,
++		AudioInputTokens:         actualAudioInputTokens,
++		AudioOutputTokens:        result.Usage.OutputAudioTokens,
++		AudioCacheCreationTokens: result.Usage.CacheCreationAudioTokens,
++		AudioCacheReadTokens:     result.Usage.CacheReadAudioTokens,
++		ImageOutputTokens:        result.Usage.ImageOutputTokens,
++		ImageCount:               result.ImageCount,
++		ImageSize:                optionalTrimmedStringPtr(result.ImageSize),
++		ImageInputSize:           optionalTrimmedStringPtr(result.ImageInputSize),
++		ImageOutputSize:          optionalTrimmedStringPtr(result.ImageOutputSize),
++		ImageSizeSource:          optionalTrimmedStringPtr(result.ImageSizeSource),
++		ImageSizeBreakdown:       result.ImageSizeBreakdown,
+ 	}
+ 	if cost != nil {
+ 		usageLog.InputCost = cost.InputCost

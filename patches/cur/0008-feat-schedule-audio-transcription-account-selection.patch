@@ -1,0 +1,368 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sat, 13 Jun 2026 18:23:50 +0000
+Subject: [PATCH] feat: schedule audio transcription account selection
+
+
+diff --git a/backend/internal/service/model_rate_limit.go b/backend/internal/service/model_rate_limit.go
+index 1568a00f..bc3e1813 100644
+--- a/backend/internal/service/model_rate_limit.go
++++ b/backend/internal/service/model_rate_limit.go
+@@ -14,6 +14,33 @@ const (
+ 	openAIImageGenerationRateLimitKey  = "openai:image_generation"
+ )
+ 
++type modelRateLimitExtraScopesContextKey struct{}
++
++func WithModelRateLimitExtraScopes(ctx context.Context, scopes ...string) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	cleaned := make([]string, 0, len(scopes))
++	for _, scope := range scopes {
++		scope = strings.TrimSpace(scope)
++		if scope != "" {
++			cleaned = append(cleaned, scope)
++		}
++	}
++	if len(cleaned) == 0 {
++		return ctx
++	}
++	return context.WithValue(ctx, modelRateLimitExtraScopesContextKey{}, cleaned)
++}
++
++func modelRateLimitExtraScopesFromContext(ctx context.Context) []string {
++	if ctx == nil {
++		return nil
++	}
++	scopes, _ := ctx.Value(modelRateLimitExtraScopesContextKey{}).([]string)
++	return scopes
++}
++
+ // isRateLimitActiveForKey 检查指定 key 的限流是否生效
+ func (a *Account) isRateLimitActiveForKey(key string) bool {
+ 	resetAt := a.modelRateLimitResetAt(key)
+@@ -73,19 +100,35 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
+ 	}
+ 
+ 	keys := []string{modelKey}
++	for _, scope := range modelRateLimitExtraScopesFromContext(ctx) {
++		keys = appendModelRateLimitKey(keys, scope)
++	}
+ 	switch a.Platform {
+ 	case PlatformAntigravity:
+-		if isAntigravityGeminiModel(modelKey) && modelKey != antigravityGeminiModelRateLimitKey {
+-			keys = append(keys, antigravityGeminiModelRateLimitKey)
++		if isAntigravityGeminiModel(modelKey) {
++			keys = appendModelRateLimitKey(keys, antigravityGeminiModelRateLimitKey)
+ 		}
+ 	case PlatformOpenAI:
+-		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) && modelKey != openAIImageGenerationRateLimitKey {
+-			keys = append(keys, openAIImageGenerationRateLimitKey)
++		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) {
++			keys = appendModelRateLimitKey(keys, openAIImageGenerationRateLimitKey)
+ 		}
+ 	}
+ 	return keys
+ }
+ 
++func appendModelRateLimitKey(keys []string, key string) []string {
++	key = strings.TrimSpace(key)
++	if key == "" {
++		return keys
++	}
++	for _, existing := range keys {
++		if existing == key {
++			return keys
++		}
++	}
++	return append(keys, key)
++}
++
+ func openAIImageGenerationRateLimitApplies(ctx context.Context, requestedModel, modelKey string) bool {
+ 	if isOpenAIImageGenerationModel(requestedModel) || isOpenAIImageGenerationModel(modelKey) {
+ 		return true
+diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
+index ece3716b..4592ac0b 100644
+--- a/backend/internal/service/openai_account_scheduler.go
++++ b/backend/internal/service/openai_account_scheduler.go
+@@ -45,6 +45,7 @@ type OpenAIAccountScheduleRequest struct {
+ 	PreviousResponseID      string
+ 	RequestedModel          string
+ 	RequiredTransport       OpenAIUpstreamTransport
++	RequiredAccountType     string
+ 	RequiredCapability      OpenAIEndpointCapability
+ 	RequiredImageCapability OpenAIImagesCapability
+ 	RequireCompact          bool
+@@ -284,7 +285,8 @@ func (s *defaultOpenAIAccountScheduler) Select(
+ 			return nil, decision, err
+ 		}
+ 		if selection != nil && selection.Account != nil {
+-			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) {
++			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) ||
++				!s.isAccountRequestCompatible(ctx, selection.Account, req) {
+ 				if selection.ReleaseFunc != nil {
+ 					selection.ReleaseFunc()
+ 				}
+@@ -376,7 +378,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
+ 		return nil, false, nil
+ 	}
+ 	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
+-	if account == nil || !openAIStickyAccountMatchesGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
++	if account == nil || !openAIStickyAccountMatchesGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, account, req) {
+ 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+ 		return nil, false, nil
+ 	}
+@@ -1038,9 +1040,12 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
+ 	if s != nil && s.service != nil && s.service.isOpenAIAccountRuntimeBlocked(account) {
+ 		return false
+ 	}
++	if !openAIAccountTypeCompatible(account, req.RequiredAccountType) {
++		return false
++	}
+ 	// Quota auto-pause must be evaluated during the initial filter too. Without it the
+ 	// TopK candidate pool can be filled with paused accounts and the later fresh/DB
+-	// rechecks won't reach healthy accounts that fell outside TopK — manifesting as
++	// rechecks won't reach healthy accounts that fell outside TopK, manifesting as
+ 	// "no available accounts" even though healthy ones exist.
+ 	if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
+ 		return false
+@@ -1048,6 +1053,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
+ 	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+ 		return false
+ 	}
++	if !account.IsSchedulableForModelWithContext(ctx, req.RequestedModel) {
++		return false
++	}
+ 	if req.GroupID != nil && s != nil && s.service != nil &&
+ 		s.service.needsUpstreamChannelRestrictionCheck(ctx, req.GroupID) &&
+ 		s.service.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
+@@ -1056,6 +1064,22 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
+ 	return accountSupportsOpenAICapabilities(account, req.RequiredCapability, req.RequiredImageCapability)
+ }
+ 
++func openAIAccountTypeCompatible(account *Account, requiredAccountType string) bool {
++	requiredAccountType = strings.TrimSpace(requiredAccountType)
++	if requiredAccountType == "" {
++		return true
++	}
++	if account == nil {
++		return false
++	}
++	for _, candidate := range strings.Split(requiredAccountType, ",") {
++		if account.Type == strings.TrimSpace(candidate) {
++			return true
++		}
++	}
++	return false
++}
++
+ func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
+ 	if s == nil || s.stats == nil {
+ 		return
+@@ -1176,7 +1200,21 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
+ 	requiredTransport OpenAIUpstreamTransport,
+ 	requireCompact bool,
+ ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", requireCompact)
++	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", "", requireCompact)
++}
++
++func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAccountType(
++	ctx context.Context,
++	groupID *int64,
++	previousResponseID string,
++	sessionHash string,
++	requestedModel string,
++	excludedIDs map[int64]struct{},
++	requiredTransport OpenAIUpstreamTransport,
++	requiredAccountType string,
++	requireCompact bool,
++) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
++	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", requiredAccountType, requireCompact)
+ }
+ 
+ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
+@@ -1190,7 +1228,67 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
+ 	requiredCapability OpenAIEndpointCapability,
+ 	requireCompact bool,
+ ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact)
++	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", "", requireCompact)
++}
++
++func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndAccountType(
++	ctx context.Context,
++	groupID *int64,
++	previousResponseID string,
++	sessionHash string,
++	requestedModel string,
++	excludedIDs map[int64]struct{},
++	requiredTransport OpenAIUpstreamTransport,
++	requiredCapability OpenAIEndpointCapability,
++	requiredAccountType string,
++	requireCompact bool,
++) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
++	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requiredAccountType, requireCompact)
++}
++
++func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
++	ctx context.Context,
++	groupID *int64,
++	sessionHash string,
++	requestedModel string,
++	excludedIDs map[int64]struct{},
++) (*AccountSelectionResult, OpenAIAccountScheduleDecision, string, error) {
++	selection, decision, err := s.SelectAccountWithSchedulerForAccountType(
++		ctx,
++		groupID,
++		"",
++		sessionHash,
++		requestedModel,
++		excludedIDs,
++		OpenAIUpstreamTransportHTTPSSE,
++		OpenAIAudioTranscriptionsRequiredAccountTypes,
++		false,
++	)
++	if err == nil {
++		return selection, decision, requestedModel, nil
++	}
++	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
++		return nil, decision, requestedModel, err
++	}
++	fallbackModel := OpenAIAudioTranscriptionsAccountSelectionModel(requestedModel)
++	if fallbackModel == "" || fallbackModel == requestedModel {
++		return nil, decision, requestedModel, err
++	}
++	fallbackSelection, fallbackDecision, fallbackErr := s.SelectAccountWithSchedulerForAccountType(
++		ctx,
++		groupID,
++		"",
++		sessionHash,
++		fallbackModel,
++		excludedIDs,
++		OpenAIUpstreamTransportHTTPSSE,
++		OpenAIAudioTranscriptionsRequiredAccountTypes,
++		false,
++	)
++	if fallbackErr != nil {
++		return nil, decision, requestedModel, err
++	}
++	return fallbackSelection, fallbackDecision, fallbackModel, nil
+ }
+ 
+ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
+@@ -1201,13 +1299,13 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
+ 	excludedIDs map[int64]struct{},
+ 	requiredCapability OpenAIImagesCapability,
+ ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false)
++	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, "", false)
+ 	if err == nil && selection != nil && selection.Account != nil {
+ 		return selection, decision, nil
+ 	}
+ 	// 如果要求 native 能力（如指定了模型）但没有可用的 APIKey 账号，回退到 basic（OAuth 账号）
+ 	if requiredCapability == OpenAIImagesCapabilityNative {
+-		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false)
++		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, "", false)
+ 	}
+ 	return selection, decision, err
+ }
+@@ -1222,6 +1320,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
+ 	requiredTransport OpenAIUpstreamTransport,
+ 	requiredCapability OpenAIEndpointCapability,
+ 	requiredImageCapability OpenAIImagesCapability,
++	requiredAccountType string,
+ 	requireCompact bool,
+ ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+ 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
+@@ -1239,7 +1338,8 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
+ 				if selection == nil || selection.Account == nil {
+ 					return selection, decision, nil
+ 				}
+-				if accountSupportsOpenAICapabilities(selection.Account, requiredCapability, requiredImageCapability) {
++				if accountSupportsOpenAICapabilities(selection.Account, requiredCapability, requiredImageCapability) &&
++					openAIAccountTypeCompatible(selection.Account, requiredAccountType) {
+ 					return selection, decision, nil
+ 				}
+ 				if selection.ReleaseFunc != nil {
+@@ -1265,7 +1365,8 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
+ 				return selection, decision, nil
+ 			}
+ 			if s.isOpenAIAccountTransportCompatible(selection.Account, requiredTransport) &&
+-				accountSupportsOpenAICapabilities(selection.Account, requiredCapability, requiredImageCapability) {
++				accountSupportsOpenAICapabilities(selection.Account, requiredCapability, requiredImageCapability) &&
++				openAIAccountTypeCompatible(selection.Account, requiredAccountType) {
+ 				return selection, decision, nil
+ 			}
+ 			if selection.ReleaseFunc != nil {
+@@ -1302,6 +1403,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
+ 		PreviousResponseID:      previousResponseID,
+ 		RequestedModel:          requestedModel,
+ 		RequiredTransport:       requiredTransport,
++		RequiredAccountType:     requiredAccountType,
+ 		RequiredCapability:      requiredCapability,
+ 		RequiredImageCapability: requiredImageCapability,
+ 		RequireCompact:          requireCompact,
+diff --git a/backend/internal/service/ratelimit_service.go b/backend/internal/service/ratelimit_service.go
+index e2704f3c..6c89890c 100644
+--- a/backend/internal/service/ratelimit_service.go
++++ b/backend/internal/service/ratelimit_service.go
+@@ -915,6 +915,10 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
+ 	if resetTimestamp == "" {
+ 		switch account.Platform {
+ 		case PlatformOpenAI:
++			if parseOpenAIRetryAfterSecondsFromBody(responseBody) != nil {
++				slog.Warn("openai_429_retry_after_seconds_skipped_account_rate_limit", "account_id", account.ID)
++				return
++			}
+ 			// 尝试解析 OpenAI 的 usage_limit_reached 错误
+ 			if resetAt := parseOpenAIRateLimitResetTime(responseBody); resetAt != nil {
+ 				resetTime := time.Unix(*resetAt, 0)
+@@ -1254,6 +1258,46 @@ func parseOpenAIRateLimitResetTime(body []byte) *int64 {
+ 	return nil
+ }
+ 
++func parseOpenAIRetryAfterSecondsFromBody(body []byte) *int64 {
++	var parsed map[string]any
++	if err := json.Unmarshal(body, &parsed); err != nil {
++		return nil
++	}
++	if resetAt := parseOpenAIRetryAfterSeconds(parsed["detail"]); resetAt != nil {
++		return resetAt
++	}
++	return parseOpenAIRetryAfterSeconds(parsed)
++}
++
++func parseOpenAIRetryAfterSeconds(raw any) *int64 {
++	detail, ok := raw.(map[string]any)
++	if !ok {
++		return nil
++	}
++	rawSeconds, ok := detail["retry_after_seconds"]
++	if !ok {
++		return nil
++	}
++	var seconds int64
++	switch v := rawSeconds.(type) {
++	case float64:
++		seconds = int64(v)
++	case string:
++		parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
++		if err != nil {
++			return nil
++		}
++		seconds = parsed
++	default:
++		return nil
++	}
++	if seconds <= 0 {
++		return nil
++	}
++	ts := time.Now().Unix() + seconds
++	return &ts
++}
++
+ func parseOpenAIRateLimitPlanType(body []byte) string {
+ 	var parsed map[string]any
+ 	if err := json.Unmarshal(body, &parsed); err != nil {

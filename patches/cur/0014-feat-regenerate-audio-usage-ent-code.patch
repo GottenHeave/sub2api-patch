@@ -1,121 +1,9 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Sat, 13 Jun 2026 18:07:46 +0000
-Subject: [PATCH] feat: add audio usage schema and migration
+Date: Sat, 13 Jun 2026 18:23:50 +0000
+Subject: [PATCH] feat: regenerate audio usage ent code
 
 
-diff --git a/backend/ent/migrate/schema.go b/backend/ent/migrate/schema.go
-index f235031c..3e669c08 100644
---- a/backend/ent/migrate/schema.go
-+++ b/backend/ent/migrate/schema.go
-@@ -1342,6 +1342,10 @@ var (
- 		{Name: "output_tokens", Type: field.TypeInt, Default: 0},
- 		{Name: "cache_creation_tokens", Type: field.TypeInt, Default: 0},
- 		{Name: "cache_read_tokens", Type: field.TypeInt, Default: 0},
-+		{Name: "audio_input_tokens", Type: field.TypeInt, Default: 0},
-+		{Name: "audio_output_tokens", Type: field.TypeInt, Default: 0},
-+		{Name: "audio_cache_creation_tokens", Type: field.TypeInt, Default: 0},
-+		{Name: "audio_cache_read_tokens", Type: field.TypeInt, Default: 0},
- 		{Name: "cache_creation_5m_tokens", Type: field.TypeInt, Default: 0},
- 		{Name: "cache_creation_1h_tokens", Type: field.TypeInt, Default: 0},
- 		{Name: "input_cost", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,10)"}},
-@@ -1380,31 +1384,31 @@ var (
- 		ForeignKeys: []*schema.ForeignKey{
- 			{
- 				Symbol:     "usage_logs_api_keys_usage_logs",
--				Columns:    []*schema.Column{UsageLogsColumns[37]},
-+				Columns:    []*schema.Column{UsageLogsColumns[41]},
- 				RefColumns: []*schema.Column{APIKeysColumns[0]},
- 				OnDelete:   schema.NoAction,
- 			},
- 			{
- 				Symbol:     "usage_logs_accounts_usage_logs",
--				Columns:    []*schema.Column{UsageLogsColumns[38]},
-+				Columns:    []*schema.Column{UsageLogsColumns[42]},
- 				RefColumns: []*schema.Column{AccountsColumns[0]},
- 				OnDelete:   schema.NoAction,
- 			},
- 			{
- 				Symbol:     "usage_logs_groups_usage_logs",
--				Columns:    []*schema.Column{UsageLogsColumns[39]},
-+				Columns:    []*schema.Column{UsageLogsColumns[43]},
- 				RefColumns: []*schema.Column{GroupsColumns[0]},
- 				OnDelete:   schema.SetNull,
- 			},
- 			{
- 				Symbol:     "usage_logs_users_usage_logs",
--				Columns:    []*schema.Column{UsageLogsColumns[40]},
-+				Columns:    []*schema.Column{UsageLogsColumns[44]},
- 				RefColumns: []*schema.Column{UsersColumns[0]},
- 				OnDelete:   schema.NoAction,
- 			},
- 			{
- 				Symbol:     "usage_logs_user_subscriptions_usage_logs",
--				Columns:    []*schema.Column{UsageLogsColumns[41]},
-+				Columns:    []*schema.Column{UsageLogsColumns[45]},
- 				RefColumns: []*schema.Column{UserSubscriptionsColumns[0]},
- 				OnDelete:   schema.SetNull,
- 			},
-@@ -1413,32 +1417,32 @@ var (
- 			{
- 				Name:    "usagelog_user_id",
- 				Unique:  false,
--				Columns: []*schema.Column{UsageLogsColumns[40]},
-+				Columns: []*schema.Column{UsageLogsColumns[44]},
- 			},
- 			{
- 				Name:    "usagelog_api_key_id",
- 				Unique:  false,
--				Columns: []*schema.Column{UsageLogsColumns[37]},
-+				Columns: []*schema.Column{UsageLogsColumns[41]},
- 			},
- 			{
- 				Name:    "usagelog_account_id",
- 				Unique:  false,
--				Columns: []*schema.Column{UsageLogsColumns[38]},
-+				Columns: []*schema.Column{UsageLogsColumns[42]},
- 			},
- 			{
- 				Name:    "usagelog_group_id",
- 				Unique:  false,
--				Columns: []*schema.Column{UsageLogsColumns[39]},
-+				Columns: []*schema.Column{UsageLogsColumns[43]},
- 			},
- 			{
- 				Name:    "usagelog_subscription_id",
- 				Unique:  false,
--				Columns: []*schema.Column{UsageLogsColumns[41]},
-+				Columns: []*schema.Column{UsageLogsColumns[45]},
- 			},
- 			{
- 				Name:    "usagelog_created_at",
- 				Unique:  false,
--				Columns: []*schema.Column{UsageLogsColumns[36]},
-+				Columns: []*schema.Column{UsageLogsColumns[40]},
- 			},
- 			{
- 				Name:    "usagelog_model",
-@@ -1458,17 +1462,17 @@ var (
- 			{
- 				Name:    "usagelog_user_id_created_at",
- 				Unique:  false,
--				Columns: []*schema.Column{UsageLogsColumns[40], UsageLogsColumns[36]},
-+				Columns: []*schema.Column{UsageLogsColumns[44], UsageLogsColumns[40]},
- 			},
- 			{
- 				Name:    "usagelog_api_key_id_created_at",
- 				Unique:  false,
--				Columns: []*schema.Column{UsageLogsColumns[37], UsageLogsColumns[36]},
-+				Columns: []*schema.Column{UsageLogsColumns[41], UsageLogsColumns[40]},
- 			},
- 			{
- 				Name:    "usagelog_group_id_created_at",
- 				Unique:  false,
--				Columns: []*schema.Column{UsageLogsColumns[39], UsageLogsColumns[36]},
-+				Columns: []*schema.Column{UsageLogsColumns[43], UsageLogsColumns[40]},
- 			},
- 		},
- 	}
 diff --git a/backend/ent/mutation.go b/backend/ent/mutation.go
 index 9ce8e636..eb7a4ed3 100644
 --- a/backend/ent/mutation.go
@@ -816,25 +704,6 @@ index 09d2a85f..d8d239fd 100644
  	// usagelog.DefaultCreatedAt holds the default value on creation for the created_at field.
  	usagelog.DefaultCreatedAt = usagelogDescCreatedAt.Default.(func() time.Time)
  	userMixin := schema.User{}.Mixin()
-diff --git a/backend/ent/schema/usage_log.go b/backend/ent/schema/usage_log.go
-index db9e5178..53090965 100644
---- a/backend/ent/schema/usage_log.go
-+++ b/backend/ent/schema/usage_log.go
-@@ -73,6 +73,14 @@ func (UsageLog) Fields() []ent.Field {
- 			Default(0),
- 		field.Int("cache_read_tokens").
- 			Default(0),
-+		field.Int("audio_input_tokens").
-+			Default(0),
-+		field.Int("audio_output_tokens").
-+			Default(0),
-+		field.Int("audio_cache_creation_tokens").
-+			Default(0),
-+		field.Int("audio_cache_read_tokens").
-+			Default(0),
- 		field.Int("cache_creation_5m_tokens").
- 			Default(0),
- 		field.Int("cache_creation_1h_tokens").
 diff --git a/backend/ent/usagelog.go b/backend/ent/usagelog.go
 index 283fe828..e318134e 100644
 --- a/backend/ent/usagelog.go
@@ -1824,28 +1693,3 @@ index e8fa003c..430c5865 100644
  	if value, ok := _u.mutation.CacheCreation5mTokens(); ok {
  		_spec.SetField(usagelog.FieldCacheCreation5mTokens, field.TypeInt, value)
  	}
-diff --git a/backend/migrations/142_usage_log_audio_fields.sql b/backend/migrations/142_usage_log_audio_fields.sql
-new file mode 100644
-index 00000000..36473bf3
---- /dev/null
-+++ b/backend/migrations/142_usage_log_audio_fields.sql
-@@ -0,0 +1,19 @@
-+-- Persist OpenAI audio usage breakdowns on raw usage logs and dashboard aggregates.
-+
-+ALTER TABLE usage_logs
-+    ADD COLUMN IF NOT EXISTS audio_input_tokens INT NOT NULL DEFAULT 0,
-+    ADD COLUMN IF NOT EXISTS audio_output_tokens INT NOT NULL DEFAULT 0,
-+    ADD COLUMN IF NOT EXISTS audio_cache_creation_tokens INT NOT NULL DEFAULT 0,
-+    ADD COLUMN IF NOT EXISTS audio_cache_read_tokens INT NOT NULL DEFAULT 0;
-+
-+ALTER TABLE usage_dashboard_hourly
-+    ADD COLUMN IF NOT EXISTS audio_input_tokens BIGINT NOT NULL DEFAULT 0,
-+    ADD COLUMN IF NOT EXISTS audio_output_tokens BIGINT NOT NULL DEFAULT 0,
-+    ADD COLUMN IF NOT EXISTS audio_cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
-+    ADD COLUMN IF NOT EXISTS audio_cache_read_tokens BIGINT NOT NULL DEFAULT 0;
-+
-+ALTER TABLE usage_dashboard_daily
-+    ADD COLUMN IF NOT EXISTS audio_input_tokens BIGINT NOT NULL DEFAULT 0,
-+    ADD COLUMN IF NOT EXISTS audio_output_tokens BIGINT NOT NULL DEFAULT 0,
-+    ADD COLUMN IF NOT EXISTS audio_cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
-+    ADD COLUMN IF NOT EXISTS audio_cache_read_tokens BIGINT NOT NULL DEFAULT 0;
