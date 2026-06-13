@@ -7,6 +7,13 @@ patch_dir="${PATCH_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/patches
 cd "$worktree"
 git config rerere.enabled true
 
+if ! git config user.name >/dev/null; then
+  git config user.name "sub2api-patch automation"
+fi
+if ! git config user.email >/dev/null; then
+  git config user.email "actions@users.noreply.github.com"
+fi
+
 shopt -s nullglob
 patches=("$patch_dir"/*.patch)
 if [ "${#patches[@]}" -eq 0 ]; then
