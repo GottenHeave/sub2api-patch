@@ -1,8 +1,14 @@
 # Patchset
 
-Current patchset is generated from the downstream `dev` branch relative to upstream `main`.
+The current historical downstream delta is stored as one replayable baseline patch:
 
-Patch topics currently include:
+- `patches/cur/0001-baseline-downstream-current-dev.patch`
+
+The baseline is intentionally squashed because the original downstream history contains older commits whose individual bases predate the latest upstream sync. Replaying those historical commits one by one conflicts even though the final downstream tree is valid.
+
+Future downstream work should be added as separate logical patches after applying this baseline.
+
+Current baseline topics include:
 
 - CI image publishing
 - IPv6-only proxy probing
