@@ -219,5 +219,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "$VERSION" --repo "${{ github.repository }}" --title "$VERSION" --notes-file release-notes.md --target "$VERSION"
+          gh release create "$VERSION" --repo "${{ github.repository }}" --title "$VERSION" --notes-file release-notes.md
 
