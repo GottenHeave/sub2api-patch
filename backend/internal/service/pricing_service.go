@@ -111,10 +111,15 @@ type LiteLLMModelPricing struct {
 	InputCostPerTokenPriority           float64 `json:"input_cost_per_token_priority"`
 	OutputCostPerToken                  float64 `json:"output_cost_per_token"`
 	OutputCostPerTokenPriority          float64 `json:"output_cost_per_token_priority"`
+	InputCostPerAudioToken              float64 `json:"input_cost_per_audio_token"`
+	InputCostPerAudioTokenPriority      float64 `json:"input_cost_per_audio_token_priority"`
+	OutputCostPerAudioToken             float64 `json:"output_cost_per_audio_token"`
 	CacheCreationInputTokenCost         float64 `json:"cache_creation_input_token_cost"`
 	CacheCreationInputTokenCostPriority float64 `json:"cache_creation_input_token_cost_priority"`
 	CacheCreationInputTokenCostAbove1hr float64 `json:"cache_creation_input_token_cost_above_1hr"`
+	CacheCreationInputAudioTokenCost    float64 `json:"cache_creation_input_audio_token_cost"`
 	CacheReadInputTokenCost             float64 `json:"cache_read_input_token_cost"`
+	CacheReadInputAudioTokenCost        float64 `json:"cache_read_input_audio_token_cost"`
 	CacheReadInputTokenCostPriority     float64 `json:"cache_read_input_token_cost_priority"`
 	LongContextInputTokenThreshold      int     `json:"long_context_input_token_threshold,omitempty"`
 	LongContextInputCostMultiplier      float64 `json:"long_context_input_cost_multiplier,omitempty"`
@@ -126,7 +131,7 @@ type LiteLLMModelPricing struct {
 	OutputCostPerImage                  float64 `json:"output_cost_per_image"`       // 图片生成模型每张图片价格
 	OutputCostPerImageToken             float64 `json:"output_cost_per_image_token"` // 图片输出 token 价格
 
-	// TokenPricingAbsent 表示源数据中 input/output token 价格均缺失（仅有图片价）。
+	// TokenPricingAbsent 表示源数据中没有文本或音频 token 价格。
 	// 此类条目只可用于图片计费，token 计费必须回退到 fallback 或 fail-closed，
 	// 否则 token 流量会被按 $0 计费。零值（false）表示条目具备 token 价格。
 	TokenPricingAbsent bool `json:"-"`
@@ -144,10 +149,15 @@ type LiteLLMRawEntry struct {
 	InputCostPerTokenPriority           *float64 `json:"input_cost_per_token_priority"`
 	OutputCostPerToken                  *float64 `json:"output_cost_per_token"`
 	OutputCostPerTokenPriority          *float64 `json:"output_cost_per_token_priority"`
+	InputCostPerAudioToken              *float64 `json:"input_cost_per_audio_token"`
+	InputCostPerAudioTokenPriority      *float64 `json:"input_cost_per_audio_token_priority"`
+	OutputCostPerAudioToken             *float64 `json:"output_cost_per_audio_token"`
 	CacheCreationInputTokenCost         *float64 `json:"cache_creation_input_token_cost"`
 	CacheCreationInputTokenCostPriority *float64 `json:"cache_creation_input_token_cost_priority"`
 	CacheCreationInputTokenCostAbove1hr *float64 `json:"cache_creation_input_token_cost_above_1hr"`
+	CacheCreationInputAudioTokenCost    *float64 `json:"cache_creation_input_audio_token_cost"`
 	CacheReadInputTokenCost             *float64 `json:"cache_read_input_token_cost"`
+	CacheReadInputAudioTokenCost        *float64 `json:"cache_read_input_audio_token_cost"`
 	CacheReadInputTokenCostPriority     *float64 `json:"cache_read_input_token_cost_priority"`
 	LongContextInputTokenThreshold      *int     `json:"long_context_input_token_threshold"`
 	LongContextInputCostMultiplier      *float64 `json:"long_context_input_cost_multiplier"`
@@ -434,8 +444,16 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 			continue
 		}
 
+		hasTextTokenPrice := entry.InputCostPerToken != nil || entry.OutputCostPerToken != nil
+		hasAudioTokenPrice := entry.InputCostPerAudioToken != nil ||
+			entry.InputCostPerAudioTokenPriority != nil ||
+			entry.OutputCostPerAudioToken != nil ||
+			entry.CacheCreationInputAudioTokenCost != nil ||
+			entry.CacheReadInputAudioTokenCost != nil
+		hasImagePrice := entry.OutputCostPerImage != nil || entry.OutputCostPerImageToken != nil
+
 		// 只保留有有效价格的条目
-		if entry.InputCostPerToken == nil && entry.OutputCostPerToken == nil && entry.OutputCostPerImage == nil && entry.OutputCostPerImageToken == nil {
+		if !hasTextTokenPrice && !hasAudioTokenPrice && !hasImagePrice {
 			continue
 		}
 
@@ -444,7 +462,7 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 			Mode:                  entry.Mode,
 			SupportsPromptCaching: entry.SupportsPromptCaching,
 			SupportsServiceTier:   entry.SupportsServiceTier,
-			TokenPricingAbsent:    entry.InputCostPerToken == nil && entry.OutputCostPerToken == nil,
+			TokenPricingAbsent:    !hasTextTokenPrice && !hasAudioTokenPrice,
 		}
 
 		if entry.InputCostPerToken != nil {
@@ -459,6 +477,15 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		if entry.OutputCostPerTokenPriority != nil {
 			pricing.OutputCostPerTokenPriority = *entry.OutputCostPerTokenPriority
 		}
+		if entry.InputCostPerAudioToken != nil {
+			pricing.InputCostPerAudioToken = *entry.InputCostPerAudioToken
+		}
+		if entry.InputCostPerAudioTokenPriority != nil {
+			pricing.InputCostPerAudioTokenPriority = *entry.InputCostPerAudioTokenPriority
+		}
+		if entry.OutputCostPerAudioToken != nil {
+			pricing.OutputCostPerAudioToken = *entry.OutputCostPerAudioToken
+		}
 		if entry.CacheCreationInputTokenCost != nil {
 			pricing.CacheCreationInputTokenCost = *entry.CacheCreationInputTokenCost
 		}
@@ -468,8 +495,14 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		if entry.CacheCreationInputTokenCostAbove1hr != nil {
 			pricing.CacheCreationInputTokenCostAbove1hr = *entry.CacheCreationInputTokenCostAbove1hr
 		}
+		if entry.CacheCreationInputAudioTokenCost != nil {
+			pricing.CacheCreationInputAudioTokenCost = *entry.CacheCreationInputAudioTokenCost
+		}
 		if entry.CacheReadInputTokenCost != nil {
 			pricing.CacheReadInputTokenCost = *entry.CacheReadInputTokenCost
+		}
+		if entry.CacheReadInputAudioTokenCost != nil {
+			pricing.CacheReadInputAudioTokenCost = *entry.CacheReadInputAudioTokenCost
 		}
 		if entry.CacheReadInputTokenCostPriority != nil {
 			pricing.CacheReadInputTokenCostPriority = *entry.CacheReadInputTokenCostPriority
