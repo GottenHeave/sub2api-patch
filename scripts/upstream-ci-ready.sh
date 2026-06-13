@@ -41,7 +41,7 @@ if not statuses and not runs:
     print('upstream CI state unavailable; sync paused')
     sys.exit(1)
 
-if combined not in (None, 'success'):
+if statuses and combined != 'success':
     print(f'combined status is {combined}; sync paused')
     sys.exit(1)
 
