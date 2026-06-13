@@ -29,6 +29,10 @@ type Usage struct {
 	OutputTokens             int
 	CacheCreationInputTokens int
 	CacheReadInputTokens     int
+	InputAudioTokens         int
+	OutputAudioTokens        int
+	CacheCreationAudioTokens int
+	CacheReadAudioTokens     int
 	ImageOutputTokens        int
 }
 
@@ -76,6 +80,7 @@ type RelayOptions struct {
 	FirstTurnStartedAt              time.Time
 	TakeNextTurnStartedAt           func() time.Time
 	FirstMessageType                coderws.MessageType
+	InitialRequestModel             string
 	FirstMessageSent                bool
 	StartClientAfterFirstDownstream bool
 	OnUsageParseFailure             func(eventType string, usageRaw string)
@@ -155,6 +160,9 @@ func Relay(
 	options RelayOptions,
 ) (RelayResult, *RelayExit) {
 	result := RelayResult{RequestModel: strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())}
+	if result.RequestModel == "" {
+		result.RequestModel = strings.TrimSpace(options.InitialRequestModel)
+	}
 	if clientConn == nil || upstreamConn == nil {
 		return result, &RelayExit{Stage: "relay_init", Err: errors.New("relay connection is nil")}
 	}
@@ -245,7 +253,7 @@ func Relay(
 			MessageType:  relayMessageTypeString(firstMessageType),
 			PayloadBytes: len(firstClientMessage),
 		})
-	} else {
+	} else if len(firstClientMessage) > 0 {
 		if err := writeUpstream(firstMessageType, firstClientMessage); err != nil {
 			result.Duration = nowFn().Sub(startAt)
 			emitRelayTrace(onTrace, RelayTraceEvent{
@@ -257,16 +265,15 @@ func Relay(
 			})
 			return result, &RelayExit{Stage: "write_upstream", Err: err}
 		}
+		clientToUpstreamFrames.Add(1)
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:        "write_first_message_ok",
 			Direction:    "client_to_upstream",
 			MessageType:  relayMessageTypeString(firstMessageType),
 			PayloadBytes: len(firstClientMessage),
 		})
+		markActivity()
 	}
-	clientToUpstreamFrames.Add(1)
-	markActivity()
-
 	exitCh := make(chan relayExitSignal, 3)
 	dropDownstreamWrites := atomic.Bool{}
 	clientReaderStarted := atomic.Bool{}
@@ -1059,18 +1066,15 @@ func parseUsageAndAccumulate(
 		return Usage{}
 	}
 
-	inputResult := usageResult.Get("input_tokens")
-	if !inputResult.Exists() {
-		inputResult = usageResult.Get("prompt_tokens")
-	}
-	outputResult := usageResult.Get("output_tokens")
-	if !outputResult.Exists() {
-		outputResult = usageResult.Get("completion_tokens")
-	}
-	cachedResult := usageResult.Get("input_tokens_details.cached_tokens")
-	if !cachedResult.Exists() {
-		cachedResult = usageResult.Get("prompt_tokens_details.cached_tokens")
-	}
+	inputResult := firstUsageResult(usageResult, "input_tokens", "prompt_tokens")
+	outputResult := firstUsageResult(usageResult, "output_tokens", "completion_tokens")
+	cacheCreationResult := firstUsageResult(usageResult, "cache_creation_input_tokens")
+	cachedResult := firstUsageResult(
+		usageResult,
+		"input_tokens_details.cached_tokens",
+		"input_token_details.cached_tokens",
+		"prompt_tokens_details.cached_tokens",
+	)
 	imageTokens := usageResult.Get("output_tokens_details.image_tokens").Int()
 	if imageTokens == 0 {
 		imageTokens = usageResult.Get("completion_tokens_details.image_tokens").Int()
@@ -1079,8 +1083,9 @@ func parseUsageAndAccumulate(
 	requireTotals := isTerminalEvent(strings.TrimSpace(eventType))
 	inputTokens, inputOK := parseUsageIntField(inputResult, requireTotals)
 	outputTokens, outputOK := parseUsageIntField(outputResult, requireTotals)
+	_, cacheCreationOK := parseUsageIntField(cacheCreationResult, false)
 	cachedTokens, cachedOK := parseUsageIntField(cachedResult, false)
-	if !inputOK || !outputOK || !cachedOK {
+	if !inputOK || !outputOK || !cacheCreationOK || !cachedOK {
 		recordUsageParseFailure()
 		if onParseFailure != nil {
 			onParseFailure(eventType, usageRaw)
@@ -1102,7 +1107,33 @@ func parseUsageAndAccumulate(
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
 		CacheReadInputTokens:     cachedTokens,
-		ImageOutputTokens:        int(imageTokens),
+		InputAudioTokens: firstUsageInt(
+			usageResult,
+			"input_token_details.audio_tokens",
+			"input_tokens_details.audio_tokens",
+			"prompt_tokens_details.audio_tokens",
+		),
+		OutputAudioTokens: firstUsageInt(
+			usageResult,
+			"output_token_details.audio_tokens",
+			"output_tokens_details.audio_tokens",
+			"completion_tokens_details.audio_tokens",
+		),
+		CacheCreationAudioTokens: firstUsageInt(
+			usageResult,
+			"input_token_details.cache_creation.audio_tokens",
+			"input_tokens_details.cache_creation.audio_tokens",
+			"prompt_tokens_details.cache_creation.audio_tokens",
+			"cache_creation_input_token_details.audio_tokens",
+			"cache_creation_input_tokens_details.audio_tokens",
+		),
+		CacheReadAudioTokens: firstUsageInt(
+			usageResult,
+			"input_token_details.cached_tokens_details.audio_tokens",
+			"input_tokens_details.cached_tokens_details.audio_tokens",
+			"prompt_tokens_details.cached_tokens_details.audio_tokens",
+		),
+		ImageOutputTokens: int(imageTokens),
 	}
 
 	if isTerminalEvent(strings.TrimSpace(eventType)) {
@@ -1119,6 +1150,8 @@ func parseUsageAndAccumulate(
 func relayUsageHasTokens(usage Usage) bool {
 	return usage.InputTokens > 0 || usage.OutputTokens > 0 ||
 		usage.CacheCreationInputTokens > 0 || usage.CacheReadInputTokens > 0 ||
+		usage.InputAudioTokens > 0 || usage.OutputAudioTokens > 0 ||
+		usage.CacheCreationAudioTokens > 0 || usage.CacheReadAudioTokens > 0 ||
 		usage.ImageOutputTokens > 0
 }
 
@@ -1138,6 +1171,18 @@ func mergeRelayUsageNonZero(dst *Usage, src Usage) {
 	if src.CacheReadInputTokens > 0 {
 		dst.CacheReadInputTokens = src.CacheReadInputTokens
 	}
+	if src.InputAudioTokens > 0 {
+		dst.InputAudioTokens = src.InputAudioTokens
+	}
+	if src.OutputAudioTokens > 0 {
+		dst.OutputAudioTokens = src.OutputAudioTokens
+	}
+	if src.CacheCreationAudioTokens > 0 {
+		dst.CacheCreationAudioTokens = src.CacheCreationAudioTokens
+	}
+	if src.CacheReadAudioTokens > 0 {
+		dst.CacheReadAudioTokens = src.CacheReadAudioTokens
+	}
 	if src.ImageOutputTokens > 0 {
 		dst.ImageOutputTokens = src.ImageOutputTokens
 	}
@@ -1152,9 +1197,33 @@ func finalizeRelayTurnUsage(state *relayState) Usage {
 	state.usage.OutputTokens += turnUsage.OutputTokens
 	state.usage.CacheCreationInputTokens += turnUsage.CacheCreationInputTokens
 	state.usage.CacheReadInputTokens += turnUsage.CacheReadInputTokens
+	state.usage.InputAudioTokens += turnUsage.InputAudioTokens
+	state.usage.OutputAudioTokens += turnUsage.OutputAudioTokens
+	state.usage.CacheCreationAudioTokens += turnUsage.CacheCreationAudioTokens
+	state.usage.CacheReadAudioTokens += turnUsage.CacheReadAudioTokens
 	state.usage.ImageOutputTokens += turnUsage.ImageOutputTokens
 	state.turnUsage = Usage{}
 	return turnUsage
+}
+
+func firstUsageResult(value gjson.Result, paths ...string) gjson.Result {
+	for _, path := range paths {
+		result := value.Get(path)
+		if result.Exists() {
+			return result
+		}
+	}
+	return gjson.Result{}
+}
+
+func firstUsageInt(value gjson.Result, paths ...string) int {
+	for _, path := range paths {
+		result := value.Get(path)
+		if result.Exists() && result.Type == gjson.Number {
+			return int(result.Int())
+		}
+	}
+	return 0
 }
 
 func parseUsageIntField(value gjson.Result, required bool) (int, bool) {
