@@ -1,0 +1,1390 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sat, 13 Jun 2026 16:29:02 +0000
+Subject: [PATCH] feat: support OpenAI realtime REST endpoints
+
+
+diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
+new file mode 100644
+index 00000000..cf368f00
+--- /dev/null
++++ b/backend/internal/handler/openai_realtime_calls.go
+@@ -0,0 +1,239 @@
++package handler
++
++import (
++	"errors"
++	"net/http"
++	"strconv"
++	"time"
++
++	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
++	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/gin-gonic/gin"
++	"go.uber.org/zap"
++)
++
++// RealtimeCallsAccept handles OpenAI Realtime call accept requests.
++// POST /v1/realtime/calls/:call_id/accept
++func (h *OpenAIGatewayHandler) RealtimeCallsAccept(c *gin.Context) {
++	h.RealtimeREST(c)
++}
++
++// RealtimeREST handles OpenAI Realtime REST requests.
++func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
++	streamStarted := false
++	defer h.recoverResponsesPanic(c, &streamStarted)
++	setOpenAIClientTransportHTTP(c)
++
++	requestStart := time.Now()
++	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
++	if !ok {
++		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
++		return
++	}
++	subject, ok := middleware2.GetAuthSubjectFromContext(c)
++	if !ok {
++		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
++		return
++	}
++	reqLog := requestLogger(
++		c,
++		"handler.openai_gateway.realtime_rest",
++		zap.Int64("user_id", subject.UserID),
++		zap.Int64("api_key_id", apiKey.ID),
++		zap.Any("group_id", apiKey.GroupID),
++	)
++	if !h.ensureResponsesDependencies(c, reqLog) {
++		return
++	}
++
++	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
++	if err != nil {
++		if maxErr, ok := extractMaxBytesError(err); ok {
++			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
++			return
++		}
++		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
++		return
++	}
++	parsed, err := service.ParseOpenAIRealtimeRESTRequest(c, body)
++	if err != nil {
++		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
++		return
++	}
++
++	reqLog = reqLog.With(
++		zap.String("model", parsed.Model),
++		zap.String("call_id", parsed.CallID),
++		zap.String("endpoint", parsed.Endpoint),
++		zap.String("action", parsed.Action),
++	)
++	setOpsRequestContext(c, parsed.Model, false)
++	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
++
++	if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIRealtime, parsed.Model, body); decision != nil && decision.Blocked {
++		h.errorResponse(c, contentModerationStatus(decision), contentModerationErrorCode(decision), decision.Message)
++		return
++	}
++
++	channelMappedModels := make(map[string]string, len(parsed.ModelRefs))
++	for _, ref := range parsed.ModelRefs {
++		if ref.Value == "" || ref.Path == "" {
++			continue
++		}
++		channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, ref.Value)
++		channelMappedModels[ref.Path] = channelMapping.MappedModel
++	}
++	if h.errorPassthroughService != nil {
++		service.BindErrorPassthroughService(c, h.errorPassthroughService)
++	}
++	subscription, _ := middleware2.GetSubscriptionFromContext(c)
++
++	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
++	routingStart := time.Now()
++	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, false, &streamStarted, reqLog)
++	if !acquired {
++		return
++	}
++	if userReleaseFunc != nil {
++		defer userReleaseFunc()
++	}
++
++	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
++		reqLog.Info("openai.realtime_rest.billing_eligibility_check_failed", zap.Error(err))
++		status, code, message, retryAfter := billingErrorDetails(err)
++		if retryAfter > 0 {
++			c.Header("Retry-After", strconv.Itoa(retryAfter))
++		}
++		h.handleStreamingAwareError(c, status, code, message, streamStarted)
++		return
++	}
++
++	sessionHash := parsed.StickySessionSeed()
++	maxAccountSwitches := h.maxAccountSwitches
++	switchCount := 0
++	failedAccountIDs := make(map[int64]struct{})
++	sameAccountRetryCount := make(map[int64]int)
++	var lastFailoverErr *service.UpstreamFailoverError
++
++	for {
++		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForAccountType(
++			c.Request.Context(),
++			apiKey.GroupID,
++			"",
++			sessionHash,
++			"",
++			failedAccountIDs,
++			service.OpenAIUpstreamTransportHTTPSSE,
++			"",
++			false,
++		)
++		if err != nil {
++			reqLog.Warn("openai.realtime_rest.account_select_failed",
++				zap.Error(err),
++				zap.Int("excluded_account_count", len(failedAccountIDs)),
++			)
++			if len(failedAccountIDs) == 0 {
++				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
++				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
++				return
++			}
++			if lastFailoverErr != nil {
++				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
++			} else {
++				h.handleFailoverExhaustedSimple(c, 502, streamStarted)
++			}
++			return
++		}
++		if selection == nil || selection.Account == nil {
++			markOpsRoutingCapacityLimited(c)
++			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
++			return
++		}
++		reqLog.Debug("openai.realtime_rest.account_schedule_decision",
++			zap.String("layer", scheduleDecision.Layer),
++			zap.Bool("sticky_session_hit", scheduleDecision.StickySessionHit),
++			zap.Int("candidate_count", scheduleDecision.CandidateCount),
++			zap.Int("top_k", scheduleDecision.TopK),
++			zap.Int64("latency_ms", scheduleDecision.LatencyMs),
++			zap.Float64("load_skew", scheduleDecision.LoadSkew),
++		)
++
++		account := selection.Account
++		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
++		setOpsSelectedAccount(c, account.ID, account.Platform)
++
++		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
++		if !acquired {
++			return
++		}
++
++		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
++		forwardStart := time.Now()
++		result, err := h.gatewayService.ForwardRealtimeREST(c.Request.Context(), c, account, parsed, channelMappedModels)
++		forwardDurationMs := time.Since(forwardStart).Milliseconds()
++		if accountReleaseFunc != nil {
++			accountReleaseFunc()
++		}
++		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
++		responseLatencyMs := forwardDurationMs
++		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {
++			responseLatencyMs = forwardDurationMs - upstreamLatencyMs
++		}
++		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
++
++		if err != nil {
++			var failoverErr *service.UpstreamFailoverError
++			if errors.As(err, &failoverErr) {
++				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
++				if failoverErr.RetryableOnSameAccount {
++					retryLimit := account.GetPoolModeRetryCount()
++					if sameAccountRetryCount[account.ID] < retryLimit {
++						sameAccountRetryCount[account.ID]++
++						reqLog.Warn("openai.realtime_rest.pool_mode_same_account_retry",
++							zap.Int64("account_id", account.ID),
++							zap.Int("upstream_status", failoverErr.StatusCode),
++							zap.Int("retry_limit", retryLimit),
++							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
++						)
++						select {
++						case <-c.Request.Context().Done():
++							return
++						case <-time.After(sameAccountRetryDelay):
++						}
++						continue
++					}
++				}
++				h.gatewayService.RecordOpenAIAccountSwitch()
++				failedAccountIDs[account.ID] = struct{}{}
++				lastFailoverErr = failoverErr
++				if switchCount >= maxAccountSwitches {
++					h.handleFailoverExhausted(c, failoverErr, streamStarted)
++					return
++				}
++				switchCount++
++				continue
++			}
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
++			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
++			fields := []zap.Field{
++				zap.Int64("account_id", account.ID),
++				zap.Bool("fallback_error_response_written", wroteFallback),
++				zap.Error(err),
++			}
++			if shouldLogOpenAIForwardFailureAsWarn(c, wroteFallback) {
++				reqLog.Warn("openai.realtime_rest.forward_failed", fields...)
++				return
++			}
++			reqLog.Error("openai.realtime_rest.forward_failed", fields...)
++			return
++		}
++
++		if result != nil {
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
++		} else {
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
++		}
++		return
++	}
++}
+diff --git a/backend/internal/handler/openai_realtime_calls_test.go b/backend/internal/handler/openai_realtime_calls_test.go
+new file mode 100644
+index 00000000..b9f1d3af
+--- /dev/null
++++ b/backend/internal/handler/openai_realtime_calls_test.go
+@@ -0,0 +1,283 @@
++package handler
++
++import (
++	"bytes"
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
++	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/gin-gonic/gin"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++type realtimeCallsHandlerAccountRepo struct {
++	service.AccountRepository
++	accounts []service.Account
++}
++
++func (r *realtimeCallsHandlerAccountRepo) ListSchedulableByPlatform(_ context.Context, platform string) ([]service.Account, error) {
++	out := make([]service.Account, 0, len(r.accounts))
++	for _, account := range r.accounts {
++		if account.Platform == platform && account.IsSchedulable() {
++			out = append(out, account)
++		}
++	}
++	return out, nil
++}
++
++func (r *realtimeCallsHandlerAccountRepo) BatchUpdateLastUsed(context.Context, map[int64]time.Time) error {
++	return nil
++}
++
++type realtimeCallsHandlerUpstream struct {
++	statuses   []int
++	accountIDs []int64
++	urls       []string
++	methods    []string
++	bodies     [][]byte
++}
++
++func (u *realtimeCallsHandlerUpstream) Do(req *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
++	u.accountIDs = append(u.accountIDs, accountID)
++	if req != nil {
++		u.methods = append(u.methods, req.Method)
++		if req.URL != nil {
++			u.urls = append(u.urls, req.URL.String())
++		}
++		if req.Body != nil {
++			body, err := io.ReadAll(req.Body)
++			if err != nil {
++				return nil, err
++			}
++			u.bodies = append(u.bodies, body)
++			req.Body = io.NopCloser(bytes.NewReader(body))
++		}
++	}
++	status := http.StatusOK
++	if idx := len(u.accountIDs) - 1; idx < len(u.statuses) {
++		status = u.statuses[idx]
++	}
++	body := `{"id":"call_123","object":"realtime.call"}`
++	if status >= 400 {
++		body = `{"error":{"message":"temporary upstream failure"}}`
++	}
++	return &http.Response{
++		StatusCode: status,
++		Header: http.Header{
++			"Content-Type": []string{"application/json"},
++			"X-Request-Id": []string{"rid-realtime-call"},
++		},
++		Body:    io.NopCloser(bytes.NewBufferString(body)),
++		Request: req,
++	}, nil
++}
++
++func (u *realtimeCallsHandlerUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
++	return u.Do(req, proxyURL, accountID, accountConcurrency)
++}
++
++func TestOpenAIGatewayHandlerRealtimeCallsAccept_DispatchesAccount(t *testing.T) {
++	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusOK}}
++	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{
++		newRealtimeCallsHandlerAccount(1),
++	})
++	body := []byte(`{"type":"realtime","model":"gpt-realtime","instructions":"answer calls"}`)
++	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/calls/call_123/accept", body)
++
++	handler.RealtimeCallsAccept(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{1}, upstream.accountIDs)
++	require.Equal(t, []string{http.MethodPost}, upstream.methods)
++	require.Equal(t, []string{"https://api.openai.com/v1/realtime/calls/call_123/accept"}, upstream.urls)
++	require.JSONEq(t, string(body), string(upstream.bodies[0]))
++	require.JSONEq(t, `{"id":"call_123","object":"realtime.call"}`, rec.Body.String())
++}
++
++func TestOpenAIGatewayHandlerRealtimeCallsAccept_AccountMappingForwardsMappedModel(t *testing.T) {
++	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusOK}}
++	account := newRealtimeCallsHandlerAccount(1)
++	account.Credentials["model_mapping"] = map[string]any{
++		"client-realtime": "gpt-realtime",
++	}
++	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{account})
++	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/calls/call_123/accept", []byte(`{"type":"realtime","model":"client-realtime"}`))
++
++	handler.RealtimeCallsAccept(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Len(t, upstream.bodies, 1)
++	require.Equal(t, "gpt-realtime", gjson.GetBytes(upstream.bodies[0], "model").String())
++}
++
++func TestOpenAIGatewayHandlerRealtimeCallsAccept_AccountSwitch(t *testing.T) {
++	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusTooManyRequests, http.StatusOK}}
++	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{
++		newRealtimeCallsHandlerAccount(1),
++		newRealtimeCallsHandlerAccount(2),
++	})
++	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/calls/call_123/accept", []byte(`{"type":"realtime","model":"gpt-realtime"}`))
++
++	handler.RealtimeCallsAccept(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{1, 2}, upstream.accountIDs)
++}
++
++func TestOpenAIGatewayHandlerRealtimeREST_ClientSecretAccountMappingForwardsMappedTranscriptionModel(t *testing.T) {
++	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusOK}}
++	account := newRealtimeCallsHandlerAccount(1)
++	account.Credentials["model_mapping"] = map[string]any{
++		"client-transcribe": "gpt-4o-transcribe",
++	}
++	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{account})
++	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/client_secrets", []byte(`{"session":{"type":"transcription","audio":{"input":{"transcription":{"model":"client-transcribe"}}}}}`))
++
++	handler.RealtimeREST(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Len(t, upstream.bodies, 1)
++	require.Equal(t, "https://api.openai.com/v1/realtime/client_secrets", upstream.urls[0])
++	require.Equal(t, "gpt-4o-transcribe", gjson.GetBytes(upstream.bodies[0], "session.audio.input.transcription.model").String())
++}
++
++func TestOpenAIGatewayHandlerRealtimeREST_TranslationClientSecretDoesNotFilterBySessionModel(t *testing.T) {
++	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusOK}}
++	account := newRealtimeCallsHandlerAccount(1)
++	account.Type = service.AccountTypeOAuth
++	account.Credentials = map[string]any{
++		"access_token":       "oauth-token",
++		"chatgpt_account_id": "chatgpt-acc",
++		"model_mapping": map[string]any{
++			"client-transcribe": "gpt-4o-transcribe",
++		},
++	}
++	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{account})
++	body := []byte(`{"session":{"model":"gpt-realtime-translate","audio":{"input":{"transcription":{"model":"client-transcribe"}}}}}`)
++	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/translations/client_secrets", body)
++
++	handler.RealtimeREST(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{1}, upstream.accountIDs)
++	require.Len(t, upstream.bodies, 1)
++	require.Equal(t, "https://api.openai.com/v1/realtime/translations/client_secrets", upstream.urls[0])
++	require.Equal(t, "gpt-realtime-translate", gjson.GetBytes(upstream.bodies[0], "session.model").String())
++	require.Equal(t, "gpt-4o-transcribe", gjson.GetBytes(upstream.bodies[0], "session.audio.input.transcription.model").String())
++}
++
++func TestOpenAIGatewayHandlerRealtimeREST_CallControlNoModelDispatchesAccount(t *testing.T) {
++	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusOK}}
++	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{
++		newRealtimeCallsHandlerAccount(1),
++	})
++	body := []byte(`{"status_code":603}`)
++	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/calls/call_123/reject", body)
++
++	handler.RealtimeREST(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{1}, upstream.accountIDs)
++	require.Equal(t, "https://api.openai.com/v1/realtime/calls/call_123/reject", upstream.urls[0])
++	require.JSONEq(t, string(body), string(upstream.bodies[0]))
++}
++
++func newRealtimeCallsHandlerForTest(t *testing.T, upstream service.HTTPUpstream, accounts []service.Account) *OpenAIGatewayHandler {
++	t.Helper()
++	cfg := &config.Config{RunMode: config.RunModeSimple}
++	cfg.Default.RateMultiplier = 1
++	cfg.Gateway.Scheduling.LoadBatchEnabled = false
++
++	accountRepo := &realtimeCallsHandlerAccountRepo{accounts: accounts}
++	concurrencyService := service.NewConcurrencyService(nil)
++	billingCacheService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
++	billingService := service.NewBillingService(cfg, nil)
++	deferredService := service.NewDeferredService(accountRepo, nil, time.Minute)
++	gatewayService := service.NewOpenAIGatewayService(
++		accountRepo,
++		nil,
++		nil,
++		nil,
++		nil,
++		nil,
++		nil,
++		cfg,
++		nil,
++		concurrencyService,
++		billingService,
++		nil,
++		billingCacheService,
++		upstream,
++		deferredService,
++		nil,
++		nil,
++		nil,
++		nil,
++		nil,
++		nil,
++	)
++
++	return NewOpenAIGatewayHandler(
++		gatewayService,
++		concurrencyService,
++		billingCacheService,
++		&service.APIKeyService{},
++		nil,
++		nil,
++		nil,
++		cfg,
++	)
++}
++
++func newRealtimeCallsHandlerContext(t *testing.T, path string, body []byte) (*gin.Context, *httptest.ResponseRecorder) {
++	t.Helper()
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
++	c.Request.Header.Set("Content-Type", "application/json")
++
++	groupID := int64(10)
++	user := &service.User{ID: 42, Status: service.StatusActive, Balance: 100}
++	group := &service.Group{
++		ID:             groupID,
++		Name:           "openai",
++		Platform:       service.PlatformOpenAI,
++		RateMultiplier: 1,
++		Status:         service.StatusActive,
++	}
++	apiKey := &service.APIKey{
++		ID:      77,
++		UserID:  user.ID,
++		Status:  service.StatusActive,
++		User:    user,
++		GroupID: &groupID,
++		Group:   group,
++	}
++	c.Set(string(middleware.ContextKeyAPIKey), apiKey)
++	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: user.ID})
++	c.Set(string(middleware.ContextKeyUserRole), service.RoleUser)
++	return c, rec
++}
++
++func newRealtimeCallsHandlerAccount(id int64) service.Account {
++	return service.Account{
++		ID:          id,
++		Name:        "openai-realtime",
++		Platform:    service.PlatformOpenAI,
++		Type:        service.AccountTypeAPIKey,
++		Status:      service.StatusActive,
++		Schedulable: true,
++		Concurrency: 0,
++		Priority:    int(id),
++		Credentials: map[string]any{"api_key": "sk-test"},
++	}
++}
+diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
+new file mode 100644
+index 00000000..34b96c41
+--- /dev/null
++++ b/backend/internal/service/openai_realtime_calls.go
+@@ -0,0 +1,425 @@
++package service
++
++import (
++	"bytes"
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"strings"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
++	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
++	"github.com/gin-gonic/gin"
++	"github.com/tidwall/gjson"
++	"github.com/tidwall/sjson"
++)
++
++const (
++	openAIRealtimeCallsAcceptEndpointPrefix = "/v1/realtime/calls/"
++	openAIRealtimeCallsAcceptEndpointSuffix = "/accept"
++	openAIRealtimeRESTDefaultBaseURL        = "https://api.openai.com"
++)
++
++type OpenAIRealtimeRESTModelRef struct {
++	Path  string
++	Value string
++}
++
++type OpenAIRealtimeRESTRequest struct {
++	CallID            string
++	Body              []byte
++	Model             string
++	Endpoint          string
++	Action            string
++	ScheduleModelPath string
++	ModelRefs         []OpenAIRealtimeRESTModelRef
++}
++
++type OpenAIRealtimeCallsAcceptRequest = OpenAIRealtimeRESTRequest
++
++func (r *OpenAIRealtimeRESTRequest) StickySessionSeed() string {
++	if r == nil {
++		return ""
++	}
++	return strings.Join([]string{
++		"openai-realtime-rest",
++		strings.TrimSpace(r.Endpoint),
++		strings.TrimSpace(r.CallID),
++		strings.TrimSpace(r.Model),
++	}, "|")
++}
++
++func ParseOpenAIRealtimeRESTRequest(c *gin.Context, body []byte) (*OpenAIRealtimeRESTRequest, error) {
++	if c == nil || c.Request == nil || c.Request.URL == nil {
++		return nil, fmt.Errorf("missing request context")
++	}
++	endpoint, callID, action, err := normalizeOpenAIRealtimeRESTEndpoint(c.Request.URL.Path)
++	if err != nil {
++		return nil, err
++	}
++
++	parsed := &OpenAIRealtimeRESTRequest{
++		CallID:   callID,
++		Body:     body,
++		Endpoint: endpoint,
++		Action:   action,
++	}
++
++	if endpoint == OpenAIRealtimeCallsAcceptUpstreamEndpoint(callID) {
++		if len(body) == 0 {
++			return nil, fmt.Errorf("request body is empty")
++		}
++		if !gjson.ValidBytes(body) {
++			return nil, fmt.Errorf("failed to parse request body")
++		}
++		if sessionType := strings.TrimSpace(gjson.GetBytes(body, "type").String()); sessionType != "realtime" {
++			return nil, fmt.Errorf("type must be realtime")
++		}
++		model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
++		if model == "" {
++			return nil, fmt.Errorf("model is required")
++		}
++		parsed.Model = model
++		parsed.ScheduleModelPath = "model"
++		parsed.ModelRefs = []OpenAIRealtimeRESTModelRef{{Path: "model", Value: model}}
++		return parsed, nil
++	}
++
++	if len(body) == 0 || !gjson.ValidBytes(body) {
++		return parsed, nil
++	}
++	parsed.ModelRefs = extractOpenAIRealtimeRESTModelRefs(endpoint, body)
++	if len(parsed.ModelRefs) > 0 {
++		parsed.Model = parsed.ModelRefs[0].Value
++		parsed.ScheduleModelPath = parsed.ModelRefs[0].Path
++	}
++	return parsed, nil
++}
++
++func ParseOpenAIRealtimeCallsAcceptRequest(c *gin.Context, body []byte) (*OpenAIRealtimeCallsAcceptRequest, error) {
++	return ParseOpenAIRealtimeRESTRequest(c, body)
++}
++
++func normalizeOpenAIRealtimeRESTEndpoint(path string) (endpoint string, callID string, action string, err error) {
++	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
++	if trimmed == "" {
++		return "", "", "", fmt.Errorf("realtime endpoint is required")
++	}
++	if idx := strings.LastIndex(trimmed, "/realtime/"); idx >= 0 {
++		trimmed = "/v1" + trimmed[idx:]
++	}
++
++	switch trimmed {
++	case "/v1/realtime/client_secrets",
++		"/v1/realtime/translations/client_secrets",
++		"/v1/realtime/calls",
++		"/v1/realtime/translations/calls",
++		"/v1/realtime/sessions",
++		"/v1/realtime/transcription_sessions":
++		return trimmed, "", "", nil
++	}
++
++	const callsPrefix = "/v1/realtime/calls/"
++	if !strings.HasPrefix(trimmed, callsPrefix) {
++		return "", "", "", fmt.Errorf("unsupported realtime endpoint")
++	}
++	rest := strings.TrimPrefix(trimmed, callsPrefix)
++	parts := strings.Split(rest, "/")
++	if len(parts) != 2 {
++		return "", "", "", fmt.Errorf("unsupported realtime call endpoint")
++	}
++	callID = strings.TrimSpace(parts[0])
++	action = strings.TrimSpace(parts[1])
++	if callID == "" {
++		return "", "", "", fmt.Errorf("call_id is required")
++	}
++	switch action {
++	case "accept", "hangup", "refer", "reject":
++		return trimmed, callID, action, nil
++	default:
++		return "", "", "", fmt.Errorf("unsupported realtime call action")
++	}
++}
++
++func extractOpenAIRealtimeRESTModelRefs(endpoint string, body []byte) []OpenAIRealtimeRESTModelRef {
++	var paths []string
++	switch endpoint {
++	case "/v1/realtime/client_secrets":
++		paths = []string{"session.model", "session.audio.input.transcription.model"}
++	case "/v1/realtime/translations/client_secrets":
++		paths = []string{"session.model", "session.audio.input.transcription.model"}
++	case "/v1/realtime/calls", "/v1/realtime/translations/calls":
++		paths = []string{"model", "session.model"}
++	case "/v1/realtime/sessions":
++		paths = []string{"model"}
++	case "/v1/realtime/transcription_sessions":
++		paths = []string{"input_audio_transcription.model"}
++	default:
++		return nil
++	}
++
++	refs := make([]OpenAIRealtimeRESTModelRef, 0, len(paths))
++	for _, path := range paths {
++		value := strings.TrimSpace(gjson.GetBytes(body, path).String())
++		if value == "" {
++			continue
++		}
++		refs = append(refs, OpenAIRealtimeRESTModelRef{Path: path, Value: value})
++	}
++	return refs
++}
++
++func OpenAIRealtimeCallsAcceptUpstreamEndpoint(callID string) string {
++	callID = strings.Trim(strings.TrimSpace(callID), "/")
++	if callID == "" {
++		return openAIRealtimeCallsAcceptEndpointPrefix + openAIRealtimeCallsAcceptEndpointSuffix[1:]
++	}
++	return openAIRealtimeCallsAcceptEndpointPrefix + callID + openAIRealtimeCallsAcceptEndpointSuffix
++}
++
++func (s *OpenAIGatewayService) ForwardRealtimeREST(
++	ctx context.Context,
++	c *gin.Context,
++	account *Account,
++	parsed *OpenAIRealtimeRESTRequest,
++	channelMappedModels map[string]string,
++) (*OpenAIForwardResult, error) {
++	if parsed == nil {
++		return nil, fmt.Errorf("parsed realtime REST request is required")
++	}
++	if account == nil {
++		return nil, fmt.Errorf("account is required")
++	}
++	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
++		return nil, fmt.Errorf("realtime REST endpoint requires an OpenAI API key or OAuth account")
++	}
++
++	startTime := time.Now()
++	requestModel, upstreamModel, forwardBody := buildOpenAIRealtimeRESTForwardBody(parsed, account, channelMappedModels)
++
++	token, _, err := s.GetAccessToken(ctx, account)
++	if err != nil {
++		return nil, err
++	}
++	upstreamReq, err := s.buildOpenAIRealtimeRESTRequest(ctx, c, account, parsed.Endpoint, forwardBody, token)
++	if err != nil {
++		return nil, err
++	}
++
++	proxyURL := ""
++	if account.ProxyID != nil && account.Proxy != nil {
++		proxyURL = account.Proxy.URL()
++	}
++	upstreamStart := time.Now()
++	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
++	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
++	if err != nil {
++		safeErr := sanitizeUpstreamErrorMessage(err.Error())
++		setOpsUpstreamError(c, 0, safeErr, "")
++		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
++			Platform:           account.Platform,
++			AccountID:          account.ID,
++			AccountName:        account.Name,
++			UpstreamStatusCode: 0,
++			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
++			Kind:               "request_error",
++			Message:            safeErr,
++		})
++		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
++	}
++	if resp.StatusCode >= 400 {
++		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
++		_ = resp.Body.Close()
++		resp.Body = io.NopCloser(bytes.NewReader(respBody))
++		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
++		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
++		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
++			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
++				Platform:           account.Platform,
++				AccountID:          account.ID,
++				AccountName:        account.Name,
++				UpstreamStatusCode: resp.StatusCode,
++				UpstreamRequestID:  resp.Header.Get("x-request-id"),
++				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
++				Kind:               "failover",
++				Message:            upstreamMsg,
++			})
++			s.handleFailoverSideEffects(ctx, resp, account)
++			return nil, &UpstreamFailoverError{
++				StatusCode:             resp.StatusCode,
++				ResponseBody:           respBody,
++				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
++			}
++		}
++		return s.handleErrorResponse(ctx, resp, c, account, forwardBody)
++	}
++	defer func() { _ = resp.Body.Close() }()
++
++	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
++	if err != nil {
++		return nil, err
++	}
++	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
++	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
++	if contentType == "" {
++		contentType = "application/json"
++	}
++	c.Data(resp.StatusCode, contentType, body)
++
++	return &OpenAIForwardResult{
++		RequestID:       resp.Header.Get("x-request-id"),
++		Model:           requestModel,
++		UpstreamModel:   upstreamModel,
++		Stream:          false,
++		ResponseHeaders: resp.Header.Clone(),
++		Duration:        time.Since(startTime),
++	}, nil
++}
++
++func (s *OpenAIGatewayService) ForwardRealtimeCallsAccept(
++	ctx context.Context,
++	c *gin.Context,
++	account *Account,
++	parsed *OpenAIRealtimeCallsAcceptRequest,
++	channelMappedModel string,
++) (*OpenAIForwardResult, error) {
++	if parsed != nil {
++		if parsed.Endpoint == "" {
++			parsed.Endpoint = OpenAIRealtimeCallsAcceptUpstreamEndpoint(parsed.CallID)
++		}
++		if parsed.ScheduleModelPath == "" && parsed.Model != "" {
++			parsed.ScheduleModelPath = "model"
++		}
++		if len(parsed.ModelRefs) == 0 && parsed.Model != "" {
++			parsed.ModelRefs = []OpenAIRealtimeRESTModelRef{{Path: "model", Value: parsed.Model}}
++		}
++	}
++	mapped := map[string]string{}
++	if strings.TrimSpace(channelMappedModel) != "" {
++		mapped["model"] = strings.TrimSpace(channelMappedModel)
++	}
++	return s.ForwardRealtimeREST(ctx, c, account, parsed, mapped)
++}
++
++func buildOpenAIRealtimeRESTForwardBody(
++	parsed *OpenAIRealtimeRESTRequest,
++	account *Account,
++	channelMappedModels map[string]string,
++) (requestModel string, upstreamModel string, body []byte) {
++	if parsed == nil {
++		return "", "", nil
++	}
++	body = parsed.Body
++	requestModel = strings.TrimSpace(parsed.Model)
++	upstreamModel = resolveOpenAIRealtimeRESTModel(account, requestModel, channelMappedModels[parsed.ScheduleModelPath])
++	if requestModel == "" {
++		upstreamModel = ""
++	}
++
++	for _, ref := range parsed.ModelRefs {
++		original := strings.TrimSpace(ref.Value)
++		if original == "" || strings.TrimSpace(ref.Path) == "" {
++			continue
++		}
++		nextModel := resolveOpenAIRealtimeRESTModel(account, original, channelMappedModels[ref.Path])
++		if nextModel == "" || nextModel == original {
++			continue
++		}
++		updated, err := sjson.SetBytes(body, ref.Path, nextModel)
++		if err != nil {
++			continue
++		}
++		body = updated
++	}
++	if upstreamModel == "" && len(parsed.ModelRefs) > 0 {
++		upstreamModel = strings.TrimSpace(parsed.ModelRefs[0].Value)
++	}
++	return requestModel, upstreamModel, body
++}
++
++func resolveOpenAIRealtimeRESTModel(account *Account, requestedModel string, channelMappedModel string) string {
++	model := strings.TrimSpace(requestedModel)
++	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
++		model = mapped
++	}
++	if account != nil {
++		if mapped := strings.TrimSpace(account.GetMappedModel(model)); mapped != "" {
++			model = mapped
++		}
++	}
++	return model
++}
++
++func (s *OpenAIGatewayService) buildOpenAIRealtimeRESTRequest(
++	ctx context.Context,
++	c *gin.Context,
++	account *Account,
++	endpoint string,
++	body []byte,
++	token string,
++) (*http.Request, error) {
++	targetURL := buildOpenAIRealtimeRESTURL("", endpoint)
++	if baseURL := account.GetOpenAIBaseURL(); baseURL != "" {
++		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
++		if err != nil {
++			return nil, err
++		}
++		targetURL = buildOpenAIRealtimeRESTURL(validatedURL, endpoint)
++	}
++
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
++	if err != nil {
++		return nil, err
++	}
++	if c != nil && c.Request != nil {
++		for key, values := range c.Request.Header {
++			lowerKey := strings.ToLower(key)
++			if !openaiPassthroughAllowedHeaders[lowerKey] {
++				continue
++			}
++			for _, value := range values {
++				req.Header.Add(key, value)
++			}
++		}
++	}
++	req.Header.Del("Authorization")
++	req.Header.Del("X-Api-Key")
++	req.Header.Del("X-Goog-Api-Key")
++	req.Header.Set("Authorization", "Bearer "+token)
++	if strings.TrimSpace(req.Header.Get("Content-Type")) == "" {
++		req.Header.Set("Content-Type", "application/json")
++	}
++	if account.Type == AccountTypeOAuth {
++		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
++			req.Header.Set("chatgpt-account-id", chatgptAccountID)
++		}
++		isCodexOfficialClient := false
++		if c != nil {
++			isCodexOfficialClient = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
++		}
++		req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexOfficialClient))
++	}
++	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
++		req.Header.Set("User-Agent", customUA)
++	} else if account.Type == AccountTypeOAuth {
++		req.Header.Set("User-Agent", codexCLIUserAgent)
++	}
++	return req, nil
++}
++
++func buildOpenAIRealtimeRESTURL(base string, endpoint string) string {
++	endpoint = strings.TrimSpace(endpoint)
++	if endpoint == "" {
++		endpoint = "/v1/realtime"
++	}
++	if strings.TrimSpace(base) == "" {
++		return buildOpenAIEndpointURL(openAIRealtimeRESTDefaultBaseURL, endpoint)
++	}
++	return buildOpenAIEndpointURL(base, endpoint)
++}
++
++func buildOpenAIRealtimeCallsAcceptURL(base string, callID string) string {
++	return buildOpenAIRealtimeRESTURL(base, OpenAIRealtimeCallsAcceptUpstreamEndpoint(callID))
++}
+diff --git a/backend/internal/service/openai_realtime_calls_test.go b/backend/internal/service/openai_realtime_calls_test.go
+new file mode 100644
+index 00000000..a2906351
+--- /dev/null
++++ b/backend/internal/service/openai_realtime_calls_test.go
+@@ -0,0 +1,413 @@
++package service
++
++import (
++	"bytes"
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/gin-gonic/gin"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++func TestParseOpenAIRealtimeCallsAcceptRequest(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/calls/call_123/accept", bytes.NewReader(nil))
++
++	parsed, err := ParseOpenAIRealtimeCallsAcceptRequest(c, []byte(`{"type":"realtime","model":"gpt-realtime"}`))
++
++	require.NoError(t, err)
++	require.Equal(t, "call_123", parsed.CallID)
++	require.Equal(t, "gpt-realtime", parsed.Model)
++}
++
++func TestParseOpenAIRealtimeRESTRequest_ClientSecretsTranscriptionModel(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/client_secrets", bytes.NewReader(nil))
++
++	parsed, err := ParseOpenAIRealtimeRESTRequest(c, []byte(`{"session":{"type":"transcription","audio":{"input":{"transcription":{"model":"gpt-4o-transcribe"}}}}}`))
++
++	require.NoError(t, err)
++	require.Equal(t, "/v1/realtime/client_secrets", parsed.Endpoint)
++	require.Equal(t, "gpt-4o-transcribe", parsed.Model)
++	require.Equal(t, "session.audio.input.transcription.model", parsed.ScheduleModelPath)
++	require.Equal(t, []OpenAIRealtimeRESTModelRef{
++		{Path: "session.audio.input.transcription.model", Value: "gpt-4o-transcribe"},
++	}, parsed.ModelRefs)
++}
++
++func TestParseOpenAIRealtimeRESTRequest_PrefixedPath(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/realtime/calls/call_123/reject", bytes.NewReader(nil))
++
++	parsed, err := ParseOpenAIRealtimeRESTRequest(c, []byte(`{"status_code":603}`))
++
++	require.NoError(t, err)
++	require.Equal(t, "/v1/realtime/calls/call_123/reject", parsed.Endpoint)
++	require.Equal(t, "call_123", parsed.CallID)
++	require.Equal(t, "reject", parsed.Action)
++}
++
++func TestOpenAIGatewayService_ForwardRealtimeCallsAccept_APIKeyURLBodyAndHeaders(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	body := []byte(`{"type":"realtime","model":"gpt-realtime","instructions":"answer calls"}`)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/calls/call_123/accept", bytes.NewReader(body))
++	c.Request.Header.Set("Content-Type", "application/json")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_call"}},
++		Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":"call_123"}`))),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          123,
++		Name:        "acc",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key": "sk-test",
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++	parsed := &OpenAIRealtimeCallsAcceptRequest{CallID: "call_123", Body: body, Model: "gpt-realtime"}
++
++	result, err := svc.ForwardRealtimeCallsAccept(context.Background(), c, account, parsed, "")
++
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.NotNil(t, upstream.lastReq)
++	require.Equal(t, http.MethodPost, upstream.lastReq.Method)
++	require.Equal(t, "https://api.openai.com/v1/realtime/calls/call_123/accept", upstream.lastReq.URL.String())
++	require.Equal(t, "Bearer sk-test", upstream.lastReq.Header.Get("Authorization"))
++	require.JSONEq(t, string(body), string(upstream.lastBody))
++	require.JSONEq(t, `{"id":"call_123"}`, rec.Body.String())
++}
++
++func TestOpenAIGatewayService_ForwardRealtimeCallsAccept_OAuthURLBodyAndHeaders(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	body := []byte(`{"type":"realtime","model":"client-realtime"}`)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/calls/call_123/accept", bytes.NewReader(body))
++	c.Request.Header.Set("Content-Type", "application/json")
++	c.Request.Header.Set("originator", "codex_cli_rs")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_call_oauth"}},
++		Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":"call_123"}`))),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          123,
++		Name:        "acc",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"access_token":       "oauth-token",
++			"chatgpt_account_id": "chatgpt-acc",
++			"model_mapping": map[string]any{
++				"client-realtime": "gpt-realtime",
++			},
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++	parsed := &OpenAIRealtimeCallsAcceptRequest{CallID: "call_123", Body: body, Model: "client-realtime"}
++
++	result, err := svc.ForwardRealtimeCallsAccept(context.Background(), c, account, parsed, "")
++
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.NotNil(t, upstream.lastReq)
++	require.Equal(t, "https://api.openai.com/v1/realtime/calls/call_123/accept", upstream.lastReq.URL.String())
++	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
++	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
++	require.Equal(t, "codex_cli_rs", upstream.lastReq.Header.Get("originator"))
++	require.Equal(t, "gpt-realtime", gjson.GetBytes(upstream.lastBody, "model").String())
++	require.JSONEq(t, `{"id":"call_123"}`, rec.Body.String())
++}
++
++func TestOpenAIGatewayService_ForwardRealtimeREST_ClientSecretMapsTranscriptionModel(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	body := []byte(`{"session":{"type":"transcription","audio":{"input":{"transcription":{"model":"client-transcribe"}}}}}`)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/client_secrets", bytes.NewReader(body))
++	c.Request.Header.Set("Content-Type", "application/json")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_secret"}},
++		Body:       io.NopCloser(bytes.NewReader([]byte(`{"value":"secret"}`))),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          123,
++		Name:        "acc",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key": "sk-test",
++			"model_mapping": map[string]any{
++				"gpt-4o-mini-transcribe": "gpt-4o-transcribe",
++			},
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++	parsed, err := ParseOpenAIRealtimeRESTRequest(c, body)
++	require.NoError(t, err)
++
++	result, err := svc.ForwardRealtimeREST(
++		context.Background(),
++		c,
++		account,
++		parsed,
++		map[string]string{"session.audio.input.transcription.model": "gpt-4o-mini-transcribe"},
++	)
++
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, "https://api.openai.com/v1/realtime/client_secrets", upstream.lastReq.URL.String())
++	require.Equal(t, "gpt-4o-transcribe", gjson.GetBytes(upstream.lastBody, "session.audio.input.transcription.model").String())
++	require.Equal(t, "client-transcribe", result.Model)
++	require.Equal(t, "gpt-4o-transcribe", result.UpstreamModel)
++}
++
++func TestOpenAIGatewayService_ForwardRealtimeREST_TranslationMapsSessionAndTranscriptionModels(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	body := []byte(`{"session":{"model":"client-translate","audio":{"input":{"transcription":{"model":"client-transcribe"}}}}}`)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/translations/client_secrets", bytes.NewReader(body))
++	c.Request.Header.Set("Content-Type", "application/json")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_translation"}},
++		Body:       io.NopCloser(bytes.NewReader([]byte(`{"value":"secret"}`))),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          123,
++		Name:        "acc",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key": "sk-test",
++			"model_mapping": map[string]any{
++				"mapped-translate":  "gpt-realtime-translate",
++				"mapped-transcribe": "gpt-4o-transcribe",
++			},
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++	parsed, err := ParseOpenAIRealtimeRESTRequest(c, body)
++	require.NoError(t, err)
++
++	result, err := svc.ForwardRealtimeREST(
++		context.Background(),
++		c,
++		account,
++		parsed,
++		map[string]string{
++			"session.model": "mapped-translate",
++			"session.audio.input.transcription.model": "mapped-transcribe",
++		},
++	)
++
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, "https://api.openai.com/v1/realtime/translations/client_secrets", upstream.lastReq.URL.String())
++	require.Equal(t, "gpt-realtime-translate", gjson.GetBytes(upstream.lastBody, "session.model").String())
++	require.Equal(t, "gpt-4o-transcribe", gjson.GetBytes(upstream.lastBody, "session.audio.input.transcription.model").String())
++	require.Equal(t, "client-translate", result.Model)
++	require.Equal(t, "gpt-realtime-translate", result.UpstreamModel)
++}
++
++func TestOpenAIGatewayService_ForwardRealtimeREST_TranslationCallsMapsModel(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	body := []byte(`{"model":"client-translate-call","sdp":"v=0"}`)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/translations/calls", bytes.NewReader(body))
++	c.Request.Header.Set("Content-Type", "application/sdp")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_translation_call"}},
++		Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":"call_123"}`))),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          123,
++		Name:        "acc",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"access_token":       "oauth-token",
++			"chatgpt_account_id": "chatgpt-acc",
++			"model_mapping": map[string]any{
++				"mapped-translate-call": "gpt-realtime-translate",
++			},
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++	parsed, err := ParseOpenAIRealtimeRESTRequest(c, body)
++	require.NoError(t, err)
++	require.Equal(t, "/v1/realtime/translations/calls", parsed.Endpoint)
++	require.Equal(t, "client-translate-call", parsed.Model)
++	require.Equal(t, "model", parsed.ScheduleModelPath)
++
++	result, err := svc.ForwardRealtimeREST(
++		context.Background(),
++		c,
++		account,
++		parsed,
++		map[string]string{"model": "mapped-translate-call"},
++	)
++
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, "https://api.openai.com/v1/realtime/translations/calls", upstream.lastReq.URL.String())
++	require.Equal(t, "application/sdp", upstream.lastReq.Header.Get("Content-Type"))
++	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
++	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
++	require.Equal(t, "gpt-realtime-translate", gjson.GetBytes(upstream.lastBody, "model").String())
++	require.Equal(t, "client-translate-call", result.Model)
++	require.Equal(t, "gpt-realtime-translate", result.UpstreamModel)
++}
++
++func TestOpenAIGatewayService_ForwardRealtimeREST_TranslationOAuthHeaders(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	body := []byte(`{"session":{"model":"client-translate"}}`)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/translations/client_secrets", bytes.NewReader(body))
++	c.Request.Header.Set("Content-Type", "application/json")
++	c.Request.Header.Set("originator", "codex_cli_rs")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_translation_oauth"}},
++		Body:       io.NopCloser(bytes.NewReader([]byte(`{"value":"secret"}`))),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          123,
++		Name:        "acc",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"access_token":       "oauth-token",
++			"chatgpt_account_id": "chatgpt-acc",
++			"model_mapping": map[string]any{
++				"client-translate": "gpt-realtime-translate",
++			},
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++	parsed, err := ParseOpenAIRealtimeRESTRequest(c, body)
++	require.NoError(t, err)
++
++	result, err := svc.ForwardRealtimeREST(context.Background(), c, account, parsed, nil)
++
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, "https://api.openai.com/v1/realtime/translations/client_secrets", upstream.lastReq.URL.String())
++	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
++	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
++	require.Equal(t, "codex_cli_rs", upstream.lastReq.Header.Get("originator"))
++	require.Equal(t, "gpt-realtime-translate", gjson.GetBytes(upstream.lastBody, "session.model").String())
++	require.Equal(t, "client-translate", result.Model)
++	require.Equal(t, "gpt-realtime-translate", result.UpstreamModel)
++}
++
++func TestOpenAIGatewayService_ForwardRealtimeREST_CallControlAllowsNoModel(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	body := []byte(`{"target_uri":"tel:+15551234567"}`)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/calls/call_123/refer", bytes.NewReader(body))
++	c.Request.Header.Set("Content-Type", "application/json")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_refer"}},
++		Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":"call_123"}`))),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          123,
++		Name:        "acc",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key": "sk-test",
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++	parsed, err := ParseOpenAIRealtimeRESTRequest(c, body)
++	require.NoError(t, err)
++
++	result, err := svc.ForwardRealtimeREST(context.Background(), c, account, parsed, nil)
++
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, "https://api.openai.com/v1/realtime/calls/call_123/refer", upstream.lastReq.URL.String())
++	require.JSONEq(t, string(body), string(upstream.lastBody))
++	require.Empty(t, result.Model)
++	require.Empty(t, result.UpstreamModel)
++}
++
++func TestOpenAIRealtimeCallsAcceptUpstreamEndpoint(t *testing.T) {
++	require.Equal(t, "/v1/realtime/calls/call_123/accept", OpenAIRealtimeCallsAcceptUpstreamEndpoint("call_123"))
++	require.Equal(t, "https://example.test/v1/realtime/calls/call_123/accept", buildOpenAIRealtimeCallsAcceptURL("https://example.test/v1", "call_123"))
++}

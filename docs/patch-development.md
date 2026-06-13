@@ -7,12 +7,12 @@ All new downstream work must be developed as a patch on top of a known-good base
 - Start from an upstream commit whose upstream CI checks are complete and passing.
 - Apply the current `patches/cur` patchset first.
 - Run the patch validation gates before adding new work.
-- Keep the historical baseline patch intact. Add one logically scoped commit per new patch topic after the baseline has been applied and validated.
+- Keep the current topic patches replayable. Add one logically scoped commit per new patch topic after the existing patchset has been applied and validated.
 - Refresh patches from the resulting worktree.
 - Do not edit generated branches manually.
 - Do not include pull request or issue references in commit subjects, patch files, release notes, or automation comments.
 
-## Add a new patch after the baseline
+## Add a new patch after the current patchset
 
 ```sh
 # 1. Prepare a clean upstream worktree.
@@ -45,7 +45,7 @@ After reordering or squashing, refresh the patch files and run the sanitizer.
 
 ## When to split patches
 
-Split new patches when they have different reasons to change or different failure modes. Do not split the historical baseline unless there is a concrete maintenance need and the resulting patchset still applies cleanly. Examples:
+Split new patches when they have different reasons to change or different failure modes. Re-splitting existing patches is allowed only when it improves maintenance and the resulting patchset still applies cleanly. Examples:
 
 - CI/release automation should stay separate from runtime code.
 - Schema/migration changes should stay separate from UI-only changes.

@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sat, 13 Jun 2026 16:29:02 +0000
+Subject: [PATCH] fix: align moderation and settings compatibility
+
+
+diff --git a/backend/internal/pkg/openai/instructions_gpt5_2.txt b/backend/internal/pkg/openai/instructions_gpt5_2.txt
+index 7dd684bf..1dd67981 100644
+--- a/backend/internal/pkg/openai/instructions_gpt5_2.txt
++++ b/backend/internal/pkg/openai/instructions_gpt5_2.txt
+@@ -157,7 +157,7 @@ If you're operating in an existing codebase, you should make sure you do exactly
+ 
+ You should use judicious initiative to decide on the right level of detail and complexity to deliver based on the user's needs. This means showing good judgment that you're capable of doing the right extras without gold-plating. This might be demonstrated by high-value, creative touches when scope of the task is vague; while being surgical and targeted when scope is tightly specified.
+ 
+-## Presenting your work 
++## Presenting your work
+ 
+ Your final message should read naturally, like an update from a concise teammate. For casual conversation, brainstorming tasks, or quick questions from the user, respond in a friendly, conversational tone. You should ask questions, suggest ideas, and adapt to the user’s style. If you've finished a large amount of work, when describing what you've done to the user, you should follow the final answer formatting guidelines to communicate substantive changes. You don't need to add structured formatting for one-word answers, greetings, or purely conversational exchanges.
+ 
+diff --git a/backend/internal/service/content_moderation.go b/backend/internal/service/content_moderation.go
+index 42b909c9..15824b4f 100644
+--- a/backend/internal/service/content_moderation.go
++++ b/backend/internal/service/content_moderation.go
+@@ -50,6 +50,7 @@ const (
+ 
+ 	ContentModerationProtocolAnthropicMessages = "anthropic_messages"
+ 	ContentModerationProtocolOpenAIResponses   = "openai_responses"
++	ContentModerationProtocolOpenAIRealtime    = "openai_realtime"
+ 	ContentModerationProtocolOpenAIChat        = "openai_chat_completions"
+ 	ContentModerationProtocolGemini            = "gemini"
+ 	ContentModerationProtocolOpenAIImages      = "openai_images"
+@@ -751,6 +752,7 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
+ 
+ func (s *ContentModerationService) Check(ctx context.Context, input ContentModerationCheckInput) (*ContentModerationDecision, error) {
+ 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
++	input.Protocol = normalizeContentModerationProtocol(input.Protocol, input.Endpoint)
+ 	if s == nil || s.settingRepo == nil || s.repo == nil {
+ 		slog.Info("content_moderation.skip_unavailable",
+ 			"user_id", input.UserID,
+@@ -980,6 +982,13 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
+ 	return s.checkSync(ctx, input, cfg, content, hashText, nil, true), nil
+ }
+ 
++func normalizeContentModerationProtocol(protocol string, endpoint string) string {
++	if protocol == ContentModerationProtocolOpenAIResponses && strings.EqualFold(strings.TrimSpace(endpoint), "/v1/realtime") {
++		return ContentModerationProtocolOpenAIRealtime
++	}
++	return protocol
++}
++
+ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) *ContentModerationDecision {
+ 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
+ 	trackPreBlock := queueDelay == nil && allowBlock && cfg != nil && cfg.Mode == ContentModerationModePreBlock
+diff --git a/backend/internal/service/content_moderation_input.go b/backend/internal/service/content_moderation_input.go
+index 73d5b697..1e9dff17 100644
+--- a/backend/internal/service/content_moderation_input.go
++++ b/backend/internal/service/content_moderation_input.go
+@@ -26,6 +26,8 @@ func ExtractContentModerationInput(protocol string, body []byte) ContentModerati
+ 		collectLastRoleMessage(gjson.GetBytes(body, "messages"), "user", &parts, &images)
+ 	case ContentModerationProtocolOpenAIResponses:
+ 		collectLastResponsesInput(gjson.GetBytes(body, "input"), &parts, &images)
++	case ContentModerationProtocolOpenAIRealtime:
++		collectRealtimeEventInput(gjson.ParseBytes(body), &parts, &images)
+ 	case ContentModerationProtocolGemini:
+ 		collectLastGeminiContent(gjson.GetBytes(body, "contents"), &parts, &images)
+ 	case ContentModerationProtocolOpenAIImages:
+@@ -171,6 +173,68 @@ func responseItemHasModerationText(item gjson.Result) bool {
+ 	return normalizeContentModerationText(strings.Join(parts, "\n")) != "" || len(images) > 0
+ }
+ 
++func collectRealtimeEventInput(event gjson.Result, parts *[]string, images *[]string) {
++	eventType := strings.ToLower(strings.TrimSpace(event.Get("type").String()))
++	switch eventType {
++	case "session.update":
++		collectRealtimeSessionInput(event.Get("session"), parts, images)
++	case "conversation.item.create":
++		collectRealtimeConversationItemInput(event.Get("item"), parts, images)
++	case "response.create":
++		collectLastResponsesInput(event.Get("response.input"), parts, images)
++		if normalizeContentModerationText(strings.Join(*parts, "\n")) == "" && len(*images) == 0 {
++			collectLastResponsesInput(event.Get("input"), parts, images)
++		}
++	default:
++		collectRealtimeSessionInput(event.Get("session"), parts, images)
++		collectRealtimeConversationItemInput(event.Get("item"), parts, images)
++	}
++}
++
++func collectRealtimeSessionInput(session gjson.Result, parts *[]string, images *[]string) {
++	if !session.IsObject() {
++		return
++	}
++	addModerationText(parts, session.Get("instructions").String())
++}
++
++func collectRealtimeConversationItemInput(item gjson.Result, parts *[]string, images *[]string) {
++	if !item.IsObject() {
++		return
++	}
++	role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
++	if role != "" && role != "user" {
++		return
++	}
++	collectRealtimeContentValue(item.Get("content"), parts, images)
++}
++
++func collectRealtimeContentValue(value gjson.Result, parts *[]string, images *[]string) {
++	switch {
++	case !value.Exists():
++		return
++	case value.Type == gjson.String:
++		addModerationText(parts, value.String())
++	case value.IsArray():
++		value.ForEach(func(_, item gjson.Result) bool {
++			collectRealtimeContentValue(item, parts, images)
++			return true
++		})
++	case value.IsObject():
++		typ := strings.ToLower(strings.TrimSpace(value.Get("type").String()))
++		switch typ {
++		case "image_url", "input_image", "image":
++			collectContentValue(value, parts, images)
++			return
++		}
++		addModerationText(parts, value.Get("text").String())
++		addModerationText(parts, value.Get("transcript").String())
++		if value.Get("content").Exists() {
++			collectRealtimeContentValue(value.Get("content"), parts, images)
++		}
++	}
++}
++
+ func collectLastGeminiContent(contents gjson.Result, parts *[]string, images *[]string) {
+ 	if !contents.IsArray() {
+ 		return
+diff --git a/backend/internal/service/content_moderation_test.go b/backend/internal/service/content_moderation_test.go
+index 9cfdc1e4..6ba4bed5 100644
+--- a/backend/internal/service/content_moderation_test.go
++++ b/backend/internal/service/content_moderation_test.go
+@@ -977,6 +977,57 @@ func TestExtractContentModerationInput_OpenAIResponsesCodexPayloadUsesLastUserMe
+ 	require.NotContains(t, input.Text, "first user prompt")
+ }
+ 
++func TestExtractContentModerationInput_OpenAIRealtimeSessionUpdateExtractsInstructions(t *testing.T) {
++	body := []byte(`{
++		"type":"session.update",
++		"session":{
++			"model":"gpt-realtime",
++			"instructions":"moderate these realtime instructions"
++		}
++	}`)
++
++	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIRealtime, body)
++
++	require.Equal(t, "moderate these realtime instructions", input.Text)
++	require.Empty(t, input.Images)
++}
++
++func TestExtractContentModerationInput_OpenAIRealtimeConversationItemExtractsContent(t *testing.T) {
++	body := []byte(`{
++		"type":"conversation.item.create",
++		"item":{
++			"type":"message",
++			"role":"user",
++			"content":[
++				{"type":"input_text","text":"moderate realtime content text"},
++				{"type":"input_audio","transcript":"moderate realtime transcript"}
++			]
++		}
++	}`)
++
++	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIRealtime, body)
++
++	require.Equal(t, "moderate realtime content text moderate realtime transcript", input.Text)
++	require.Empty(t, input.Images)
++}
++
++func TestExtractContentModerationInput_OpenAIResponsesDoesNotUseRealtimeFields(t *testing.T) {
++	body := []byte(`{
++		"type":"session.update",
++		"session":{"instructions":"responses extractor must ignore realtime instructions"}
++	}`)
++
++	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIResponses, body)
++
++	require.Empty(t, input.Text)
++	require.Empty(t, input.Images)
++}
++
++func TestContentModerationProtocolRealtimeEndpointUsesRealtimeExtractor(t *testing.T) {
++	require.Equal(t, ContentModerationProtocolOpenAIRealtime, normalizeContentModerationProtocol(ContentModerationProtocolOpenAIResponses, "/v1/realtime"))
++	require.Equal(t, ContentModerationProtocolOpenAIResponses, normalizeContentModerationProtocol(ContentModerationProtocolOpenAIResponses, "/v1/responses"))
++}
++
+ func TestContentModerationCheck_OpenAIResponsesRecordsNonHitForCodexPayload(t *testing.T) {
+ 	var moderationRequest moderationAPIRequest
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -24,7 +24,10 @@ env:
 
 jobs:
   release:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'mirror/upstream-main')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout patchset
@@ -34,11 +37,20 @@ jobs:
           path: sub2api-patch
           fetch-depth: 0
 
-      - name: Checkout upstream candidate
+      - name: Checkout manual upstream candidate
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.UPSTREAM_REPOSITORY }}
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.upstream_ref || 'main' }}
+          ref: ${{ inputs.upstream_ref }}
+          path: worktree
+          fetch-depth: 0
+
+      - name: Checkout validated mirror candidate
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           path: worktree
           fetch-depth: 0
 
