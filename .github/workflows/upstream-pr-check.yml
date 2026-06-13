@@ -69,6 +69,12 @@ jobs:
           cache: pnpm
           cache-dependency-path: worktree/frontend/pnpm-lock.yaml
 
+      - name: Install golangci-lint
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$RUNNER_TEMP/bin" v2.9
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
       - name: Apply patches
         run: sub2api-patch/scripts/apply-patches.sh worktree
 

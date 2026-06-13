@@ -66,6 +66,15 @@ jobs:
             exit 1
           fi
 
+      - name: Require manual upstream CI success
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream_sha="$(git -C worktree rev-parse HEAD)"
+          sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_sha"
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -83,6 +92,12 @@ jobs:
           node-version: "20"
           cache: pnpm
           cache-dependency-path: worktree/frontend/pnpm-lock.yaml
+
+      - name: Install golangci-lint
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$RUNNER_TEMP/bin" v2.9
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Apply patches
         run: sub2api-patch/scripts/apply-patches.sh worktree
@@ -135,15 +150,22 @@ jobs:
             exit 1
           fi
 
-      - name: Publish patched branch
+      - name: Publish patched branch and reserve tag
         run: |
           set -euo pipefail
           cd worktree
           git config user.name "sub2api-patch automation"
           git config user.email "actions@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch --tags origin
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "release tag already exists: ${VERSION}" >&2
+            exit 1
+          fi
           git checkout -B "$PATCHED_BRANCH"
+          git tag "$VERSION"
           git push origin "$PATCHED_BRANCH" --force
+          git push origin "$VERSION"
 
       - name: Set lowercase image owner
         id: image
@@ -172,13 +194,10 @@ jobs:
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ env.RELEASE_REVISION }}
 
-      - name: Create tag and release
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cd worktree
-          git tag "$VERSION"
-          git push origin "$VERSION"
-          gh release create "$VERSION" --repo "${{ github.repository }}" --title "$VERSION" --notes-file ../release-notes.md --target "$PATCHED_BRANCH"
+          gh release create "$VERSION" --repo "${{ github.repository }}" --title "$VERSION" --notes-file release-notes.md --target "$VERSION"
 
