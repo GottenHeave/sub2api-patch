@@ -12,6 +12,7 @@ permissions:
   statuses: read
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   UPSTREAM_REPOSITORY: Wei-Shaw/sub2api
   UPSTREAM_BRANCH: main
   MIRROR_BRANCH: mirror/upstream-main
@@ -21,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout patchset
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.3
         with:
           ref: patchset
           fetch-depth: 0

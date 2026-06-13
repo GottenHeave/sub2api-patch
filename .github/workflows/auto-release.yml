@@ -20,6 +20,7 @@ permissions:
   id-token: write
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   UPSTREAM_REPOSITORY: Wei-Shaw/sub2api
   PATCHED_BRANCH: patched
 
@@ -32,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout patchset
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.3
         with:
           ref: patchset
           path: sub2api-patch
@@ -40,7 +41,7 @@ jobs:
 
       - name: Checkout manual upstream candidate
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.3
         with:
           repository: ${{ env.UPSTREAM_REPOSITORY }}
           ref: ${{ inputs.upstream_ref }}
@@ -49,7 +50,7 @@ jobs:
 
       - name: Checkout validated mirror candidate
         if: github.event_name == 'workflow_run'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.3
         with:
           ref: mirror/upstream-main
           path: worktree
@@ -76,28 +77,22 @@ jobs:
           sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_sha"
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6.4.0
         with:
           go-version-file: worktree/backend/go.mod
           cache-dependency-path: worktree/backend/go.sum
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6.0.8
         with:
           version: 9
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6.4.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: pnpm
           cache-dependency-path: worktree/frontend/pnpm-lock.yaml
-
-      - name: Install golangci-lint
-        run: |
-          set -euo pipefail
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$RUNNER_TEMP/bin" v2.9.0
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Apply patches
         run: sub2api-patch/scripts/apply-patches.sh worktree
@@ -106,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
-          make -C worktree/backend test
+          (cd worktree/backend && go test ./...)
           pnpm --dir worktree/frontend install --frozen-lockfile
           pnpm --dir worktree/frontend run typecheck
           pnpm --dir worktree/frontend run lint:check
@@ -155,10 +150,10 @@ jobs:
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4.1.0
 
       - name: Preflight release image build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7.2.0
         with:
           context: worktree
           file: worktree/Dockerfile
@@ -193,14 +188,14 @@ jobs:
           git push origin "$VERSION"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
       - name: Build and publish release image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7.2.0
         with:
           context: worktree
           file: worktree/Dockerfile
