@@ -1967,6 +1967,7 @@ func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSoc
 			failedAccountIDs,
 			requiredTransport,
 			requiredCapability,
+			openAIWebSocketRequiredAccountType(opts),
 			false,
 			previousResponseCanMove,
 			!imageIntent,
