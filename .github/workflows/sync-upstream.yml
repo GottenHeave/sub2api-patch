@@ -49,10 +49,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" = "$UPSTREAM_SHA" ]; then
+            echo "main already matches upstream commit ${UPSTREAM_SHA}; no sync request needed."
+            exit 0
+          fi
+
           existing="$(gh pr list --head "$MIRROR_BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
           body="Internal sync request for upstream commit ${UPSTREAM_SHA}. Upstream was read only. Upstream CI was passing before this branch was updated."
           if [ -z "$existing" ]; then
-            gh pr create --base main --head "$MIRROR_BRANCH" --title "sync upstream main" --body "$body"
+            if ! gh pr create --base main --head "$MIRROR_BRANCH" --title "sync upstream main" --body "$body"; then
+              echo "Unable to create internal sync request after updating ${MIRROR_BRANCH}; branch sync completed."
+              exit 0
+            fi
           else
             gh pr edit "$existing" --body "$body"
           fi
