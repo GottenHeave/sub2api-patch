@@ -768,6 +768,32 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 		CacheCreationInputTokens: cacheCreationTokens,
 		CacheReadInputTokens:     cacheReadTokens,
 		ImageOutputTokens:        int(imageOutputTokens),
+		InputAudioTokens: firstOpenAIUsageInt(
+			value,
+			"input_token_details.audio_tokens",
+			"input_tokens_details.audio_tokens",
+			"prompt_tokens_details.audio_tokens",
+		),
+		OutputAudioTokens: firstOpenAIUsageInt(
+			value,
+			"output_token_details.audio_tokens",
+			"output_tokens_details.audio_tokens",
+			"completion_tokens_details.audio_tokens",
+		),
+		CacheCreationAudioTokens: firstOpenAIUsageInt(
+			value,
+			"input_token_details.cache_creation.audio_tokens",
+			"input_tokens_details.cache_creation.audio_tokens",
+			"prompt_tokens_details.cache_creation.audio_tokens",
+			"cache_creation_input_token_details.audio_tokens",
+			"cache_creation_input_tokens_details.audio_tokens",
+		),
+		CacheReadAudioTokens: firstOpenAIUsageInt(
+			value,
+			"input_token_details.cached_tokens_details.audio_tokens",
+			"input_tokens_details.cached_tokens_details.audio_tokens",
+			"prompt_tokens_details.cached_tokens_details.audio_tokens",
+		),
 	}, true
 }
 
@@ -806,6 +832,16 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
 		value.Get("cache_write_input_tokens"),
 		value.Get("cache_creation_tokens"),
 	)
+}
+
+func firstOpenAIUsageInt(value gjson.Result, paths ...string) int {
+	for _, path := range paths {
+		result := value.Get(path)
+		if result.Exists() && result.Type == gjson.Number {
+			return int(result.Int())
+		}
+	}
+	return 0
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {

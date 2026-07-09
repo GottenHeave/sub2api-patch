@@ -1719,8 +1719,14 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndAccount
 	requiredCapability OpenAIEndpointCapability,
 	requiredAccountType string,
 	requireCompact bool,
+	previousResponseCanMove bool,
+	platformOverride ...string,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requiredAccountType, requireCompact, PlatformOpenAI, false)
+	platform := PlatformOpenAI
+	if len(platformOverride) > 0 {
+		platform = platformOverride[0]
+	}
+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requiredAccountType, requireCompact, platform, previousResponseCanMove)
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
