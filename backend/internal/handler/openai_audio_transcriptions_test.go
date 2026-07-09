@@ -276,6 +276,7 @@ func newAudioTranscriptionHandlerForTest(t *testing.T, upstream service.HTTPUpst
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 
 	return NewOpenAIGatewayHandler(
@@ -283,6 +284,7 @@ func newAudioTranscriptionHandlerForTest(t *testing.T, upstream service.HTTPUpst
 		concurrencyService,
 		billingCacheService,
 		&service.APIKeyService{},
+		nil,
 		nil,
 		nil,
 		nil,
