@@ -86,6 +86,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				firstClientMessage,
 				hooks,
 				wsDecision,
+				"/v1/responses",
+				"",
 			)
 		case OpenAIWSIngressModeHTTPBridge:
 			forceHTTPBridge = true
@@ -1614,4 +1616,45 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		turn++
 	}
+}
+
+func (s *OpenAIGatewayService) ProxyRealtimeWebSocketFromClient(
+	ctx context.Context,
+	c *gin.Context,
+	clientConn *coderws.Conn,
+	account *Account,
+	token string,
+	firstClientMessage []byte,
+	model string,
+	upstreamEndpoint string,
+	hooks *OpenAIWSIngressHooks,
+) error {
+	if s == nil {
+		return errors.New("service is nil")
+	}
+	if clientConn == nil {
+		return errors.New("client websocket is nil")
+	}
+	if account == nil {
+		return errors.New("account is nil")
+	}
+	if strings.TrimSpace(token) == "" {
+		return errors.New("token is empty")
+	}
+	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "realtime websocket requires an OpenAI API key or OAuth account", nil)
+	}
+	if s.settingService != nil {
+		if settings, err := s.settingService.GetOpenAIFastPolicySettings(ctx); err == nil && settings != nil {
+			ctx = withOpenAIFastPolicyContext(ctx, settings)
+		}
+	}
+	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
+	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
+		return fmt.Errorf("realtime websocket requires ws_v2 transport, got=%s", wsDecision.Transport)
+	}
+	if !isOpenAIRealtimeWSEndpoint(upstreamEndpoint) {
+		upstreamEndpoint = "/v1/realtime"
+	}
+	return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision, upstreamEndpoint, model)
 }
