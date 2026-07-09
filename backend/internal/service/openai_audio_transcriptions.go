@@ -365,7 +365,7 @@ func (s *OpenAIGatewayService) handleOpenAIAudioTranscriptionFailoverSideEffects
 			return
 		}
 	}
-	s.handleFailoverSideEffects(ctx, resp, account)
+	s.handleFailoverSideEffects(ctx, resp, account, respBody, requestModel)
 }
 
 func parseOpenAIAudioTranscriptionRetryAfterSeconds(body []byte) *int64 {
