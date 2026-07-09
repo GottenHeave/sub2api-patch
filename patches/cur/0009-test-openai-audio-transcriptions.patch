@@ -382,7 +382,7 @@ index 00000000..bdf3bfb8
 +	}
 +}
 diff --git a/backend/internal/service/model_rate_limit_test.go b/backend/internal/service/model_rate_limit_test.go
-index c62e4c4b..9d3e6214 100644
+index 430d91ba..87e8e72a 100644
 --- a/backend/internal/service/model_rate_limit_test.go
 +++ b/backend/internal/service/model_rate_limit_test.go
 @@ -276,6 +276,29 @@ func TestIsModelRateLimited_Antigravity_ThinkingAffectsModelKey(t *testing.T) {
@@ -416,10 +416,10 @@ index c62e4c4b..9d3e6214 100644
  	now := time.Now()
  	future10m := now.Add(10 * time.Minute).Format(time.RFC3339)
 diff --git a/backend/internal/service/openai_account_scheduler_test.go b/backend/internal/service/openai_account_scheduler_test.go
-index 4d2fbd7d..322dbb3e 100644
+index 2ff7c25e..23cd9ac9 100644
 --- a/backend/internal/service/openai_account_scheduler_test.go
 +++ b/backend/internal/service/openai_account_scheduler_test.go
-@@ -417,6 +417,62 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Require
+@@ -479,6 +479,62 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Require
  	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
  }
  
@@ -482,7 +482,7 @@ index 4d2fbd7d..322dbb3e 100644
  func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_EmbeddingsSkipsChatOnlyAccount(t *testing.T) {
  	resetOpenAIAdvancedSchedulerSettingCacheForTest()
  
-@@ -1780,6 +1836,204 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
+@@ -2343,6 +2399,204 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
  	require.Equal(t, 0, decision.CandidateCount)
  }
  
@@ -1569,7 +1569,7 @@ index 00000000..543733d3
 +	}
 +}
 diff --git a/backend/internal/service/rate_limit_429_cooldown_test.go b/backend/internal/service/rate_limit_429_cooldown_test.go
-index fb7e0dd7..c8bd058d 100644
+index 96fc1990..f7e2b057 100644
 --- a/backend/internal/service/rate_limit_429_cooldown_test.go
 +++ b/backend/internal/service/rate_limit_429_cooldown_test.go
 @@ -14,10 +14,14 @@ import (

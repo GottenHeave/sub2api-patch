@@ -5,10 +5,10 @@ Subject: [PATCH] feat: add audio usage migration and schema
 
 
 diff --git a/backend/ent/migrate/schema.go b/backend/ent/migrate/schema.go
-index f235031c..3e669c08 100644
+index edae57d2..4b12e8b0 100644
 --- a/backend/ent/migrate/schema.go
 +++ b/backend/ent/migrate/schema.go
-@@ -1342,6 +1342,10 @@ var (
+@@ -1550,6 +1550,10 @@ var (
  		{Name: "output_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "cache_creation_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "cache_read_tokens", Type: field.TypeInt, Default: 0},
@@ -19,7 +19,7 @@ index f235031c..3e669c08 100644
  		{Name: "cache_creation_5m_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "cache_creation_1h_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "input_cost", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,10)"}},
-@@ -1380,31 +1384,31 @@ var (
+@@ -1588,31 +1592,31 @@ var (
  		ForeignKeys: []*schema.ForeignKey{
  			{
  				Symbol:     "usage_logs_api_keys_usage_logs",
@@ -56,7 +56,7 @@ index f235031c..3e669c08 100644
  				RefColumns: []*schema.Column{UserSubscriptionsColumns[0]},
  				OnDelete:   schema.SetNull,
  			},
-@@ -1413,32 +1417,32 @@ var (
+@@ -1621,32 +1625,32 @@ var (
  			{
  				Name:    "usagelog_user_id",
  				Unique:  false,
@@ -95,7 +95,7 @@ index f235031c..3e669c08 100644
  			},
  			{
  				Name:    "usagelog_model",
-@@ -1458,17 +1462,17 @@ var (
+@@ -1666,17 +1670,17 @@ var (
  			{
  				Name:    "usagelog_user_id_created_at",
  				Unique:  false,

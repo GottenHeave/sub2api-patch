@@ -5,10 +5,10 @@ Subject: [PATCH] feat: map audio usage fields
 
 
 diff --git a/backend/internal/handler/dto/mappers.go b/backend/internal/handler/dto/mappers.go
-index 415d18dc..7ca6e687 100644
+index 6270c2b9..4193131f 100644
 --- a/backend/internal/handler/dto/mappers.go
 +++ b/backend/internal/handler/dto/mappers.go
-@@ -581,54 +581,58 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
+@@ -598,54 +598,59 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
  		requestedModel = l.Model
  	}
  	return UsageLog{
@@ -21,7 +21,6 @@ index 415d18dc..7ca6e687 100644
 -		ServiceTier:           l.ServiceTier,
 -		ReasoningEffort:       l.ReasoningEffort,
 -		InboundEndpoint:       l.InboundEndpoint,
--		UpstreamEndpoint:      l.UpstreamEndpoint,
 -		GroupID:               l.GroupID,
 -		SubscriptionID:        l.SubscriptionID,
 -		InputTokens:           l.InputTokens,
@@ -53,6 +52,7 @@ index 415d18dc..7ca6e687 100644
 -		ImageSizeBreakdown:    l.ImageSizeBreakdown,
 -		MediaType:             l.MediaType,
 -		UserAgent:             l.UserAgent,
+-		IPAddress:             l.IPAddress,
 -		CacheTTLOverridden:    l.CacheTTLOverridden,
 -		BillingMode:           l.BillingMode,
 -		CreatedAt:             l.CreatedAt,
@@ -105,6 +105,7 @@ index 415d18dc..7ca6e687 100644
 +		ImageSizeBreakdown:       l.ImageSizeBreakdown,
 +		MediaType:                l.MediaType,
 +		UserAgent:                l.UserAgent,
++		IPAddress:                l.IPAddress,
 +		CacheTTLOverridden:       l.CacheTTLOverridden,
 +		BillingMode:              l.BillingMode,
 +		CreatedAt:                l.CreatedAt,
@@ -116,7 +117,7 @@ index 415d18dc..7ca6e687 100644
  }
  
 diff --git a/backend/internal/handler/dto/mappers_usage_test.go b/backend/internal/handler/dto/mappers_usage_test.go
-index eca838b9..951c97ce 100644
+index 6cbcbada..2834afb8 100644
 --- a/backend/internal/handler/dto/mappers_usage_test.go
 +++ b/backend/internal/handler/dto/mappers_usage_test.go
 @@ -28,6 +28,29 @@ func TestUsageLogFromService_IncludesOpenAIWSMode(t *testing.T) {
@@ -150,10 +151,10 @@ index eca838b9..951c97ce 100644
  	t.Parallel()
  
 diff --git a/backend/internal/handler/dto/types.go b/backend/internal/handler/dto/types.go
-index d8748baa..cdd47a3e 100644
+index 7cfd1028..e9bc016e 100644
 --- a/backend/internal/handler/dto/types.go
 +++ b/backend/internal/handler/dto/types.go
-@@ -444,10 +444,14 @@ type UsageLog struct {
+@@ -472,10 +472,14 @@ type UsageLog struct {
  	GroupID        *int64 `json:"group_id"`
  	SubscriptionID *int64 `json:"subscription_id"`
  
@@ -173,7 +174,7 @@ index d8748baa..cdd47a3e 100644
  	CacheCreation5mTokens int `json:"cache_creation_5m_tokens"`
  	CacheCreation1hTokens int `json:"cache_creation_1h_tokens"`
 diff --git a/backend/internal/pkg/usagestats/usage_log_types.go b/backend/internal/pkg/usagestats/usage_log_types.go
-index 7e0d12fd..79e4d07b 100644
+index a96ea670..3a2332fd 100644
 --- a/backend/internal/pkg/usagestats/usage_log_types.go
 +++ b/backend/internal/pkg/usagestats/usage_log_types.go
 @@ -50,26 +50,34 @@ type DashboardStats struct {
@@ -335,7 +336,7 @@ index 7e0d12fd..79e4d07b 100644
  
  	// 性能统计
  	AverageDurationMs float64 `json:"average_duration_ms"`
-@@ -278,20 +302,24 @@ type UsageLogFilters struct {
+@@ -280,20 +304,24 @@ type UsageLogFilters struct {
  
  // UsageStats represents usage statistics
  type UsageStats struct {
@@ -375,10 +376,10 @@ index 7e0d12fd..79e4d07b 100644
  
  // PlatformUsage 表示某用户/某 API key 在单个"有效平台"维度的用量明细。
 diff --git a/backend/internal/server/api_contract_test.go b/backend/internal/server/api_contract_test.go
-index fb9b616a..d3799b23 100644
+index f48ecb06..f2666c7d 100644
 --- a/backend/internal/server/api_contract_test.go
 +++ b/backend/internal/server/api_contract_test.go
-@@ -508,6 +508,10 @@ func TestAPIContracts(t *testing.T) {
+@@ -526,6 +526,10 @@ func TestAPIContracts(t *testing.T) {
  					"total_cache_tokens": 3,
  					"total_cache_creation_tokens": 1,
  					"total_cache_read_tokens": 2,
@@ -389,7 +390,7 @@ index fb9b616a..d3799b23 100644
  					"total_tokens": 53,
  					"total_cost": 0.75,
  					"total_actual_cost": 0.75,
-@@ -568,6 +572,10 @@ func TestAPIContracts(t *testing.T) {
+@@ -586,6 +590,10 @@ func TestAPIContracts(t *testing.T) {
  							"cache_read_tokens": 2,
  							"cache_creation_5m_tokens": 0,
  							"cache_creation_1h_tokens": 0,

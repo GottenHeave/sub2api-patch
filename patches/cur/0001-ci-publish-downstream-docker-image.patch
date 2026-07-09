@@ -6,7 +6,7 @@ Subject: [PATCH] ci: publish downstream docker image
 
 diff --git a/.github/workflows/docker-ghcr.yml b/.github/workflows/docker-ghcr.yml
 new file mode 100644
-index 00000000..5231cdcd
+index 00000000..6af19c9e
 --- /dev/null
 +++ b/.github/workflows/docker-ghcr.yml
 @@ -0,0 +1,49 @@
