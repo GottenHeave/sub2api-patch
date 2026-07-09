@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout patchset
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
         with:
           ref: patchset
           fetch-depth: 0
@@ -43,6 +43,13 @@ jobs:
         run: |
           set -euo pipefail
           git checkout -B "$MIRROR_BRANCH" "$UPSTREAM_SHA"
+          git config user.name "sub2api-patch automation"
+          git config user.email "actions@users.noreply.github.com"
+          if [ -n "$(git ls-files .github/workflows)" ]; then
+            rm -rf .github/workflows
+            git add -A .github/workflows
+            git commit -m "Remove upstream workflows from mirror branch"
+          fi
           git push origin "$MIRROR_BRANCH" --force
 
       - name: Open internal sync request
@@ -51,8 +58,8 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin main
-          if [ "$(git rev-parse origin/main)" = "$UPSTREAM_SHA" ]; then
-            echo "main already matches upstream commit ${UPSTREAM_SHA}; no sync request needed."
+          if git diff --quiet "$UPSTREAM_SHA" origin/main -- . ':(exclude).github/workflows'; then
+            echo "main already matches upstream commit ${UPSTREAM_SHA} outside workflow files; no sync request needed."
             exit 0
           fi
 
@@ -66,4 +73,3 @@ jobs:
           else
             gh pr edit "$existing" --body "$body"
           fi
-

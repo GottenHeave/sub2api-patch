@@ -18,11 +18,13 @@ runs checks, and publishes `v<upstream-version>-patch.N` releases when all gates
 ## Branches
 
 - `patchset`: patch files, scripts, workflows, and documentation.
-- `main`: clean upstream mirror branch in this repository.
-- `mirror/upstream-main`: automation-managed upstream mirror candidate.
-- `patched`: generated branch containing upstream plus this patchset.
+- `main`: upstream mirror branch in this repository, with upstream workflow files removed before push.
+- `mirror/upstream-main`: automation-managed upstream mirror candidate, with upstream workflow files removed before push.
+- `patched`: generated branch containing upstream plus this patchset, with workflow files removed before release push.
 
 `patched` and `mirror/upstream-main` are generated. Do not commit to them manually.
+When workflow files are removed from a generated mirror branch, automation treats
+the parent commit as the authoritative upstream commit SHA.
 
 ## Local quick check
 
