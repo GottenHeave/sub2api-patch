@@ -756,10 +756,12 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 	if outputTokens == 0 {
 		outputTokens = value.Get("completion_tokens").Int()
 	}
-	cacheReadTokens := value.Get("input_tokens_details.cached_tokens").Int()
-	if cacheReadTokens == 0 {
-		cacheReadTokens = value.Get("prompt_tokens_details.cached_tokens").Int()
-	}
+	cacheReadTokens := firstOpenAIUsageInt(
+		value,
+		"input_token_details.cached_tokens",
+		"input_tokens_details.cached_tokens",
+		"prompt_tokens_details.cached_tokens",
+	)
 	imageOutputTokens := value.Get("output_tokens_details.image_tokens").Int()
 	if imageOutputTokens == 0 {
 		imageOutputTokens = value.Get("completion_tokens_details.image_tokens").Int()
@@ -768,9 +770,45 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 		InputTokens:              int(inputTokens),
 		OutputTokens:             int(outputTokens),
 		CacheCreationInputTokens: int(value.Get("cache_creation_input_tokens").Int()),
-		CacheReadInputTokens:     int(cacheReadTokens),
+		CacheReadInputTokens:     cacheReadTokens,
 		ImageOutputTokens:        int(imageOutputTokens),
+		InputAudioTokens: firstOpenAIUsageInt(
+			value,
+			"input_token_details.audio_tokens",
+			"input_tokens_details.audio_tokens",
+			"prompt_tokens_details.audio_tokens",
+		),
+		OutputAudioTokens: firstOpenAIUsageInt(
+			value,
+			"output_token_details.audio_tokens",
+			"output_tokens_details.audio_tokens",
+			"completion_tokens_details.audio_tokens",
+		),
+		CacheCreationAudioTokens: firstOpenAIUsageInt(
+			value,
+			"input_token_details.cache_creation.audio_tokens",
+			"input_tokens_details.cache_creation.audio_tokens",
+			"prompt_tokens_details.cache_creation.audio_tokens",
+			"cache_creation_input_token_details.audio_tokens",
+			"cache_creation_input_tokens_details.audio_tokens",
+		),
+		CacheReadAudioTokens: firstOpenAIUsageInt(
+			value,
+			"input_token_details.cached_tokens_details.audio_tokens",
+			"input_tokens_details.cached_tokens_details.audio_tokens",
+			"prompt_tokens_details.cached_tokens_details.audio_tokens",
+		),
 	}, true
+}
+
+func firstOpenAIUsageInt(value gjson.Result, paths ...string) int {
+	for _, path := range paths {
+		result := value.Get(path)
+		if result.Exists() && result.Type == gjson.Number {
+			return int(result.Int())
+		}
+	}
+	return 0
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
