@@ -5,7 +5,7 @@ Subject: [PATCH] feat: display audio usage accounting
 
 
 diff --git a/frontend/src/components/admin/usage/UsageTable.vue b/frontend/src/components/admin/usage/UsageTable.vue
-index 4f249131..e0afdd04 100644
+index ff446445..8d786f05 100644
 --- a/frontend/src/components/admin/usage/UsageTable.vue
 +++ b/frontend/src/components/admin/usage/UsageTable.vue
 @@ -125,21 +125,21 @@
@@ -37,7 +37,7 @@ index 4f249131..e0afdd04 100644
                    <span v-if="row.cache_creation_1h_tokens > 0" class="inline-flex items-center rounded px-1 py-px text-[10px] font-medium leading-tight bg-orange-100 text-orange-600 ring-1 ring-inset ring-orange-200 dark:bg-orange-500/20 dark:text-orange-400 dark:ring-orange-500/30">1h</span>
                    <span v-if="row.cache_ttl_overridden" :title="t('usage.cacheTtlOverriddenHint')" class="inline-flex items-center rounded px-1 py-px text-[10px] font-medium leading-tight bg-rose-100 text-rose-600 ring-1 ring-inset ring-rose-200 dark:bg-rose-500/20 dark:text-rose-400 dark:ring-rose-500/30 cursor-help">R</span>
                  </div>
-@@ -230,23 +230,19 @@
+@@ -241,23 +241,19 @@
          <div class="space-y-1.5">
            <div>
              <div class="text-xs font-semibold text-gray-300 mb-1">{{ t('usage.tokenDetails') }}</div>
@@ -66,7 +66,7 @@ index 4f249131..e0afdd04 100644
                <!-- 有 5m/1h 明细时，展开显示 -->
                <template v-if="tokenTooltipData.cache_creation_5m_tokens > 0 || tokenTooltipData.cache_creation_1h_tokens > 0">
                  <div v-if="tokenTooltipData.cache_creation_5m_tokens > 0" class="flex items-center justify-between gap-4">
-@@ -267,7 +263,7 @@
+@@ -278,7 +274,7 @@
                <!-- 无明细时，只显示聚合值 -->
                <div v-else class="flex items-center justify-between gap-4">
                  <span class="text-gray-400">{{ t('admin.usage.cacheCreationTokens') }}</span>
@@ -75,7 +75,7 @@ index 4f249131..e0afdd04 100644
                </div>
              </div>
              <div v-if="tokenTooltipData && tokenTooltipData.cache_ttl_overridden" class="flex items-center justify-between gap-4">
-@@ -277,14 +273,14 @@
+@@ -288,14 +284,14 @@
                </span>
                <span class="font-medium text-rose-400">{{ tokenTooltipData.cache_creation_1h_tokens > 0 ? t('usage.cacheTtlOverridden1h') : t('usage.cacheTtlOverridden5m') }}</span>
              </div>
@@ -93,7 +93,7 @@ index 4f249131..e0afdd04 100644
            </div>
          </div>
          <div class="absolute right-full top-1/2 h-0 w-0 -translate-y-1/2 border-b-[6px] border-r-[6px] border-t-[6px] border-b-transparent border-r-gray-900 border-t-transparent dark:border-r-gray-800"></div>
-@@ -457,6 +453,30 @@ function accountBilled(row: { total_cost?: number | null; account_stats_cost?: n
+@@ -476,6 +472,30 @@ function accountBilled(row: { total_cost?: number | null; account_stats_cost?: n
  }
  
  
@@ -248,7 +248,7 @@ index 4f3110f7..fae4a40f 100644
      {
        name: 'defaulted row',
 diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
-index 990ef057..75090e93 100644
+index a60c7011..a1c31307 100644
 --- a/frontend/src/types/index.ts
 +++ b/frontend/src/types/index.ts
 @@ -1332,8 +1332,12 @@ export interface UsageLog {

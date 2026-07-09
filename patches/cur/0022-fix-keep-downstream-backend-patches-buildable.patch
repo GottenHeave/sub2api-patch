@@ -242,163 +242,11 @@ index 46ebf43b..8bea46ed 100644
  		&stats.TodayActualCost,
  	); err != nil {
  		return nil, err
-diff --git a/backend/internal/repository/usage_log_repo_insert.go b/backend/internal/repository/usage_log_repo_insert.go
-index 3311da2f..9da53807 100644
---- a/backend/internal/repository/usage_log_repo_insert.go
-+++ b/backend/internal/repository/usage_log_repo_insert.go
-@@ -1236,14 +1236,14 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
- 			groupID,
- 			subscriptionID,
- 			log.InputTokens,
--				log.OutputTokens,
--				log.CacheCreationTokens,
--				log.CacheReadTokens,
--				log.AudioInputTokens,
--				log.AudioOutputTokens,
--				log.AudioCacheCreationTokens,
--				log.AudioCacheReadTokens,
--				log.CacheCreation5mTokens,
-+			log.OutputTokens,
-+			log.CacheCreationTokens,
-+			log.CacheReadTokens,
-+			log.AudioInputTokens,
-+			log.AudioOutputTokens,
-+			log.AudioCacheCreationTokens,
-+			log.AudioCacheReadTokens,
-+			log.CacheCreation5mTokens,
- 			log.CacheCreation1hTokens,
- 			log.ImageOutputTokens,
- 			log.ImageOutputCost,
-diff --git a/backend/internal/repository/usage_log_repo_query.go b/backend/internal/repository/usage_log_repo_query.go
-index 8a52763a..46dfafa7 100644
---- a/backend/internal/repository/usage_log_repo_query.go
-+++ b/backend/internal/repository/usage_log_repo_query.go
-@@ -435,15 +435,15 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
- 		upstreamModel         sql.NullString
- 		groupID               sql.NullInt64
- 		subscriptionID        sql.NullInt64
--			inputTokens           int
--			outputTokens          int
--			cacheCreationTokens   int
--			cacheReadTokens       int
--			audioInputTokens      int
--			audioOutputTokens     int
--			audioCacheCreation    int
--			audioCacheRead        int
--			cacheCreation5m       int
-+		inputTokens           int
-+		outputTokens          int
-+		cacheCreationTokens   int
-+		cacheReadTokens       int
-+		audioInputTokens      int
-+		audioOutputTokens     int
-+		audioCacheCreation    int
-+		audioCacheRead        int
-+		cacheCreation5m       int
- 		cacheCreation1h       int
- 		imageOutputTokens     int
- 		imageOutputCost       float64
-@@ -493,15 +493,15 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
- 		&upstreamModel,
- 		&groupID,
- 		&subscriptionID,
--			&inputTokens,
--			&outputTokens,
--			&cacheCreationTokens,
--			&cacheReadTokens,
--			&audioInputTokens,
--			&audioOutputTokens,
--			&audioCacheCreation,
--			&audioCacheRead,
--			&cacheCreation5m,
-+		&inputTokens,
-+		&outputTokens,
-+		&cacheCreationTokens,
-+		&cacheReadTokens,
-+		&audioInputTokens,
-+		&audioOutputTokens,
-+		&audioCacheCreation,
-+		&audioCacheRead,
-+		&cacheCreation5m,
- 		&cacheCreation1h,
- 		&imageOutputTokens,
- 		&imageOutputCost,
-@@ -543,38 +543,38 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
- 	}
- 
- 	log := &service.UsageLog{
--			ID:                       id,
--			UserID:                   userID,
--			APIKeyID:                 apiKeyID,
--			AccountID:                accountID,
--			Model:                    model,
--			RequestedModel:           coalesceTrimmedString(requestedModel, model),
--			InputTokens:              inputTokens,
--			OutputTokens:             outputTokens,
--			CacheCreationTokens:      cacheCreationTokens,
--			CacheReadTokens:          cacheReadTokens,
--			AudioInputTokens:         audioInputTokens,
--			AudioOutputTokens:        audioOutputTokens,
--			AudioCacheCreationTokens: audioCacheCreation,
--			AudioCacheReadTokens:     audioCacheRead,
--			CacheCreation5mTokens:    cacheCreation5m,
--			CacheCreation1hTokens:    cacheCreation1h,
--			ImageOutputTokens:        imageOutputTokens,
--			ImageOutputCost:          imageOutputCost,
--			InputCost:                inputCost,
--			OutputCost:               outputCost,
--			CacheCreationCost:        cacheCreationCost,
--			CacheReadCost:            cacheReadCost,
--			TotalCost:                totalCost,
--			ActualCost:               actualCost,
--			RateMultiplier:           rateMultiplier,
--			AccountRateMultiplier:    nullFloat64Ptr(accountRateMultiplier),
--			BillingType:              int8(billingType),
--			RequestType:              service.RequestTypeFromInt16(requestTypeRaw),
--			ImageCount:               imageCount,
--			CacheTTLOverridden:       cacheTTLOverridden,
--			CreatedAt:                createdAt,
--		}
-+		ID:                       id,
-+		UserID:                   userID,
-+		APIKeyID:                 apiKeyID,
-+		AccountID:                accountID,
-+		Model:                    model,
-+		RequestedModel:           coalesceTrimmedString(requestedModel, model),
-+		InputTokens:              inputTokens,
-+		OutputTokens:             outputTokens,
-+		CacheCreationTokens:      cacheCreationTokens,
-+		CacheReadTokens:          cacheReadTokens,
-+		AudioInputTokens:         audioInputTokens,
-+		AudioOutputTokens:        audioOutputTokens,
-+		AudioCacheCreationTokens: audioCacheCreation,
-+		AudioCacheReadTokens:     audioCacheRead,
-+		CacheCreation5mTokens:    cacheCreation5m,
-+		CacheCreation1hTokens:    cacheCreation1h,
-+		ImageOutputTokens:        imageOutputTokens,
-+		ImageOutputCost:          imageOutputCost,
-+		InputCost:                inputCost,
-+		OutputCost:               outputCost,
-+		CacheCreationCost:        cacheCreationCost,
-+		CacheReadCost:            cacheReadCost,
-+		TotalCost:                totalCost,
-+		ActualCost:               actualCost,
-+		RateMultiplier:           rateMultiplier,
-+		AccountRateMultiplier:    nullFloat64Ptr(accountRateMultiplier),
-+		BillingType:              int8(billingType),
-+		RequestType:              service.RequestTypeFromInt16(requestTypeRaw),
-+		ImageCount:               imageCount,
-+		CacheTTLOverridden:       cacheTTLOverridden,
-+		CreatedAt:                createdAt,
-+	}
- 	// 先回填 legacy 字段，再基于 legacy + request_type 计算最终请求类型，保证历史数据兼容。
- 	log.Stream = stream
- 	log.OpenAIWSMode = openaiWSMode
 diff --git a/backend/internal/repository/usage_log_repo_request_type_test.go b/backend/internal/repository/usage_log_repo_request_type_test.go
-index 4a32557e..0ad37a94 100644
+index c32ad2b6..e3c2ab84 100644
 --- a/backend/internal/repository/usage_log_repo_request_type_test.go
 +++ b/backend/internal/repository/usage_log_repo_request_type_test.go
-@@ -40,58 +40,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
+@@ -40,61 +40,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
  	}
  
  	mock.ExpectQuery("INSERT INTO usage_logs").
@@ -442,6 +290,9 @@ index 4a32557e..0ad37a94 100644
 -			sqlmock.AnyArg(), // image_output_size
 -			sqlmock.AnyArg(), // image_size_source
 -			sqlmock.AnyArg(), // image_size_breakdown
+-			sqlmock.AnyArg(), // video_count
+-			sqlmock.AnyArg(), // video_resolution
+-			sqlmock.AnyArg(), // video_duration_seconds
 -			sqlmock.AnyArg(), // service_tier
 -			sqlmock.AnyArg(), // reasoning_effort
 -			sqlmock.AnyArg(), // inbound_endpoint
@@ -458,7 +309,7 @@ index 4a32557e..0ad37a94 100644
  		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(99), createdAt))
  
  	inserted, err := repo.Create(context.Background(), log)
-@@ -123,58 +72,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
+@@ -126,61 +72,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
  	}
  
  	mock.ExpectQuery("INSERT INTO usage_logs").
@@ -502,6 +353,9 @@ index 4a32557e..0ad37a94 100644
 -			sqlmock.AnyArg(), // image_output_size
 -			sqlmock.AnyArg(), // image_size_source
 -			sqlmock.AnyArg(), // image_size_breakdown
+-			sqlmock.AnyArg(), // video_count
+-			sqlmock.AnyArg(), // video_resolution
+-			sqlmock.AnyArg(), // video_duration_seconds
 -			serviceTier,
 -			sqlmock.AnyArg(),
 -			sqlmock.AnyArg(),
@@ -518,7 +372,7 @@ index 4a32557e..0ad37a94 100644
  		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(100), createdAt))
  
  	inserted, err := repo.Create(context.Background(), log)
-@@ -259,11 +157,11 @@ func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
+@@ -265,11 +157,11 @@ func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
  		CreatedAt:          time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC),
  	})
  
@@ -535,7 +389,7 @@ index 4a32557e..0ad37a94 100644
  	require.True(t, ok)
  	require.JSONEq(t, `{"1K":1,"4K":1}`, breakdownJSON)
  }
-@@ -333,6 +231,30 @@ func anySliceToDriverValues(values []any) []driver.Value {
+@@ -339,6 +231,30 @@ func anySliceToDriverValues(values []any) []driver.Value {
  	return out
  }
  
@@ -566,7 +420,7 @@ index 4a32557e..0ad37a94 100644
  func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {
  	db, mock := newSQLMock(t)
  	repo := &usageLogRepository{sql: db}
-@@ -472,18 +394,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
+@@ -478,18 +394,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
  
  	mock.ExpectQuery("FROM usage_logs\\s+WHERE COALESCE\\(NULLIF\\(TRIM\\(requested_model\\), ''\\), model\\) = \\$1").
  		WithArgs("gpt-5").
@@ -586,7 +440,7 @@ index 4a32557e..0ad37a94 100644
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(inbound_endpoint\\), ''\\), 'unknown'\\) AS endpoint").
  		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "gpt-5").
  		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
-@@ -513,18 +424,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T)
+@@ -519,18 +424,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T)
  
  	mock.ExpectQuery("FROM usage_logs\\s+WHERE \\(request_type = \\$1 OR \\(request_type = 0 AND stream = FALSE AND openai_ws_mode = FALSE\\)\\)").
  		WithArgs(requestType).
@@ -606,7 +460,7 @@ index 4a32557e..0ad37a94 100644
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(inbound_endpoint\\), ''\\), 'unknown'\\) AS endpoint").
  		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), requestType).
  		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
-@@ -655,12 +555,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testin
+@@ -661,12 +555,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testin
  	filters := usagestats.UsageLogFilters{}
  
  	mock.ExpectQuery("FROM usage_logs").
@@ -620,7 +474,7 @@ index 4a32557e..0ad37a94 100644
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(inbound_endpoint\\)").
  		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(upstream_endpoint\\)").
-@@ -780,7 +675,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -786,7 +675,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullInt64{},
  			sql.NullInt64{},
@@ -631,7 +485,7 @@ index 4a32557e..0ad37a94 100644
  			0, 0.0, // image_output_tokens, image_output_cost
  			0.0, 0.0, 0.0, 0.0, 0.8, 0.8,
  			1.0,
-@@ -841,6 +738,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -850,6 +741,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			2,                 // output_tokens
  			3,                 // cache_creation_tokens
  			4,                 // cache_read_tokens
@@ -642,7 +496,7 @@ index 4a32557e..0ad37a94 100644
  			5,                 // cache_creation_5m_tokens
  			6,                 // cache_creation_1h_tokens
  			0,                 // image_output_tokens
-@@ -900,7 +801,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -912,7 +807,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullInt64{},
  			sql.NullInt64{},
@@ -653,7 +507,7 @@ index 4a32557e..0ad37a94 100644
  			0, 0.0, // image_output_tokens, image_output_cost
  			0.1, 0.2, 0.3, 0.4, 1.0, 0.9,
  			1.0,
-@@ -952,7 +855,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -967,7 +864,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullInt64{},
  			sql.NullInt64{},
@@ -1033,10 +887,10 @@ index b48b7510..0d1ec3b2 100644
  	if len(reqBody) == 0 {
  		return false
 diff --git a/backend/internal/service/openai_gateway_response_handling.go b/backend/internal/service/openai_gateway_response_handling.go
-index d17fe410..407fb987 100644
+index cb4b780c..467bbadc 100644
 --- a/backend/internal/service/openai_gateway_response_handling.go
 +++ b/backend/internal/service/openai_gateway_response_handling.go
-@@ -733,10 +733,12 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+@@ -756,10 +756,12 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
  	if outputTokens == 0 {
  		outputTokens = value.Get("completion_tokens").Int()
  	}
@@ -1053,7 +907,7 @@ index d17fe410..407fb987 100644
  	imageOutputTokens := value.Get("output_tokens_details.image_tokens").Int()
  	if imageOutputTokens == 0 {
  		imageOutputTokens = value.Get("completion_tokens_details.image_tokens").Int()
-@@ -745,11 +747,47 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+@@ -768,11 +770,47 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
  		InputTokens:              int(inputTokens),
  		OutputTokens:             int(outputTokens),
  		CacheCreationInputTokens: int(value.Get("cache_creation_input_tokens").Int()),
@@ -1103,10 +957,10 @@ index d17fe410..407fb987 100644
  	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
  	if err != nil {
 diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
-index 92f1cf3b..4e66526e 100644
+index 0271a991..afd05ce9 100644
 --- a/backend/internal/service/openai_gateway_service.go
 +++ b/backend/internal/service/openai_gateway_service.go
-@@ -1100,4917 +1100,3 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
+@@ -1102,4917 +1102,3 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
  		return "", "", fmt.Errorf("unsupported account type: %s", account.Type)
  	}
  }
@@ -6025,7 +5879,7 @@ index 92f1cf3b..4e66526e 100644
 -	}
 -}
 diff --git a/backend/internal/service/openai_gateway_usage.go b/backend/internal/service/openai_gateway_usage.go
-index 569a7a74..446cb80c 100644
+index 4a16facc..5d14dbdb 100644
 --- a/backend/internal/service/openai_gateway_usage.go
 +++ b/backend/internal/service/openai_gateway_usage.go
 @@ -125,15 +125,23 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
@@ -6112,7 +5966,7 @@ index 569a7a74..446cb80c 100644
 +		ImageSizeBreakdown:       result.ImageSizeBreakdown,
  	}
  	isVideoUsage := isGrokVideoUsageResult(result, billingModels)
- 	if cost != nil {
+ 	if isVideoUsage {
 diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
 index 34b96c41..86ee3562 100644
 --- a/backend/internal/service/openai_realtime_calls.go

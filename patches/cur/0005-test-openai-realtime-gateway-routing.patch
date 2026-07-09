@@ -163,7 +163,7 @@ index 0dacd74d..b99a398c 100644
  
  	for _, tt := range tests {
 diff --git a/backend/internal/handler/openai_gateway_handler_test.go b/backend/internal/handler/openai_gateway_handler_test.go
-index c4ccb5a0..064ce839 100644
+index b7f43079..599fe8a7 100644
 --- a/backend/internal/handler/openai_gateway_handler_test.go
 +++ b/backend/internal/handler/openai_gateway_handler_test.go
 @@ -94,6 +94,40 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
@@ -406,10 +406,10 @@ index ac5b363c..ec86ac81 100644
  	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastFilterPriorityPolicy())
  	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
-index b3e9889a..132a3a58 100644
+index 9f42a823..108ca357 100644
 --- a/backend/internal/service/openai_gateway_service_test.go
 +++ b/backend/internal/service/openai_gateway_service_test.go
-@@ -2654,17 +2654,23 @@ func TestParseSSEUsage_SelectiveParsing(t *testing.T) {
+@@ -2800,17 +2800,23 @@ func TestParseSSEUsage_SelectiveParsing(t *testing.T) {
  }
  
  func TestExtractOpenAIUsageFromJSONBytes_AcceptsResponseAndChatUsageShapes(t *testing.T) {
