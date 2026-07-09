@@ -40,69 +40,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 	}
 
 	mock.ExpectQuery("INSERT INTO usage_logs").
-		WithArgs(
-			log.UserID,
-			log.APIKeyID,
-			log.AccountID,
-			log.RequestID,
-			log.Model,
-			log.RequestedModel,
-			sqlmock.AnyArg(), // upstream_model
-			sqlmock.AnyArg(), // upstream_response_model
-			sqlmock.AnyArg(), // upstream_model_mismatch
-			sqlmock.AnyArg(), // group_id
-			sqlmock.AnyArg(), // subscription_id
-			log.InputTokens,
-			log.OutputTokens,
-			log.CacheCreationTokens,
-			log.CacheReadTokens,
-			log.CacheCreation5mTokens,
-			log.CacheCreation1hTokens,
-			log.ImageOutputTokens,
-			log.ImageOutputCost,
-			log.ImageInputTokens,
-			log.ImageInputCost,
-			log.InputCost,
-			log.OutputCost,
-			log.CacheCreationCost,
-			log.CacheReadCost,
-			log.TotalCost,
-			log.ActualCost,
-			log.RateMultiplier,
-			log.AccountRateMultiplier,
-			log.BillingType,
-			int16(service.RequestTypeWSV2),
-			true,
-			true,
-			sqlmock.AnyArg(), // duration_ms
-			sqlmock.AnyArg(), // first_token_ms
-			sqlmock.AnyArg(), // user_agent
-			sqlmock.AnyArg(), // ip_address
-			log.ImageCount,
-			sqlmock.AnyArg(), // image_size
-			sqlmock.AnyArg(), // image_input_size
-			sqlmock.AnyArg(), // image_output_size
-			sqlmock.AnyArg(), // image_size_source
-			sqlmock.AnyArg(), // image_size_breakdown
-			sqlmock.AnyArg(), // video_count
-			sqlmock.AnyArg(), // video_resolution
-			sqlmock.AnyArg(), // video_duration_seconds
-			sqlmock.AnyArg(), // service_tier
-			sqlmock.AnyArg(), // reasoning_effort
-			sqlmock.AnyArg(), // requested_reasoning_effort
-			sqlmock.AnyArg(), // inbound_endpoint
-			sqlmock.AnyArg(), // upstream_endpoint
-			log.CacheTTLOverridden,
-			log.LongContextBillingApplied,
-			sqlmock.AnyArg(), // channel_id
-			sqlmock.AnyArg(), // model_mapping_chain
-			sqlmock.AnyArg(), // billing_tier
-			sqlmock.AnyArg(), // billing_mode
-			sqlmock.AnyArg(), // account_stats_cost
-			sqlmock.AnyArg(), // session_id
-			log.NativeCompactionV2,
-			createdAt,
-		).
+		WithArgs(usageLogInsertMockArgs(*log)...).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(99), createdAt))
 
 	inserted, err := repo.Create(context.Background(), log)
@@ -134,69 +72,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 	}
 
 	mock.ExpectQuery("INSERT INTO usage_logs").
-		WithArgs(
-			log.UserID,
-			log.APIKeyID,
-			log.AccountID,
-			log.RequestID,
-			log.Model,
-			log.RequestedModel,
-			sqlmock.AnyArg(), // upstream_model
-			sqlmock.AnyArg(), // upstream_response_model
-			sqlmock.AnyArg(), // upstream_model_mismatch
-			sqlmock.AnyArg(), // group_id
-			sqlmock.AnyArg(), // subscription_id
-			log.InputTokens,
-			log.OutputTokens,
-			log.CacheCreationTokens,
-			log.CacheReadTokens,
-			log.CacheCreation5mTokens,
-			log.CacheCreation1hTokens,
-			log.ImageOutputTokens,
-			log.ImageOutputCost,
-			log.ImageInputTokens,
-			log.ImageInputCost,
-			log.InputCost,
-			log.OutputCost,
-			log.CacheCreationCost,
-			log.CacheReadCost,
-			log.TotalCost,
-			log.ActualCost,
-			log.RateMultiplier,
-			log.AccountRateMultiplier,
-			log.BillingType,
-			int16(service.RequestTypeSync),
-			false,
-			false,
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			log.ImageCount,
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(), // image_input_size
-			sqlmock.AnyArg(), // image_output_size
-			sqlmock.AnyArg(), // image_size_source
-			sqlmock.AnyArg(), // image_size_breakdown
-			sqlmock.AnyArg(), // video_count
-			sqlmock.AnyArg(), // video_resolution
-			sqlmock.AnyArg(), // video_duration_seconds
-			serviceTier,
-			sqlmock.AnyArg(), // reasoning_effort
-			sqlmock.AnyArg(), // requested_reasoning_effort
-			sqlmock.AnyArg(), // inbound_endpoint
-			sqlmock.AnyArg(), // upstream_endpoint
-			log.CacheTTLOverridden,
-			log.LongContextBillingApplied,
-			sqlmock.AnyArg(), // channel_id
-			sqlmock.AnyArg(), // model_mapping_chain
-			sqlmock.AnyArg(), // billing_tier
-			sqlmock.AnyArg(), // billing_mode
-			sqlmock.AnyArg(), // account_stats_cost
-			sqlmock.AnyArg(), // session_id
-			log.NativeCompactionV2,
-			createdAt,
-		).
+		WithArgs(usageLogInsertMockArgs(*log)...).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(100), createdAt))
 
 	inserted, err := repo.Create(context.Background(), log)
@@ -305,11 +181,11 @@ func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
 		CreatedAt:          time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC),
 	})
 
-	require.Equal(t, sql.NullString{String: imageSize, Valid: true}, prepared.args[38])
-	require.Equal(t, sql.NullString{String: inputSize, Valid: true}, prepared.args[39])
-	require.Equal(t, sql.NullString{String: outputSize, Valid: true}, prepared.args[40])
-	require.Equal(t, sql.NullString{String: source, Valid: true}, prepared.args[41])
-	breakdownJSON, ok := prepared.args[42].(string)
+	require.Equal(t, sql.NullString{String: imageSize, Valid: true}, prepared.args[42])
+	require.Equal(t, sql.NullString{String: inputSize, Valid: true}, prepared.args[43])
+	require.Equal(t, sql.NullString{String: outputSize, Valid: true}, prepared.args[44])
+	require.Equal(t, sql.NullString{String: source, Valid: true}, prepared.args[45])
+	breakdownJSON, ok := prepared.args[46].(string)
 	require.True(t, ok)
 	require.JSONEq(t, `{"1K":1,"4K":1}`, breakdownJSON)
 }
@@ -377,6 +253,30 @@ func anySliceToDriverValues(values []any) []driver.Value {
 		out = append(out, value)
 	}
 	return out
+}
+
+func usageLogInsertMockArgs(log service.UsageLog) []driver.Value {
+	prepared := prepareUsageLogInsert(&log)
+	return anySliceToDriverValues(prepared.args)
+}
+
+func usageStatsSummaryColumns() []string {
+	return []string{
+		"total_requests",
+		"total_input_tokens",
+		"total_output_tokens",
+		"total_cache_tokens",
+		"total_cache_creation_tokens",
+		"total_cache_read_tokens",
+		"total_audio_input_tokens",
+		"total_audio_output_tokens",
+		"total_audio_cache_creation_tokens",
+		"total_audio_cache_read_tokens",
+		"total_cost",
+		"total_actual_cost",
+		"total_account_cost",
+		"avg_duration_ms",
+	}
 }
 
 func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {
@@ -630,18 +530,22 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
 			"upstream_endpoint",
 			"requests",
 			"input_tokens",
-			"output_tokens",
-			"cache_creation_tokens",
-			"cache_read_tokens",
-			"cost",
+				"output_tokens",
+				"cache_creation_tokens",
+				"cache_read_tokens",
+				"audio_input_tokens",
+				"audio_output_tokens",
+				"audio_cache_creation_tokens",
+				"audio_cache_read_tokens",
+				"cost",
 			"actual_cost",
 			"account_cost",
 			"avg_duration_ms",
 		}).
-			AddRow(1, 1, nil, nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0).
-			AddRow(0, 1, "/v1/responses", nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0).
-			AddRow(1, 0, nil, "/v1/responses", int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0).
-			AddRow(0, 0, "/v1/responses", "/v1/responses", int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0))
+				AddRow(1, 1, nil, nil, int64(1), int64(2), int64(3), int64(1), int64(3), int64(0), int64(0), int64(0), int64(0), 1.2, 1.0, 1.2, 20.0).
+				AddRow(0, 1, "/v1/responses", nil, int64(1), int64(2), int64(3), int64(1), int64(3), int64(0), int64(0), int64(0), int64(0), 1.2, 1.0, 1.2, 20.0).
+				AddRow(1, 0, nil, "/v1/responses", int64(1), int64(2), int64(3), int64(1), int64(3), int64(0), int64(0), int64(0), int64(0), 1.2, 1.0, 1.2, 20.0).
+				AddRow(0, 0, "/v1/responses", "/v1/responses", int64(1), int64(2), int64(3), int64(1), int64(3), int64(0), int64(0), int64(0), int64(0), 1.2, 1.0, 1.2, 20.0))
 
 	stats, err := repo.GetStatsWithFilters(context.Background(), filters)
 	require.NoError(t, err)
@@ -674,11 +578,15 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T) 
 			"output_tokens",
 			"cache_creation_tokens",
 			"cache_read_tokens",
+			"audio_input_tokens",
+			"audio_output_tokens",
+			"audio_cache_creation_tokens",
+			"audio_cache_read_tokens",
 			"cost",
 			"actual_cost",
 			"account_cost",
 			"avg_duration_ms",
-		}).AddRow(1, 1, nil, nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0))
+		}).AddRow(1, 1, nil, nil, int64(1), int64(2), int64(3), int64(1), int64(3), int64(0), int64(0), int64(0), int64(0), 1.2, 1.0, 1.2, 20.0))
 
 	stats, err := repo.GetStatsWithFilters(context.Background(), filters)
 	require.NoError(t, err)
@@ -803,8 +711,9 @@ func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testin
 		WillReturnRows(sqlmock.NewRows([]string{
 			"inbound_grouped", "upstream_grouped", "inbound_endpoint", "upstream_endpoint",
 			"requests", "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
+			"audio_input_tokens", "audio_output_tokens", "audio_cache_creation_tokens", "audio_cache_read_tokens",
 			"cost", "actual_cost", "account_cost", "avg_duration_ms",
-		}).AddRow(1, 1, nil, nil, int64(50), int64(1000), int64(2000), int64(60), int64(40), 15.0, 12.5, 11.0, 100.0))
+		}).AddRow(1, 1, nil, nil, int64(50), int64(1000), int64(2000), int64(60), int64(40), int64(0), int64(0), int64(0), int64(0), 15.0, 12.5, 11.0, 100.0))
 
 	stats, err := repo.GetStatsWithFilters(context.Background(), filters)
 	require.NoError(t, err)
@@ -920,7 +829,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullBool{},
 			sql.NullInt64{},
 			sql.NullInt64{},
-			0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0,
+			0, 0, 0, 0,
+			0, 0,
 			0, 0.0, // image_output_tokens, image_output_cost
 			0, 0.0, // image_input_tokens, image_input_cost
 			0.0, 0.0, 0.0, 0.0, 0.8, 0.8,
@@ -948,7 +859,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			sql.NullString{},
 			sql.NullString{},
-			false,
 			false,
 			sql.NullInt64{},
 			sql.NullString{},
@@ -991,6 +901,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			2,                 // output_tokens
 			3,                 // cache_creation_tokens
 			4,                 // cache_read_tokens
+			0,                 // audio_input_tokens
+			0,                 // audio_output_tokens
+			0,                 // audio_cache_creation_tokens
+			0,                 // audio_cache_read_tokens
 			5,                 // cache_creation_5m_tokens
 			6,                 // cache_creation_1h_tokens
 			0,                 // image_output_tokens
@@ -1028,7 +942,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			sql.NullString{},
 			false,
-			false,
 			sql.NullInt64{},   // channel_id
 			sql.NullString{},  // model_mapping_chain
 			sql.NullString{},  // billing_tier
@@ -1061,7 +974,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullBool{},
 			sql.NullInt64{},
 			sql.NullInt64{},
-			1, 2, 3, 4, 5, 6,
+			1, 2, 3, 4,
+			0, 0, 0, 0,
+			5, 6,
 			0, 0.0, // image_output_tokens, image_output_cost
 			0, 0.0, // image_input_tokens, image_input_cost
 			0.1, 0.2, 0.3, 0.4, 1.0, 0.9,
@@ -1089,7 +1004,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			sql.NullString{},
 			sql.NullString{},
-			false,
 			false,
 			sql.NullInt64{},   // channel_id
 			sql.NullString{},  // model_mapping_chain
@@ -1124,7 +1038,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullBool{},
 			sql.NullInt64{},
 			sql.NullInt64{},
-			1, 2, 3, 4, 5, 6,
+			1, 2, 3, 4,
+			0, 0, 0, 0,
+			5, 6,
 			0, 0.0, // image_output_tokens, image_output_cost
 			0, 0.0, // image_input_tokens, image_input_cost
 			0.1, 0.2, 0.3, 0.4, 1.0, 0.9,
@@ -1152,7 +1068,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			sql.NullString{},
 			sql.NullString{},
-			false,
 			false,
 			sql.NullInt64{},   // channel_id
 			sql.NullString{},  // model_mapping_chain
