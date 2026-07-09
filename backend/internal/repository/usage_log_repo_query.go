@@ -435,15 +435,15 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		upstreamModel         sql.NullString
 		groupID               sql.NullInt64
 		subscriptionID        sql.NullInt64
-			inputTokens           int
-			outputTokens          int
-			cacheCreationTokens   int
-			cacheReadTokens       int
-			audioInputTokens      int
-			audioOutputTokens     int
-			audioCacheCreation    int
-			audioCacheRead        int
-			cacheCreation5m       int
+		inputTokens           int
+		outputTokens          int
+		cacheCreationTokens   int
+		cacheReadTokens       int
+		audioInputTokens      int
+		audioOutputTokens     int
+		audioCacheCreation    int
+		audioCacheRead        int
+		cacheCreation5m       int
 		cacheCreation1h       int
 		imageOutputTokens     int
 		imageOutputCost       float64
@@ -493,15 +493,15 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		&upstreamModel,
 		&groupID,
 		&subscriptionID,
-			&inputTokens,
-			&outputTokens,
-			&cacheCreationTokens,
-			&cacheReadTokens,
-			&audioInputTokens,
-			&audioOutputTokens,
-			&audioCacheCreation,
-			&audioCacheRead,
-			&cacheCreation5m,
+		&inputTokens,
+		&outputTokens,
+		&cacheCreationTokens,
+		&cacheReadTokens,
+		&audioInputTokens,
+		&audioOutputTokens,
+		&audioCacheCreation,
+		&audioCacheRead,
+		&cacheCreation5m,
 		&cacheCreation1h,
 		&imageOutputTokens,
 		&imageOutputCost,
@@ -543,38 +543,38 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	}
 
 	log := &service.UsageLog{
-			ID:                       id,
-			UserID:                   userID,
-			APIKeyID:                 apiKeyID,
-			AccountID:                accountID,
-			Model:                    model,
-			RequestedModel:           coalesceTrimmedString(requestedModel, model),
-			InputTokens:              inputTokens,
-			OutputTokens:             outputTokens,
-			CacheCreationTokens:      cacheCreationTokens,
-			CacheReadTokens:          cacheReadTokens,
-			AudioInputTokens:         audioInputTokens,
-			AudioOutputTokens:        audioOutputTokens,
-			AudioCacheCreationTokens: audioCacheCreation,
-			AudioCacheReadTokens:     audioCacheRead,
-			CacheCreation5mTokens:    cacheCreation5m,
-			CacheCreation1hTokens:    cacheCreation1h,
-			ImageOutputTokens:        imageOutputTokens,
-			ImageOutputCost:          imageOutputCost,
-			InputCost:                inputCost,
-			OutputCost:               outputCost,
-			CacheCreationCost:        cacheCreationCost,
-			CacheReadCost:            cacheReadCost,
-			TotalCost:                totalCost,
-			ActualCost:               actualCost,
-			RateMultiplier:           rateMultiplier,
-			AccountRateMultiplier:    nullFloat64Ptr(accountRateMultiplier),
-			BillingType:              int8(billingType),
-			RequestType:              service.RequestTypeFromInt16(requestTypeRaw),
-			ImageCount:               imageCount,
-			CacheTTLOverridden:       cacheTTLOverridden,
-			CreatedAt:                createdAt,
-		}
+		ID:                       id,
+		UserID:                   userID,
+		APIKeyID:                 apiKeyID,
+		AccountID:                accountID,
+		Model:                    model,
+		RequestedModel:           coalesceTrimmedString(requestedModel, model),
+		InputTokens:              inputTokens,
+		OutputTokens:             outputTokens,
+		CacheCreationTokens:      cacheCreationTokens,
+		CacheReadTokens:          cacheReadTokens,
+		AudioInputTokens:         audioInputTokens,
+		AudioOutputTokens:        audioOutputTokens,
+		AudioCacheCreationTokens: audioCacheCreation,
+		AudioCacheReadTokens:     audioCacheRead,
+		CacheCreation5mTokens:    cacheCreation5m,
+		CacheCreation1hTokens:    cacheCreation1h,
+		ImageOutputTokens:        imageOutputTokens,
+		ImageOutputCost:          imageOutputCost,
+		InputCost:                inputCost,
+		OutputCost:               outputCost,
+		CacheCreationCost:        cacheCreationCost,
+		CacheReadCost:            cacheReadCost,
+		TotalCost:                totalCost,
+		ActualCost:               actualCost,
+		RateMultiplier:           rateMultiplier,
+		AccountRateMultiplier:    nullFloat64Ptr(accountRateMultiplier),
+		BillingType:              int8(billingType),
+		RequestType:              service.RequestTypeFromInt16(requestTypeRaw),
+		ImageCount:               imageCount,
+		CacheTTLOverridden:       cacheTTLOverridden,
+		CreatedAt:                createdAt,
+	}
 	// 先回填 legacy 字段，再基于 legacy + request_type 计算最终请求类型，保证历史数据兼容。
 	log.Stream = stream
 	log.OpenAIWSMode = openaiWSMode
