@@ -223,6 +223,7 @@ func newRealtimeCallsHandlerForTest(t *testing.T, upstream service.HTTPUpstream,
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 
 	return NewOpenAIGatewayHandler(
@@ -230,6 +231,7 @@ func newRealtimeCallsHandlerForTest(t *testing.T, upstream service.HTTPUpstream,
 		concurrencyService,
 		billingCacheService,
 		&service.APIKeyService{},
+		nil,
 		nil,
 		nil,
 		nil,
