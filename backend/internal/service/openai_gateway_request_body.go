@@ -45,6 +45,10 @@ func buildOpenAIResponsesURL(base string) string {
 	return buildOpenAIEndpointURL(base, "/v1/responses")
 }
 
+func buildOpenAIRealtimeEndpointURL(base string, endpoint string) string {
+	return buildOpenAIEndpointURL(base, endpoint)
+}
+
 // buildOpenAIResponsesURLForPlatform 组装 Responses 端点（平台感知）。
 // DeepSeek 官方 Responses 端点为 /responses（无 /v1 前缀，适配 Codex）；
 // 其余平台维持 /v1/responses。
