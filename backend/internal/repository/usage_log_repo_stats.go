@@ -47,19 +47,19 @@ func (r *usageLogRepository) GetUserStatsAggregated(ctx context.Context, userID 
 		&stats.TotalRequests,
 		&stats.TotalInputTokens,
 		&stats.TotalOutputTokens,
-			&stats.TotalCacheTokens,
-			&stats.TotalCacheCreationTokens,
-			&stats.TotalCacheReadTokens,
-			&stats.TotalAudioInputTokens,
-			&stats.TotalAudioOutputTokens,
-			&stats.TotalAudioCacheCreationTokens,
-			&stats.TotalAudioCacheReadTokens,
-			&stats.TotalCost,
-			&stats.TotalActualCost,
-			&stats.AverageDurationMs,
-		); err != nil {
-			return nil, err
-		}
+		&stats.TotalCacheTokens,
+		&stats.TotalCacheCreationTokens,
+		&stats.TotalCacheReadTokens,
+		&stats.TotalAudioInputTokens,
+		&stats.TotalAudioOutputTokens,
+		&stats.TotalAudioCacheCreationTokens,
+		&stats.TotalAudioCacheReadTokens,
+		&stats.TotalCost,
+		&stats.TotalActualCost,
+		&stats.AverageDurationMs,
+	); err != nil {
+		return nil, err
+	}
 	stats.TotalTokens = usageStatsTotalTokens(&stats)
 	return &stats, nil
 }
@@ -94,19 +94,19 @@ func (r *usageLogRepository) GetAPIKeyStatsAggregated(ctx context.Context, apiKe
 		&stats.TotalRequests,
 		&stats.TotalInputTokens,
 		&stats.TotalOutputTokens,
-			&stats.TotalCacheTokens,
-			&stats.TotalCacheCreationTokens,
-			&stats.TotalCacheReadTokens,
-			&stats.TotalAudioInputTokens,
-			&stats.TotalAudioOutputTokens,
-			&stats.TotalAudioCacheCreationTokens,
-			&stats.TotalAudioCacheReadTokens,
-			&stats.TotalCost,
-			&stats.TotalActualCost,
-			&stats.AverageDurationMs,
-		); err != nil {
-			return nil, err
-		}
+		&stats.TotalCacheTokens,
+		&stats.TotalCacheCreationTokens,
+		&stats.TotalCacheReadTokens,
+		&stats.TotalAudioInputTokens,
+		&stats.TotalAudioOutputTokens,
+		&stats.TotalAudioCacheCreationTokens,
+		&stats.TotalAudioCacheReadTokens,
+		&stats.TotalCost,
+		&stats.TotalActualCost,
+		&stats.AverageDurationMs,
+	); err != nil {
+		return nil, err
+	}
 	stats.TotalTokens = usageStatsTotalTokens(&stats)
 	return &stats, nil
 }
@@ -151,19 +151,19 @@ func (r *usageLogRepository) GetAccountStatsAggregated(ctx context.Context, acco
 		&stats.TotalRequests,
 		&stats.TotalInputTokens,
 		&stats.TotalOutputTokens,
-			&stats.TotalCacheTokens,
-			&stats.TotalCacheCreationTokens,
-			&stats.TotalCacheReadTokens,
-			&stats.TotalAudioInputTokens,
-			&stats.TotalAudioOutputTokens,
-			&stats.TotalAudioCacheCreationTokens,
-			&stats.TotalAudioCacheReadTokens,
-			&stats.TotalCost,
-			&stats.TotalActualCost,
-			&stats.AverageDurationMs,
-		); err != nil {
-			return nil, err
-		}
+		&stats.TotalCacheTokens,
+		&stats.TotalCacheCreationTokens,
+		&stats.TotalCacheReadTokens,
+		&stats.TotalAudioInputTokens,
+		&stats.TotalAudioOutputTokens,
+		&stats.TotalAudioCacheCreationTokens,
+		&stats.TotalAudioCacheReadTokens,
+		&stats.TotalCost,
+		&stats.TotalActualCost,
+		&stats.AverageDurationMs,
+	); err != nil {
+		return nil, err
+	}
 	stats.TotalTokens = usageStatsTotalTokens(&stats)
 	return &stats, nil
 }
@@ -199,19 +199,19 @@ func (r *usageLogRepository) GetModelStatsAggregated(ctx context.Context, modelN
 		&stats.TotalRequests,
 		&stats.TotalInputTokens,
 		&stats.TotalOutputTokens,
-			&stats.TotalCacheTokens,
-			&stats.TotalCacheCreationTokens,
-			&stats.TotalCacheReadTokens,
-			&stats.TotalAudioInputTokens,
-			&stats.TotalAudioOutputTokens,
-			&stats.TotalAudioCacheCreationTokens,
-			&stats.TotalAudioCacheReadTokens,
-			&stats.TotalCost,
-			&stats.TotalActualCost,
-			&stats.AverageDurationMs,
-		); err != nil {
-			return nil, err
-		}
+		&stats.TotalCacheTokens,
+		&stats.TotalCacheCreationTokens,
+		&stats.TotalCacheReadTokens,
+		&stats.TotalAudioInputTokens,
+		&stats.TotalAudioOutputTokens,
+		&stats.TotalAudioCacheCreationTokens,
+		&stats.TotalAudioCacheReadTokens,
+		&stats.TotalCost,
+		&stats.TotalActualCost,
+		&stats.AverageDurationMs,
+	); err != nil {
+		return nil, err
+	}
 	stats.TotalTokens = usageStatsTotalTokens(&stats)
 	return &stats, nil
 }
@@ -255,50 +255,50 @@ func (r *usageLogRepository) GetDailyStatsAggregated(ctx context.Context, userID
 	result = make([]map[string]any, 0)
 	for rows.Next() {
 		var (
-			date              string
-			totalRequests     int64
-			totalInputTokens  int64
-				totalOutputTokens int64
-				totalCacheTokens  int64
-				totalAudioInputTokens         int64
-				totalAudioOutputTokens        int64
-				totalAudioCacheCreationTokens int64
-				totalAudioCacheReadTokens     int64
-				totalCost         float64
-				totalActualCost   float64
-				avgDurationMs     float64
+			date                          string
+			totalRequests                 int64
+			totalInputTokens              int64
+			totalOutputTokens             int64
+			totalCacheTokens              int64
+			totalAudioInputTokens         int64
+			totalAudioOutputTokens        int64
+			totalAudioCacheCreationTokens int64
+			totalAudioCacheReadTokens     int64
+			totalCost                     float64
+			totalActualCost               float64
+			avgDurationMs                 float64
 		)
 		if err = rows.Scan(
 			&date,
 			&totalRequests,
-				&totalInputTokens,
-				&totalOutputTokens,
-				&totalCacheTokens,
-				&totalAudioInputTokens,
-				&totalAudioOutputTokens,
-				&totalAudioCacheCreationTokens,
-				&totalAudioCacheReadTokens,
-				&totalCost,
-				&totalActualCost,
-				&avgDurationMs,
+			&totalInputTokens,
+			&totalOutputTokens,
+			&totalCacheTokens,
+			&totalAudioInputTokens,
+			&totalAudioOutputTokens,
+			&totalAudioCacheCreationTokens,
+			&totalAudioCacheReadTokens,
+			&totalCost,
+			&totalActualCost,
+			&avgDurationMs,
 		); err != nil {
 			return nil, err
 		}
 		result = append(result, map[string]any{
-			"date":                date,
-			"total_requests":      totalRequests,
-				"total_input_tokens":  totalInputTokens,
-				"total_output_tokens": totalOutputTokens,
-				"total_cache_tokens":  totalCacheTokens,
-				"total_audio_input_tokens":          totalAudioInputTokens,
-				"total_audio_output_tokens":         totalAudioOutputTokens,
-				"total_audio_cache_creation_tokens": totalAudioCacheCreationTokens,
-				"total_audio_cache_read_tokens":     totalAudioCacheReadTokens,
-				"total_tokens":                      totalInputTokens + totalOutputTokens + totalCacheTokens + totalAudioInputTokens + totalAudioOutputTokens + totalAudioCacheCreationTokens + totalAudioCacheReadTokens,
-				"total_cost":          totalCost,
-				"total_actual_cost":   totalActualCost,
-				"average_duration_ms": avgDurationMs,
-			})
+			"date":                              date,
+			"total_requests":                    totalRequests,
+			"total_input_tokens":                totalInputTokens,
+			"total_output_tokens":               totalOutputTokens,
+			"total_cache_tokens":                totalCacheTokens,
+			"total_audio_input_tokens":          totalAudioInputTokens,
+			"total_audio_output_tokens":         totalAudioOutputTokens,
+			"total_audio_cache_creation_tokens": totalAudioCacheCreationTokens,
+			"total_audio_cache_read_tokens":     totalAudioCacheReadTokens,
+			"total_tokens":                      totalInputTokens + totalOutputTokens + totalCacheTokens + totalAudioInputTokens + totalAudioOutputTokens + totalAudioCacheCreationTokens + totalAudioCacheReadTokens,
+			"total_cost":                        totalCost,
+			"total_actual_cost":                 totalActualCost,
+			"average_duration_ms":               avgDurationMs,
+		})
 	}
 
 	if err = rows.Err(); err != nil {
@@ -694,19 +694,19 @@ func (r *usageLogRepository) GetGlobalStats(ctx context.Context, startTime, endT
 		query,
 		[]any{startTime, endTime},
 		&stats.TotalRequests,
-			&stats.TotalInputTokens,
-			&stats.TotalOutputTokens,
-			&stats.TotalCacheTokens,
-			&stats.TotalAudioInputTokens,
-			&stats.TotalAudioOutputTokens,
-			&stats.TotalAudioCacheCreationTokens,
-			&stats.TotalAudioCacheReadTokens,
-			&stats.TotalCost,
-			&stats.TotalActualCost,
-			&stats.AverageDurationMs,
-		); err != nil {
-			return nil, err
-		}
+		&stats.TotalInputTokens,
+		&stats.TotalOutputTokens,
+		&stats.TotalCacheTokens,
+		&stats.TotalAudioInputTokens,
+		&stats.TotalAudioOutputTokens,
+		&stats.TotalAudioCacheCreationTokens,
+		&stats.TotalAudioCacheReadTokens,
+		&stats.TotalCost,
+		&stats.TotalActualCost,
+		&stats.AverageDurationMs,
+	); err != nil {
+		return nil, err
+	}
 	stats.TotalTokens = usageStatsTotalTokens(stats)
 	return stats, nil
 }
@@ -789,16 +789,16 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			&stats.TotalRequests,
 			&stats.TotalInputTokens,
 			&stats.TotalOutputTokens,
-				&stats.TotalCacheTokens,
-				&stats.TotalCacheCreationTokens,
-				&stats.TotalCacheReadTokens,
-				&stats.TotalAudioInputTokens,
-				&stats.TotalAudioOutputTokens,
-				&stats.TotalAudioCacheCreationTokens,
-				&stats.TotalAudioCacheReadTokens,
-				&stats.TotalCost,
-				&stats.TotalActualCost,
-				&totalAccountCost,
+			&stats.TotalCacheTokens,
+			&stats.TotalCacheCreationTokens,
+			&stats.TotalCacheReadTokens,
+			&stats.TotalAudioInputTokens,
+			&stats.TotalAudioOutputTokens,
+			&stats.TotalAudioCacheCreationTokens,
+			&stats.TotalAudioCacheReadTokens,
+			&stats.TotalCost,
+			&stats.TotalActualCost,
+			&totalAccountCost,
 			&stats.AverageDurationMs,
 		)
 	}
