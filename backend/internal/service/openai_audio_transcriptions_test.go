@@ -116,11 +116,19 @@ func (r *audioTranscriptionRateLimitAccountRepoStub) ListWithFilters(context.Con
 	return nil, nil, nil
 }
 
+func (r *audioTranscriptionRateLimitAccountRepoStub) ListAllWithFilters(context.Context, string, string, string, string, int64, string) ([]Account, error) {
+	return nil, nil
+}
+
 func (r *audioTranscriptionRateLimitAccountRepoStub) ListByGroup(context.Context, int64) ([]Account, error) {
 	return nil, nil
 }
 
 func (r *audioTranscriptionRateLimitAccountRepoStub) ListActive(context.Context) ([]Account, error) {
+	return nil, nil
+}
+
+func (r *audioTranscriptionRateLimitAccountRepoStub) ListOAuthRefreshCandidates(context.Context) ([]Account, error) {
 	return nil, nil
 }
 
@@ -238,6 +246,10 @@ func (r *audioTranscriptionRateLimitAccountRepoStub) ResetQuotaUsed(context.Cont
 
 func (r *audioTranscriptionRateLimitAccountRepoStub) RevertProxyFallback(context.Context, int64) error {
 	return nil
+}
+
+func (r *audioTranscriptionRateLimitAccountRepoStub) ListShadowsByParent(context.Context, int64) ([]*Account, error) {
+	return nil, nil
 }
 
 func parseMultipartFieldsForTest(t *testing.T, body []byte, contentType string) map[string]string {
