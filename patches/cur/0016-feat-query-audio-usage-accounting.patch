@@ -176,7 +176,7 @@ index 14394ed8..e9cdb9e1 100644
    JOIN groups g ON g.id = ul.group_id
    WHERE ul.created_at >= $1 AND ul.created_at < $2
 diff --git a/backend/internal/repository/usage_log_repo.go b/backend/internal/repository/usage_log_repo.go
-index 341bdff5..02ec7d00 100644
+index 4359edc2..3b479e50 100644
 --- a/backend/internal/repository/usage_log_repo.go
 +++ b/backend/internal/repository/usage_log_repo.go
 @@ -8,6 +8,7 @@ import (
@@ -1528,7 +1528,7 @@ index aeccd49b..d3d61364 100644
  			COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as actual_cost,
  			COALESCE(SUM(actual_cost), 0) as user_cost
 diff --git a/backend/internal/repository/usage_log_repo_trend.go b/backend/internal/repository/usage_log_repo_trend.go
-index 73022966..1d057cd7 100644
+index f2e0045f..2f6e7c63 100644
 --- a/backend/internal/repository/usage_log_repo_trend.go
 +++ b/backend/internal/repository/usage_log_repo_trend.go
 @@ -36,7 +36,7 @@ func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime,

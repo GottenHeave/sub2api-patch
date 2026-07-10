@@ -118,10 +118,10 @@ index 0b9930c5..c5933c9f 100644
  // Middleware
  // ──────────────────────────────────────────────────────────
 diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
-index feba2611..5b28b7a3 100644
+index 83e644d8..e1924457 100644
 --- a/backend/internal/handler/openai_gateway_handler.go
 +++ b/backend/internal/handler/openai_gateway_handler.go
-@@ -1217,9 +1217,30 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
+@@ -1231,9 +1231,30 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
  	return wrapReleaseOnDone(ctx, accountReleaseFunc), true
  }
  
@@ -152,7 +152,7 @@ index feba2611..5b28b7a3 100644
  	if !isOpenAIWSUpgradeRequest(c.Request) {
  		h.errorResponse(c, http.StatusUpgradeRequired, "invalid_request_error", "WebSocket upgrade required (Upgrade: websocket)")
  		return
-@@ -1239,11 +1260,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1253,11 +1274,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
  	reqLog := requestLogger(
  		c,
@@ -166,7 +166,7 @@ index feba2611..5b28b7a3 100644
  	)
  	if !h.ensureResponsesDependencies(c, reqLog) {
  		return
-@@ -1273,33 +1295,42 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1287,33 +1309,42 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  	wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
  
  	ctx := c.Request.Context()
@@ -233,7 +233,7 @@ index feba2611..5b28b7a3 100644
  		return
  	}
  	previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String())
-@@ -1319,13 +1350,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1333,13 +1364,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  	setOpsRequestContext(c, reqModel, true)
  	setOpsEndpointContext(c, "", int16(service.RequestTypeWSV2))
  
@@ -254,7 +254,7 @@ index feba2611..5b28b7a3 100644
  		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
  		return
  	}
-@@ -1415,15 +1448,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1429,15 +1462,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
  	for {
  		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
@@ -273,7 +273,7 @@ index feba2611..5b28b7a3 100644
  			false,
  			previousResponseCanMove,
  			requestPlatform,
-@@ -1637,9 +1671,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1651,9 +1685,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  		// WebSocket 首包可能很大，hash 必须在 hooks 外算成字符串，避免 AfterTurn 闭包保活请求体。
  		requestPayloadHash = service.HashUsageRequestPayload(wsFirstMessage)
  
@@ -295,7 +295,7 @@ index feba2611..5b28b7a3 100644
  				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
  				releaseAccountSlot()
  				failedAccountIDs[account.ID] = struct{}{}
-@@ -1667,15 +1711,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1681,15 +1725,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  			}
  
  			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
@@ -314,7 +314,7 @@ index feba2611..5b28b7a3 100644
  				closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
  				return
  			}
-@@ -1688,6 +1732,62 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1702,6 +1746,62 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
  }
  
@@ -468,7 +468,7 @@ index ba5b4f61..e5617ab1 100644
  	// Antigravity 模型列表
  	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)
 diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
-index af8ae3ff..0271a991 100644
+index 0d03d83d..418319ca 100644
 --- a/backend/internal/service/openai_gateway_service.go
 +++ b/backend/internal/service/openai_gateway_service.go
 @@ -31,6 +31,7 @@ const (

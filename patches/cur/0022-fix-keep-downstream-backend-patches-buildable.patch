@@ -872,10 +872,10 @@ index 543733d3..c82ba077 100644
  	t.Helper()
  	mediaType, params, err := mime.ParseMediaType(contentType)
 diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
-index b48b7510..0d1ec3b2 100644
+index 935a32f5..d26f9940 100644
 --- a/backend/internal/service/openai_gateway_request_body.go
 +++ b/backend/internal/service/openai_gateway_request_body.go
-@@ -44,6 +44,10 @@ func buildOpenAIResponsesURL(base string) string {
+@@ -45,6 +45,10 @@ func buildOpenAIResponsesURL(base string) string {
  	return buildOpenAIEndpointURL(base, "/v1/responses")
  }
  
@@ -887,32 +887,12 @@ index b48b7510..0d1ec3b2 100644
  	if len(reqBody) == 0 {
  		return false
 diff --git a/backend/internal/service/openai_gateway_response_handling.go b/backend/internal/service/openai_gateway_response_handling.go
-index cb4b780c..467bbadc 100644
+index 5841ce65..64f0ecb1 100644
 --- a/backend/internal/service/openai_gateway_response_handling.go
 +++ b/backend/internal/service/openai_gateway_response_handling.go
-@@ -756,10 +756,12 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
- 	if outputTokens == 0 {
- 		outputTokens = value.Get("completion_tokens").Int()
- 	}
--	cacheReadTokens := value.Get("input_tokens_details.cached_tokens").Int()
--	if cacheReadTokens == 0 {
--		cacheReadTokens = value.Get("prompt_tokens_details.cached_tokens").Int()
--	}
-+	cacheReadTokens := firstOpenAIUsageInt(
-+		value,
-+		"input_token_details.cached_tokens",
-+		"input_tokens_details.cached_tokens",
-+		"prompt_tokens_details.cached_tokens",
-+	)
- 	imageOutputTokens := value.Get("output_tokens_details.image_tokens").Int()
- 	if imageOutputTokens == 0 {
- 		imageOutputTokens = value.Get("completion_tokens_details.image_tokens").Int()
-@@ -768,11 +770,47 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
- 		InputTokens:              int(inputTokens),
- 		OutputTokens:             int(outputTokens),
- 		CacheCreationInputTokens: int(value.Get("cache_creation_input_tokens").Int()),
--		CacheReadInputTokens:     int(cacheReadTokens),
-+		CacheReadInputTokens:     cacheReadTokens,
+@@ -768,6 +768,32 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+ 		CacheCreationInputTokens: cacheCreationTokens,
+ 		CacheReadInputTokens:     cacheReadTokens,
  		ImageOutputTokens:        int(imageOutputTokens),
 +		InputAudioTokens: firstOpenAIUsageInt(
 +			value,
@@ -943,6 +923,10 @@ index cb4b780c..467bbadc 100644
  	}, true
  }
  
+@@ -808,6 +834,16 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
+ 	)
+ }
+ 
 +func firstOpenAIUsageInt(value gjson.Result, paths ...string) int {
 +	for _, path := range paths {
 +		result := value.Get(path)
@@ -957,7 +941,7 @@ index cb4b780c..467bbadc 100644
  	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
  	if err != nil {
 diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
-index 0271a991..afd05ce9 100644
+index 418319ca..46497ec5 100644
 --- a/backend/internal/service/openai_gateway_service.go
 +++ b/backend/internal/service/openai_gateway_service.go
 @@ -1102,4917 +1102,3 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
@@ -5879,7 +5863,7 @@ index 0271a991..afd05ce9 100644
 -	}
 -}
 diff --git a/backend/internal/service/openai_gateway_usage.go b/backend/internal/service/openai_gateway_usage.go
-index 4a16facc..5d14dbdb 100644
+index f96b679c..bd352b2b 100644
 --- a/backend/internal/service/openai_gateway_usage.go
 +++ b/backend/internal/service/openai_gateway_usage.go
 @@ -125,15 +125,23 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
@@ -9587,7 +9571,7 @@ index 733a116d..86f7a816 100644
 -	s.openaiWSFallbackUntil.Delete(accountID)
 -}
 diff --git a/backend/internal/service/openai_ws_forwarder_ingress.go b/backend/internal/service/openai_ws_forwarder_ingress.go
-index 5fb93954..8633cc98 100644
+index 45e004b6..be35408b 100644
 --- a/backend/internal/service/openai_ws_forwarder_ingress.go
 +++ b/backend/internal/service/openai_ws_forwarder_ingress.go
 @@ -79,6 +79,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
@@ -9645,10 +9629,10 @@ index 5fb93954..8633cc98 100644
 +	return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision, upstreamEndpoint, model)
 +}
 diff --git a/backend/internal/service/openai_ws_forwarder_payload.go b/backend/internal/service/openai_ws_forwarder_payload.go
-index cd84e6f2..4df5ba79 100644
+index a4d47218..961c06af 100644
 --- a/backend/internal/service/openai_ws_forwarder_payload.go
 +++ b/backend/internal/service/openai_ws_forwarder_payload.go
-@@ -17,26 +17,62 @@ import (
+@@ -16,26 +16,62 @@ import (
  )
  
  func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (string, error) {
@@ -9715,7 +9699,7 @@ index cd84e6f2..4df5ba79 100644
  	}
  
  	parsed, err := url.Parse(strings.TrimSpace(targetURL))
-@@ -53,9 +89,21 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
+@@ -52,9 +88,21 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
  	default:
  		return "", fmt.Errorf("unsupported scheme for ws: %s", parsed.Scheme)
  	}
@@ -9737,7 +9721,7 @@ index cd84e6f2..4df5ba79 100644
  func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
  	ctx context.Context,
  	c *gin.Context,
-@@ -111,7 +159,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
+@@ -110,7 +158,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
  	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
  		betaValue = openAIWSBetaV1Value
  	}
@@ -9749,7 +9733,7 @@ index cd84e6f2..4df5ba79 100644
  	customUA := ""
  	if account != nil {
 diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
-index c11b13a4..cc38045f 100644
+index f4b8f1b7..7135d508 100644
 --- a/backend/internal/service/openai_ws_forwarder_success_test.go
 +++ b/backend/internal/service/openai_ws_forwarder_success_test.go
 @@ -279,7 +279,8 @@ func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOmitsResponsesBeta(t *

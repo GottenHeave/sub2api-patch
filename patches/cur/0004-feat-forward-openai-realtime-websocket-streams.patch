@@ -3625,7 +3625,7 @@ index e0bd769c..733a116d 100644
 +	s.openaiWSFallbackUntil.Delete(accountID)
 +}
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay.go b/backend/internal/service/openai_ws_v2/passthrough_relay.go
-index 6aba3b7d..6c3f3d18 100644
+index d41abaac..beac34a3 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay.go
 @@ -25,6 +25,10 @@ type Usage struct {
@@ -3717,19 +3717,16 @@ index 6aba3b7d..6c3f3d18 100644
  
  	inputTokens, inputOK := parseUsageIntField(inputResult, true)
  	outputTokens, outputOK := parseUsageIntField(outputResult, true)
-+	cacheCreationTokens, cacheCreationOK := parseUsageIntField(cacheCreationResult, false)
++	_, cacheCreationOK := parseUsageIntField(cacheCreationResult, false)
  	cachedTokens, cachedOK := parseUsageIntField(cachedResult, false)
 -	if !inputOK || !outputOK || !cachedOK {
 +	if !inputOK || !outputOK || !cacheCreationOK || !cachedOK {
  		recordUsageParseFailure()
  		if onParseFailure != nil {
  			onParseFailure(eventType, usageRaw)
-@@ -787,19 +792,69 @@ func parseUsageAndAccumulate(
- 	parsedUsage := Usage{
- 		InputTokens:              inputTokens,
+@@ -789,17 +794,67 @@ func parseUsageAndAccumulate(
  		OutputTokens:             outputTokens,
--		CacheCreationInputTokens: int(usageResult.Get("cache_creation_input_tokens").Int()),
-+		CacheCreationInputTokens: cacheCreationTokens,
+ 		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
  		CacheReadInputTokens:     cachedTokens,
 -		ImageOutputTokens:        int(imageTokens),
 +		InputAudioTokens: firstUsageInt(
@@ -3796,7 +3793,7 @@ index 6aba3b7d..6c3f3d18 100644
  func parseUsageIntField(value gjson.Result, required bool) (int, bool) {
  	if !value.Exists() {
  		return 0, !required
-@@ -818,7 +873,9 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
+@@ -843,7 +898,9 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
  	if state == nil {
  		return
  	}
@@ -3808,7 +3805,7 @@ index 6aba3b7d..6c3f3d18 100644
  	result.RequestID = state.lastResponseID
  	result.TerminalEventType = state.terminalEventType
 diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-index 7241f11e..a4d6ff7c 100644
+index d822d181..18d96ace 100644
 --- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 +++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 @@ -15,6 +15,7 @@ import (
@@ -3908,7 +3905,7 @@ index 7241f11e..a4d6ff7c 100644
  	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
  	// usage 上报：filter
 @@ -314,7 +363,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
- 	usageMeta.initFromFirstFrame(firstClientMessage)
+ 	usageMeta.initFromFirstFrame(firstClientMessage, capturedSessionModel)
  	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "prompt_cache_key").String())
  
 -	wsURL, err := s.buildOpenAIResponsesWSURL(account)
