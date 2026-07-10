@@ -799,6 +799,7 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 
 func openAICacheReadTokensFromUsage(value gjson.Result) int {
 	for _, nested := range []gjson.Result{
+		value.Get("input_token_details.cached_tokens"),
 		value.Get("input_tokens_details.cached_tokens"),
 		value.Get("prompt_tokens_details.cached_tokens"),
 	} {
