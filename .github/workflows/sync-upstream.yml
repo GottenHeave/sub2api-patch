@@ -32,12 +32,15 @@ jobs:
           set -euo pipefail
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           git fetch upstream "${UPSTREAM_BRANCH}" --tags --prune
-          echo "UPSTREAM_SHA=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
+          echo "UPSTREAM_HEAD_SHA=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_ENV"
 
-      - name: Require upstream CI success
+      - name: Select latest upstream commit with passing CI
         env:
           GH_TOKEN: ${{ github.token }}
-        run: scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$UPSTREAM_SHA"
+        run: |
+          set -euo pipefail
+          upstream_sha="$(scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$UPSTREAM_HEAD_SHA")"
+          echo "UPSTREAM_SHA=$upstream_sha" >> "$GITHUB_ENV"
 
       - name: Update mirror branch
         run: |

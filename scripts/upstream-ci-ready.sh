@@ -8,26 +8,16 @@ tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
 commit_file="$tmpdir/commit.json"
-status_file="$tmpdir/status.json"
-checks_file="$tmpdir/checks.json"
 
 gh api "repos/$repo/commits/$ref" >"$commit_file"
-sha="$(python3 - "$commit_file" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1]))['sha'])
-PY
-)"
 
-gh api "repos/$repo/commits/$sha/status" >"$status_file" 2>/dev/null || printf '{}\n' >"$status_file"
-gh api "repos/$repo/commits/$sha/check-runs" --paginate --slurp >"$checks_file" 2>/dev/null || printf '[{"check_runs":[]}]\n' >"$checks_file"
-
-python3 - "$repo" "$sha" "$commit_file" "$status_file" "$checks_file" <<'PY'
+python3 - "$repo" "$commit_file" <<'PY'
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-repo, sha, commit_path, status_path, checks_path = sys.argv[1:6]
+repo, commit_path = sys.argv[1:3]
 required_names = {'test', 'frontend', 'golangci-lint'}
 
 
@@ -60,58 +50,72 @@ def evaluate(commit, status, runs):
     return relevant_statuses, relevant_runs, missing, bad_statuses, bad_runs
 
 
-def fetch_json(path):
-    return json.loads(subprocess.check_output(['gh', 'api', path], text=True))
+def fetch_json(path, default):
+    try:
+        return json.loads(subprocess.check_output(['gh', 'api', path], text=True))
+    except subprocess.CalledProcessError:
+        return default
 
 
 def fetch_checks(target_sha):
-    raw = subprocess.check_output([
-        'gh', 'api', f'repos/{repo}/commits/{target_sha}/check-runs', '--paginate', '--slurp'
-    ], text=True)
+    try:
+        raw = subprocess.check_output([
+            'gh', 'api', f'repos/{repo}/commits/{target_sha}/check-runs', '--paginate', '--slurp'
+        ], text=True)
+    except subprocess.CalledProcessError:
+        return []
     return flatten_runs(json.loads(raw or '[{"check_runs":[]}]'))
+
+
+def ci_ready(commit, status, runs):
+    relevant_statuses, relevant_runs, missing, bad_statuses, bad_runs = evaluate(commit, status, runs)
+    return not missing and not bad_statuses and not bad_runs and (relevant_statuses or relevant_runs)
 
 
 def is_version_only_skip_ci(commit):
     message = commit.get('commit', {}).get('message', '')
     files = commit.get('files') or []
-    changed = {f.get('filename') for f in files}
+    changed = {file.get('filename') for file in files}
     return '[skip ci]' in message.lower() and changed <= {'backend/cmd/server/VERSION'}
 
-commit = load(commit_path, {})
-status = load(status_path, {})
-runs = flatten_runs(load(checks_path, [{'check_runs': []}]))
-relevant_statuses, relevant_runs, missing, bad_statuses, bad_runs = evaluate(commit, status, runs)
 
-if (not relevant_statuses and not relevant_runs) and is_version_only_skip_ci(commit):
+def parent_sha(commit):
     parents = commit.get('parents') or []
-    if not parents:
-        print('version-only skip-ci commit has no parent; sync paused')
+    return parents[0].get('sha') if parents else None
+
+
+commit = load(commit_path, {})
+while commit:
+    sha = commit['sha']
+    status = fetch_json(f'repos/{repo}/commits/{sha}/status', {})
+    runs = fetch_checks(sha)
+
+    if ci_ready(commit, status, runs):
+        print(f'using upstream commit {sha[:12]} with passing required CI', file=sys.stderr)
+        print(sha)
+        break
+
+    parent = parent_sha(commit)
+    if not parent:
+        print('no upstream commit with passing required CI was found', file=sys.stderr)
         sys.exit(1)
-    parent_sha = parents[0]['sha']
-    parent_commit = fetch_json(f'repos/{repo}/commits/{parent_sha}')
-    parent_status = fetch_json(f'repos/{repo}/commits/{parent_sha}/status')
-    parent_runs = fetch_checks(parent_sha)
-    relevant_statuses, relevant_runs, missing, bad_statuses, bad_runs = evaluate(parent_commit, parent_status, parent_runs)
-    if relevant_statuses or relevant_runs:
-        print(f'using frontend/backend CI from tested parent {parent_sha[:12]} for version-only skip-ci commit {sha[:12]}')
 
-if not relevant_statuses and not relevant_runs:
-    print('upstream frontend/backend CI state unavailable; sync paused')
+    relevant_statuses, relevant_runs, _, _, _ = evaluate(commit, status, runs)
+    if not relevant_statuses and not relevant_runs and is_version_only_skip_ci(commit):
+        parent_commit = fetch_json(f'repos/{repo}/commits/{parent}', {})
+        parent_status = fetch_json(f'repos/{repo}/commits/{parent}/status', {})
+        parent_runs = fetch_checks(parent)
+        if ci_ready(parent_commit, parent_status, parent_runs):
+            print(
+                f'using version-only upstream commit {sha[:12]} with parent {parent[:12]} CI',
+                file=sys.stderr,
+            )
+            print(sha)
+            break
+
+    print(f'upstream commit {sha[:12]} is not ready; checking parent {parent[:12]}', file=sys.stderr)
+    commit = fetch_json(f'repos/{repo}/commits/{parent}', {})
+else:
+    print('no upstream commit with passing required CI was found', file=sys.stderr)
     sys.exit(1)
-
-if missing:
-    print('upstream frontend/backend CI checks missing; sync paused')
-    for name in missing:
-        print(f'missing check: {name}')
-    sys.exit(1)
-
-if bad_statuses or bad_runs:
-    print('upstream frontend/backend CI is not passing; sync paused')
-    for item in bad_statuses:
-        print(f"status: {item.get('context')}={item.get('state')}")
-    for item in bad_runs:
-        print(f"check: {item.get('name')} status={item.get('status')} conclusion={item.get('conclusion')}")
-    sys.exit(1)
-
-print('upstream frontend/backend CI ready')
 PY
