@@ -66,7 +66,11 @@ jobs:
             exit 0
           fi
 
-          existing="$(gh pr list --head "$MIRROR_BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
+          existing="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f state="open" \
+            -f head="${GITHUB_REPOSITORY_OWNER}:${MIRROR_BRANCH}" \
+            -f base="main" \
+            --jq '.[0].number // empty')"
           body="Internal sync request for upstream commit ${UPSTREAM_SHA}. Upstream was read only. Upstream CI was passing before this branch was updated."
           if [ -z "$existing" ]; then
             gh api --method POST "repos/${GITHUB_REPOSITORY}/pulls" \
