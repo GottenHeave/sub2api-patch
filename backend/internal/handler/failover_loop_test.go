@@ -458,13 +458,13 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
 				err := newTestFailoverErr(statusCode, true, false)
 
 				for i := 1; i <= maxSameAccountRetries; i++ {
-					action := fs.HandleFailoverError(context.Background(), mock, 101, service.PlatformOpenAI, err)
+					action := fs.HandleFailoverError(context.Background(), mock, 101, service.PlatformOpenAI, maxSameAccountRetries, err)
 					require.Equal(t, FailoverContinue, action)
 					require.Equal(t, i, fs.SameAccountRetryCount[101])
 					require.NotContains(t, fs.FailedAccountIDs, int64(101))
 				}
 
-				action := fs.HandleFailoverError(context.Background(), mock, 101, service.PlatformOpenAI, err)
+				action := fs.HandleFailoverError(context.Background(), mock, 101, service.PlatformOpenAI, maxSameAccountRetries, err)
 				require.Equal(t, FailoverContinue, action)
 				require.Equal(t, 1, fs.SwitchCount)
 				require.Contains(t, fs.FailedAccountIDs, int64(101))
@@ -482,7 +482,7 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
 				fs := NewFailoverState(2, false)
 				err := newTestFailoverErr(statusCode, false, false)
 
-				action := fs.HandleFailoverError(context.Background(), mock, 201, service.PlatformOpenAI, err)
+				action := fs.HandleFailoverError(context.Background(), mock, 201, service.PlatformOpenAI, maxSameAccountRetries, err)
 
 				require.Equal(t, FailoverContinue, action)
 				require.Equal(t, 1, fs.SwitchCount)
@@ -497,11 +497,11 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
 		mock := &mockTempUnscheduler{}
 		fs := NewFailoverState(1, false)
 
-		action := fs.HandleFailoverError(context.Background(), mock, 301, service.PlatformOpenAI, newTestFailoverErr(500, false, false))
+		action := fs.HandleFailoverError(context.Background(), mock, 301, service.PlatformOpenAI, maxSameAccountRetries, newTestFailoverErr(500, false, false))
 		require.Equal(t, FailoverContinue, action)
 		require.Equal(t, 1, fs.SwitchCount)
 
-		action = fs.HandleFailoverError(context.Background(), mock, 302, service.PlatformOpenAI, newTestFailoverErr(503, false, false))
+		action = fs.HandleFailoverError(context.Background(), mock, 302, service.PlatformOpenAI, maxSameAccountRetries, newTestFailoverErr(503, false, false))
 		require.Equal(t, FailoverExhausted, action)
 		require.Equal(t, 1, fs.SwitchCount)
 		require.Contains(t, fs.FailedAccountIDs, int64(301))
