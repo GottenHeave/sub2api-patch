@@ -1,0 +1,126 @@
+name: Patch validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Upstream ref to validate
+        required: false
+        default: main
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  UPSTREAM_REPOSITORY: Wei-Shaw/sub2api
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patchset
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: patchset
+          path: sub2api-patch
+          fetch-depth: 0
+
+      - name: Checkout upstream candidate
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ inputs.upstream_ref }}
+          path: worktree
+          fetch-depth: 0
+
+      - name: Checkout pull request candidate
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: worktree
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          go-version-file: worktree/backend/go.mod
+          cache-dependency-path: worktree/backend/go.sum
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.9
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: worktree/frontend/pnpm-lock.yaml
+
+      - name: Record upstream candidate
+        run: |
+          set -euo pipefail
+          candidate_head="$(git -C worktree rev-parse HEAD)"
+          upstream_commit="$candidate_head"
+          case "$(git -C worktree show -s --format=%s HEAD)" in
+            "Remove upstream workflows from mirror branch"|"Install downstream validation workflow on mirror branch")
+              upstream_commit="$(git -C worktree rev-parse HEAD^)"
+              ;;
+          esac
+          echo "VALIDATED_CANDIDATE=$candidate_head" >> "$GITHUB_ENV"
+          echo "UPSTREAM_COMMIT=$upstream_commit" >> "$GITHUB_ENV"
+
+      - name: Apply patches
+        run: sub2api-patch/scripts/apply-patches.sh worktree
+
+      - name: Sanitize patch references
+        run: sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
+
+      - name: Backend tests
+        run: go test ./...
+        working-directory: worktree/backend
+
+      - name: Frontend checks
+        working-directory: worktree
+        run: |
+          set -euo pipefail
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend run typecheck
+          pnpm --dir frontend run lint:check
+
+      - name: Write validation metadata
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          git -C worktree rev-parse HEAD > artifacts/patched-head.txt || true
+          git -C worktree status --short > artifacts/git-status.txt || true
+          git -C worktree diff --name-only --diff-filter=U > artifacts/conflict-files.txt || true
+          if git -C worktree rev-parse HEAD >/dev/null 2>&1; then
+            cat > artifacts/summary.txt <<EOF
+          upstream_commit=${UPSTREAM_COMMIT:-}
+          validated_candidate=${VALIDATED_CANDIDATE:-}
+          upstream_version=$(tr -d '[:space:]' < worktree/backend/cmd/server/VERSION 2>/dev/null || true)
+          patchset_commit=$(git -C sub2api-patch rev-parse HEAD)
+          EOF
+          fi
+
+      - name: Upload validation artifacts
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: patch-validation-artifacts
+          path: artifacts
