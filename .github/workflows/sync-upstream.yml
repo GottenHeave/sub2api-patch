@@ -69,10 +69,7 @@ jobs:
           existing="$(gh pr list --head "$MIRROR_BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
           body="Internal sync request for upstream commit ${UPSTREAM_SHA}. Upstream was read only. Upstream CI was passing before this branch was updated."
           if [ -z "$existing" ]; then
-            if ! gh pr create --base main --head "$MIRROR_BRANCH" --title "sync upstream main" --body "$body"; then
-              echo "Unable to create internal sync request after updating ${MIRROR_BRANCH}; branch sync completed."
-              exit 0
-            fi
+            gh pr create --base main --head "$MIRROR_BRANCH" --title "sync upstream main" --body "$body"
           else
             gh pr edit "$existing" --body "$body"
           fi
