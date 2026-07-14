@@ -45,13 +45,17 @@ jobs:
       - name: Update mirror branch
         run: |
           set -euo pipefail
+          validation_workflow="$(mktemp)"
+          cp .github/workflows/upstream-pr-check.yml "$validation_workflow"
           git checkout -B "$MIRROR_BRANCH" "$UPSTREAM_SHA"
           git config user.name "sub2api-patch automation"
           git config user.email "actions@users.noreply.github.com"
-          if [ -n "$(git ls-files .github/workflows)" ]; then
-            rm -rf .github/workflows
-            git add -A .github/workflows
-            git commit -m "Remove upstream workflows from mirror branch"
+          rm -rf .github/workflows
+          mkdir -p .github/workflows
+          cp "$validation_workflow" .github/workflows/upstream-pr-check.yml
+          git add -A .github/workflows
+          if ! git diff --cached --quiet; then
+            git commit -m "Install downstream validation workflow on mirror branch"
           fi
           git push origin "$MIRROR_BRANCH" --force
 
@@ -61,8 +65,8 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin main
-          if git diff --quiet "$UPSTREAM_SHA" origin/main -- . ':(exclude).github/workflows'; then
-            echo "main already matches upstream commit ${UPSTREAM_SHA} outside workflow files; no sync request needed."
+          if git diff --quiet "$MIRROR_BRANCH" origin/main -- .; then
+            echo "main already matches mirror candidate ${MIRROR_BRANCH}; no sync request needed."
             exit 0
           fi
 

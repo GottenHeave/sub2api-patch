@@ -17,6 +17,7 @@ permissions:
   contents: write
   packages: write
   actions: read
+  pull-requests: write
   id-token: write
 
 env:
@@ -136,9 +137,11 @@ jobs:
           set -euo pipefail
           candidate_head="$(git -C worktree rev-parse HEAD)"
           upstream_commit="$candidate_head"
-          if [ "$(git -C worktree show -s --format=%s HEAD)" = "Remove upstream workflows from mirror branch" ]; then
-            upstream_commit="$(git -C worktree rev-parse HEAD^)"
-          fi
+          case "$(git -C worktree show -s --format=%s HEAD)" in
+            "Remove upstream workflows from mirror branch"|"Install downstream validation workflow on mirror branch")
+              upstream_commit="$(git -C worktree rev-parse HEAD^)"
+              ;;
+          esac
           echo "UPSTREAM_COMMIT=$upstream_commit" >> "$GITHUB_ENV"
           echo "UPSTREAM_COMMIT_SHORT=$(git -C worktree rev-parse --short=12 "$upstream_commit")" >> "$GITHUB_ENV"
 
@@ -218,6 +221,15 @@ jobs:
           labels: |
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ env.RELEASE_REVISION }}
+
+      - name: Merge validated sync request
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.pull_requests[0].number != null
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr merge "${{ github.event.workflow_run.pull_requests[0].number }}" \
+            --repo "${{ github.repository }}" \
+            --merge
 
       - name: Publish patched branch and reserve tag
         if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'

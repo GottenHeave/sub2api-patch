@@ -75,9 +75,11 @@ jobs:
           set -euo pipefail
           candidate_head="$(git -C worktree rev-parse HEAD)"
           upstream_commit="$candidate_head"
-          if [ "$(git -C worktree show -s --format=%s HEAD)" = "Remove upstream workflows from mirror branch" ]; then
-            upstream_commit="$(git -C worktree rev-parse HEAD^)"
-          fi
+          case "$(git -C worktree show -s --format=%s HEAD)" in
+            "Remove upstream workflows from mirror branch"|"Install downstream validation workflow on mirror branch")
+              upstream_commit="$(git -C worktree rev-parse HEAD^)"
+              ;;
+          esac
           echo "VALIDATED_CANDIDATE=$candidate_head" >> "$GITHUB_ENV"
           echo "UPSTREAM_COMMIT=$upstream_commit" >> "$GITHUB_ENV"
 
