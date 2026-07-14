@@ -190,6 +190,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldVideoPrice480p,
 				group.FieldVideoPrice720p,
 				group.FieldVideoPrice1080p,
+				group.FieldWebSearchPricePerCall,
 				group.FieldClaudeCodeOnly,
 				group.FieldFallbackGroupID,
 				group.FieldFallbackGroupIDOnInvalidRequest,
@@ -395,10 +396,9 @@ func (r *apiKeyRepository) deleteWithAudit(ctx context.Context, exec *dbent.Clie
 	return nil
 }
 
-func (r *apiKeyRepository) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams, filters service.APIKeyListFilters) ([]service.APIKey, *pagination.PaginationResult, error) {
+func (r *apiKeyRepository) apiKeyListByUserIDQuery(userID int64, filters service.APIKeyListFilters) *dbent.APIKeyQuery {
 	q := r.activeQuery().Where(apikey.UserIDEQ(userID))
 
-	// Apply filters
 	if filters.Search != "" {
 		q = q.Where(apikey.Or(
 			apikey.NameContainsFold(filters.Search),
@@ -415,6 +415,12 @@ func (r *apiKeyRepository) ListByUserID(ctx context.Context, userID int64, param
 			q = q.Where(apikey.GroupIDEQ(*filters.GroupID))
 		}
 	}
+
+	return q
+}
+
+func (r *apiKeyRepository) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams, filters service.APIKeyListFilters) ([]service.APIKey, *pagination.PaginationResult, error) {
+	q := r.apiKeyListByUserIDQuery(userID, filters)
 
 	total, err := q.Count(ctx)
 	if err != nil {
@@ -443,6 +449,25 @@ func (r *apiKeyRepository) ListByUserID(ctx context.Context, userID int64, param
 	}
 
 	return outKeys, paginationResultFromTotal(int64(total), params), nil
+}
+
+func (r *apiKeyRepository) ListAllByUserID(ctx context.Context, userID int64, filters service.APIKeyListFilters) ([]service.APIKey, error) {
+	keys, err := r.apiKeyListByUserIDQuery(userID, filters).
+		WithGroup().
+		Order(dbent.Asc(apikey.FieldID)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	outKeys := make([]service.APIKey, 0, len(keys))
+	for i := range keys {
+		outKeys = append(outKeys, *apiKeyEntityToService(keys[i]))
+	}
+	if err := r.attachLastUsedIPs(ctx, outKeys); err != nil {
+		return nil, err
+	}
+	return outKeys, nil
 }
 
 func (r *apiKeyRepository) attachLastUsedIPs(ctx context.Context, keys []service.APIKey) error {
@@ -500,17 +525,19 @@ func (r *apiKeyRepository) latestUsageLogIPs(ctx context.Context, apiKeyIDs []in
 
 func latestUsageLogIPsQuery(apiKeyIDs []int64, dialectName string) (string, []any) {
 	if dialectName == dialect.Postgres {
+		// Keep each key lookup bounded to one ordered index probe instead of ranking its full history.
 		return `
-		SELECT api_key_id, ip_address
-		FROM (
-			SELECT api_key_id, ip_address,
-				ROW_NUMBER() OVER (PARTITION BY api_key_id ORDER BY created_at DESC, id DESC) AS rn
-			FROM usage_logs
-			WHERE api_key_id = ANY($1::bigint[])
-				AND ip_address IS NOT NULL
-				AND ip_address <> ''
-		) ranked
-		WHERE rn = 1`, []any{pq.Array(apiKeyIDs)}
+		SELECT requested.api_key_id, latest.ip_address
+		FROM unnest($1::bigint[]) AS requested(api_key_id)
+		CROSS JOIN LATERAL (
+			SELECT ul.ip_address
+			FROM usage_logs AS ul
+			WHERE ul.api_key_id = requested.api_key_id
+				AND ul.ip_address IS NOT NULL
+				AND ul.ip_address <> ''
+			ORDER BY ul.created_at DESC, ul.id DESC
+			LIMIT 1
+		) AS latest`, []any{pq.Array(apiKeyIDs)}
 	}
 
 	placeholders := make([]string, len(apiKeyIDs))
@@ -601,14 +628,24 @@ func apiKeyListOrder(params pagination.PaginationParams) []func(*entsql.Selector
 		field = apikey.FieldLastUsedAt
 	case "created_at":
 		field = apikey.FieldCreatedAt
+	case "id":
+		field = apikey.FieldID
 	default:
 		field = apikey.FieldID
 	}
 
 	if sortOrder == pagination.SortOrderAsc {
-		return []func(*entsql.Selector){dbent.Asc(field), dbent.Asc(apikey.FieldID)}
+		orders := []func(*entsql.Selector){dbent.Asc(field)}
+		if field != apikey.FieldID {
+			orders = append(orders, dbent.Asc(apikey.FieldID))
+		}
+		return orders
 	}
-	return []func(*entsql.Selector){dbent.Desc(field), dbent.Desc(apikey.FieldID)}
+	orders := []func(*entsql.Selector){dbent.Desc(field)}
+	if field != apikey.FieldID {
+		orders = append(orders, dbent.Desc(apikey.FieldID))
+	}
+	return orders
 }
 
 // SearchAPIKeys searches API keys by user ID and/or keyword (name)
@@ -909,6 +946,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		VideoPrice480P:                  g.VideoPrice480p,
 		VideoPrice720P:                  g.VideoPrice720p,
 		VideoPrice1080P:                 g.VideoPrice1080p,
+		WebSearchPricePerCall:           g.WebSearchPricePerCall,
 		DefaultValidityDays:             g.DefaultValidityDays,
 		ClaudeCodeOnly:                  g.ClaudeCodeOnly,
 		FallbackGroupID:                 g.FallbackGroupID,
