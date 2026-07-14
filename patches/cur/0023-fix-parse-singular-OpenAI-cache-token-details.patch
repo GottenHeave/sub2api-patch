@@ -5,10 +5,10 @@ Subject: [PATCH] fix: parse singular OpenAI cache token details
 
 
 diff --git a/backend/internal/service/openai_gateway_response_handling.go b/backend/internal/service/openai_gateway_response_handling.go
-index 64f0ecb1..6abe4257 100644
+index b10c745d..aabe7e59 100644
 --- a/backend/internal/service/openai_gateway_response_handling.go
 +++ b/backend/internal/service/openai_gateway_response_handling.go
-@@ -799,6 +799,7 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+@@ -815,6 +815,7 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
  
  func openAICacheReadTokensFromUsage(value gjson.Result) int {
  	for _, nested := range []gjson.Result{

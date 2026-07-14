@@ -5,17 +5,17 @@ Subject: [PATCH] fix: keep downstream backend patches buildable
 
 
 diff --git a/backend/internal/handler/dto/mappers.go b/backend/internal/handler/dto/mappers.go
-index 4193131f..20951168 100644
+index ff2c9ce1..4210626e 100644
 --- a/backend/internal/handler/dto/mappers.go
 +++ b/backend/internal/handler/dto/mappers.go
-@@ -607,7 +607,6 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
- 		ServiceTier:              l.ServiceTier,
- 		ReasoningEffort:          l.ReasoningEffort,
- 		InboundEndpoint:          l.InboundEndpoint,
--		UpstreamEndpoint:         l.UpstreamEndpoint,
- 		GroupID:                  l.GroupID,
- 		SubscriptionID:           l.SubscriptionID,
- 		InputTokens:              l.InputTokens,
+@@ -608,7 +608,6 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
+ 		ServiceTier:               l.ServiceTier,
+ 		ReasoningEffort:           l.ReasoningEffort,
+ 		InboundEndpoint:           l.InboundEndpoint,
+-		UpstreamEndpoint:          l.UpstreamEndpoint,
+ 		GroupID:                   l.GroupID,
+ 		SubscriptionID:            l.SubscriptionID,
+ 		InputTokens:               l.InputTokens,
 diff --git a/backend/internal/handler/openai_audio_transcriptions_test.go b/backend/internal/handler/openai_audio_transcriptions_test.go
 index bdf3bfb8..612bc90f 100644
 --- a/backend/internal/handler/openai_audio_transcriptions_test.go
@@ -243,10 +243,10 @@ index 46ebf43b..8bea46ed 100644
  	); err != nil {
  		return nil, err
 diff --git a/backend/internal/repository/usage_log_repo_request_type_test.go b/backend/internal/repository/usage_log_repo_request_type_test.go
-index c32ad2b6..e3c2ab84 100644
+index 052c3191..e3c2ab84 100644
 --- a/backend/internal/repository/usage_log_repo_request_type_test.go
 +++ b/backend/internal/repository/usage_log_repo_request_type_test.go
-@@ -40,61 +40,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
+@@ -40,62 +40,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
  	}
  
  	mock.ExpectQuery("INSERT INTO usage_logs").
@@ -298,6 +298,7 @@ index c32ad2b6..e3c2ab84 100644
 -			sqlmock.AnyArg(), // inbound_endpoint
 -			sqlmock.AnyArg(), // upstream_endpoint
 -			log.CacheTTLOverridden,
+-			log.LongContextBillingApplied,
 -			sqlmock.AnyArg(), // channel_id
 -			sqlmock.AnyArg(), // model_mapping_chain
 -			sqlmock.AnyArg(), // billing_tier
@@ -309,7 +310,7 @@ index c32ad2b6..e3c2ab84 100644
  		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(99), createdAt))
  
  	inserted, err := repo.Create(context.Background(), log)
-@@ -126,61 +72,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
+@@ -127,62 +72,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
  	}
  
  	mock.ExpectQuery("INSERT INTO usage_logs").
@@ -361,6 +362,7 @@ index c32ad2b6..e3c2ab84 100644
 -			sqlmock.AnyArg(),
 -			sqlmock.AnyArg(),
 -			log.CacheTTLOverridden,
+-			log.LongContextBillingApplied,
 -			sqlmock.AnyArg(), // channel_id
 -			sqlmock.AnyArg(), // model_mapping_chain
 -			sqlmock.AnyArg(), // billing_tier
@@ -372,7 +374,7 @@ index c32ad2b6..e3c2ab84 100644
  		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(100), createdAt))
  
  	inserted, err := repo.Create(context.Background(), log)
-@@ -265,11 +157,11 @@ func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
+@@ -267,11 +157,11 @@ func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
  		CreatedAt:          time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC),
  	})
  
@@ -389,7 +391,7 @@ index c32ad2b6..e3c2ab84 100644
  	require.True(t, ok)
  	require.JSONEq(t, `{"1K":1,"4K":1}`, breakdownJSON)
  }
-@@ -339,6 +231,30 @@ func anySliceToDriverValues(values []any) []driver.Value {
+@@ -341,6 +231,30 @@ func anySliceToDriverValues(values []any) []driver.Value {
  	return out
  }
  
@@ -420,7 +422,7 @@ index c32ad2b6..e3c2ab84 100644
  func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {
  	db, mock := newSQLMock(t)
  	repo := &usageLogRepository{sql: db}
-@@ -478,18 +394,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
+@@ -480,18 +394,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
  
  	mock.ExpectQuery("FROM usage_logs\\s+WHERE COALESCE\\(NULLIF\\(TRIM\\(requested_model\\), ''\\), model\\) = \\$1").
  		WithArgs("gpt-5").
@@ -440,7 +442,7 @@ index c32ad2b6..e3c2ab84 100644
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(inbound_endpoint\\), ''\\), 'unknown'\\) AS endpoint").
  		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "gpt-5").
  		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
-@@ -519,18 +424,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T)
+@@ -521,18 +424,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T)
  
  	mock.ExpectQuery("FROM usage_logs\\s+WHERE \\(request_type = \\$1 OR \\(request_type = 0 AND stream = FALSE AND openai_ws_mode = FALSE\\)\\)").
  		WithArgs(requestType).
@@ -460,7 +462,7 @@ index c32ad2b6..e3c2ab84 100644
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(inbound_endpoint\\), ''\\), 'unknown'\\) AS endpoint").
  		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), requestType).
  		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
-@@ -661,12 +555,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testin
+@@ -663,12 +555,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testin
  	filters := usagestats.UsageLogFilters{}
  
  	mock.ExpectQuery("FROM usage_logs").
@@ -474,7 +476,7 @@ index c32ad2b6..e3c2ab84 100644
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(inbound_endpoint\\)").
  		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(upstream_endpoint\\)").
-@@ -786,7 +675,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -788,7 +675,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullInt64{},
  			sql.NullInt64{},
@@ -485,7 +487,15 @@ index c32ad2b6..e3c2ab84 100644
  			0, 0.0, // image_output_tokens, image_output_cost
  			0.0, 0.0, 0.0, 0.0, 0.8, 0.8,
  			1.0,
-@@ -850,6 +741,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -815,7 +704,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+ 			sql.NullString{},
+ 			sql.NullString{},
+ 			false,
+-			false,
+ 			sql.NullInt64{},
+ 			sql.NullString{},
+ 			sql.NullString{},
+@@ -853,6 +741,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			2,                 // output_tokens
  			3,                 // cache_creation_tokens
  			4,                 // cache_read_tokens
@@ -496,7 +506,15 @@ index c32ad2b6..e3c2ab84 100644
  			5,                 // cache_creation_5m_tokens
  			6,                 // cache_creation_1h_tokens
  			0,                 // image_output_tokens
-@@ -912,7 +807,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -887,7 +779,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+ 			sql.NullString{},
+ 			sql.NullString{},
+ 			false,
+-			false,
+ 			sql.NullInt64{},   // channel_id
+ 			sql.NullString{},  // model_mapping_chain
+ 			sql.NullString{},  // billing_tier
+@@ -916,7 +807,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullInt64{},
  			sql.NullInt64{},
@@ -507,7 +525,15 @@ index c32ad2b6..e3c2ab84 100644
  			0, 0.0, // image_output_tokens, image_output_cost
  			0.1, 0.2, 0.3, 0.4, 1.0, 0.9,
  			1.0,
-@@ -967,7 +864,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -943,7 +836,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+ 			sql.NullString{},
+ 			sql.NullString{},
+ 			false,
+-			false,
+ 			sql.NullInt64{},   // channel_id
+ 			sql.NullString{},  // model_mapping_chain
+ 			sql.NullString{},  // billing_tier
+@@ -972,7 +864,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullInt64{},
  			sql.NullInt64{},
@@ -518,6 +544,14 @@ index c32ad2b6..e3c2ab84 100644
  			0, 0.0, // image_output_tokens, image_output_cost
  			0.1, 0.2, 0.3, 0.4, 1.0, 0.9,
  			1.0,
+@@ -999,7 +893,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+ 			sql.NullString{},
+ 			sql.NullString{},
+ 			false,
+-			false,
+ 			sql.NullInt64{},   // channel_id
+ 			sql.NullString{},  // model_mapping_chain
+ 			sql.NullString{},  // billing_tier
 diff --git a/backend/internal/repository/usage_log_repo_stats.go b/backend/internal/repository/usage_log_repo_stats.go
 index d3d61364..cb3ed827 100644
 --- a/backend/internal/repository/usage_log_repo_stats.go
@@ -872,7 +906,7 @@ index 543733d3..c82ba077 100644
  	t.Helper()
  	mediaType, params, err := mime.ParseMediaType(contentType)
 diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
-index 935a32f5..d26f9940 100644
+index b47c2c86..52702ed8 100644
 --- a/backend/internal/service/openai_gateway_request_body.go
 +++ b/backend/internal/service/openai_gateway_request_body.go
 @@ -45,6 +45,10 @@ func buildOpenAIResponsesURL(base string) string {
@@ -887,10 +921,10 @@ index 935a32f5..d26f9940 100644
  	if len(reqBody) == 0 {
  		return false
 diff --git a/backend/internal/service/openai_gateway_response_handling.go b/backend/internal/service/openai_gateway_response_handling.go
-index 5841ce65..64f0ecb1 100644
+index 1d70245e..b10c745d 100644
 --- a/backend/internal/service/openai_gateway_response_handling.go
 +++ b/backend/internal/service/openai_gateway_response_handling.go
-@@ -768,6 +768,32 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+@@ -784,6 +784,32 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
  		CacheCreationInputTokens: cacheCreationTokens,
  		CacheReadInputTokens:     cacheReadTokens,
  		ImageOutputTokens:        int(imageOutputTokens),
@@ -923,7 +957,7 @@ index 5841ce65..64f0ecb1 100644
  	}, true
  }
  
-@@ -808,6 +834,16 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
+@@ -824,6 +850,16 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
  	)
  }
  
@@ -941,10 +975,10 @@ index 5841ce65..64f0ecb1 100644
  	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
  	if err != nil {
 diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
-index 418319ca..46497ec5 100644
+index 651c8741..bc431776 100644
 --- a/backend/internal/service/openai_gateway_service.go
 +++ b/backend/internal/service/openai_gateway_service.go
-@@ -1102,4917 +1102,3 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
+@@ -1140,4917 +1140,3 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
  		return "", "", fmt.Errorf("unsupported account type: %s", account.Type)
  	}
  }
@@ -5863,7 +5897,7 @@ index 418319ca..46497ec5 100644
 -	}
 -}
 diff --git a/backend/internal/service/openai_gateway_usage.go b/backend/internal/service/openai_gateway_usage.go
-index f96b679c..bd352b2b 100644
+index 410b4d94..30b2a99b 100644
 --- a/backend/internal/service/openai_gateway_usage.go
 +++ b/backend/internal/service/openai_gateway_usage.go
 @@ -125,15 +125,23 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
@@ -5896,7 +5930,7 @@ index f96b679c..bd352b2b 100644
  	}
  
  	// Get rate multiplier
-@@ -219,28 +227,32 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
+@@ -239,28 +247,32 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
  	}
  
  	usageLog := &UsageLog{
@@ -9571,10 +9605,10 @@ index 733a116d..86f7a816 100644
 -	s.openaiWSFallbackUntil.Delete(accountID)
 -}
 diff --git a/backend/internal/service/openai_ws_forwarder_ingress.go b/backend/internal/service/openai_ws_forwarder_ingress.go
-index 45e004b6..be35408b 100644
+index b632c451..c116e752 100644
 --- a/backend/internal/service/openai_ws_forwarder_ingress.go
 +++ b/backend/internal/service/openai_ws_forwarder_ingress.go
-@@ -79,6 +79,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
+@@ -86,6 +86,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
  				firstClientMessage,
  				hooks,
  				wsDecision,
@@ -9583,7 +9617,7 @@ index 45e004b6..be35408b 100644
  			)
  		case OpenAIWSIngressModeHTTPBridge:
  			forceHTTPBridge = true
-@@ -1577,3 +1579,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
+@@ -1615,3 +1617,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
  		turn++
  	}
  }
@@ -9629,7 +9663,7 @@ index 45e004b6..be35408b 100644
 +	return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision, upstreamEndpoint, model)
 +}
 diff --git a/backend/internal/service/openai_ws_forwarder_payload.go b/backend/internal/service/openai_ws_forwarder_payload.go
-index a4d47218..961c06af 100644
+index 58304448..2f31b5f5 100644
 --- a/backend/internal/service/openai_ws_forwarder_payload.go
 +++ b/backend/internal/service/openai_ws_forwarder_payload.go
 @@ -16,26 +16,62 @@ import (
@@ -9721,7 +9755,7 @@ index a4d47218..961c06af 100644
  func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
  	ctx context.Context,
  	c *gin.Context,
-@@ -110,7 +158,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
+@@ -115,7 +163,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
  	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
  		betaValue = openAIWSBetaV1Value
  	}
@@ -9733,7 +9767,7 @@ index a4d47218..961c06af 100644
  	customUA := ""
  	if account != nil {
 diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
-index f4b8f1b7..7135d508 100644
+index c234d1a6..7d6972eb 100644
 --- a/backend/internal/service/openai_ws_forwarder_success_test.go
 +++ b/backend/internal/service/openai_ws_forwarder_success_test.go
 @@ -279,7 +279,8 @@ func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOmitsResponsesBeta(t *

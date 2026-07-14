@@ -5,10 +5,10 @@ Subject: [PATCH] test: cover OpenAI realtime gateway routing
 
 
 diff --git a/backend/internal/handler/endpoint_test.go b/backend/internal/handler/endpoint_test.go
-index 96ed1292..ddc3af16 100644
+index dc8ad728..6107e6fd 100644
 --- a/backend/internal/handler/endpoint_test.go
 +++ b/backend/internal/handler/endpoint_test.go
-@@ -28,6 +28,19 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
+@@ -29,6 +29,19 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
  		{"/v1/responses", EndpointResponses},
  		{"/v1/responses/compact", EndpointResponsesCompact},
  		{"/v1/responses/compact/detail", EndpointResponsesCompact},
@@ -28,7 +28,7 @@ index 96ed1292..ddc3af16 100644
  		{"/v1/images/generations", EndpointImagesGenerations},
  		{"/v1/images/edits", EndpointImagesEdits},
  		{"/v1/videos/generations", EndpointVideosGenerations},
-@@ -37,6 +50,10 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
+@@ -38,6 +51,10 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
  		// Prefixed paths (antigravity, openai) — root Responses.
  		{"/antigravity/v1/messages", EndpointMessages},
  		{"/openai/v1/responses", EndpointResponses},
@@ -39,7 +39,7 @@ index 96ed1292..ddc3af16 100644
  		{"/openai/v1/images/generations", EndpointImagesGenerations},
  		{"/openai/v1/images/edits", EndpointImagesEdits},
  		{"/antigravity/v1beta/models/gemini:generateContent", EndpointGeminiModels},
-@@ -118,6 +135,22 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
+@@ -121,6 +138,22 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
  
  		{"openai from messages", EndpointMessages, "/v1/messages", service.PlatformOpenAI, EndpointResponses},
  		{"openai from completions", EndpointChatCompletions, "/v1/chat/completions", service.PlatformOpenAI, EndpointResponses},
@@ -60,10 +60,10 @@ index 96ed1292..ddc3af16 100644
 +		{"openai audio transcriptions", EndpointAudioTranscriptions, "/v1/audio/transcriptions", service.PlatformOpenAI, EndpointAudioTranscriptions},
 +		{"openai transcribe alias", EndpointTranscribe, "/transcribe", service.PlatformOpenAI, EndpointAudioTranscriptions},
  		{"openai embeddings", EndpointEmbeddings, "/v1/embeddings", service.PlatformOpenAI, EndpointEmbeddings},
+ 		{"openai alpha search", EndpointAlphaSearch, "/backend-api/codex/alpha/search", service.PlatformOpenAI, EndpointAlphaSearch},
  		{"openai image generations", EndpointImagesGenerations, "/v1/images/generations", service.PlatformOpenAI, EndpointImagesGenerations},
- 		{"openai image edits", EndpointImagesEdits, "/openai/v1/images/edits", service.PlatformOpenAI, EndpointImagesEdits},
 diff --git a/backend/internal/handler/failover_loop_test.go b/backend/internal/handler/failover_loop_test.go
-index 2c65ebc2..89f4811d 100644
+index 9fabe75f..a580bd65 100644
 --- a/backend/internal/handler/failover_loop_test.go
 +++ b/backend/internal/handler/failover_loop_test.go
 @@ -2,6 +2,7 @@ package handler
@@ -74,7 +74,7 @@ index 2c65ebc2..89f4811d 100644
  	"testing"
  	"time"
  
-@@ -364,6 +365,66 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
+@@ -401,6 +402,66 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
  	})
  }
  
@@ -163,10 +163,10 @@ index 0dacd74d..b99a398c 100644
  
  	for _, tt := range tests {
 diff --git a/backend/internal/handler/openai_gateway_handler_test.go b/backend/internal/handler/openai_gateway_handler_test.go
-index b7f43079..599fe8a7 100644
+index e4b594c0..dfac71f6 100644
 --- a/backend/internal/handler/openai_gateway_handler_test.go
 +++ b/backend/internal/handler/openai_gateway_handler_test.go
-@@ -94,6 +94,40 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
+@@ -95,6 +95,40 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
  	}
  }
  
@@ -208,7 +208,7 @@ index b7f43079..599fe8a7 100644
  	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
  
 diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
-index 2779dd8f..c0b6185f 100644
+index 65c68244..5d9117be 100644
 --- a/backend/internal/server/routes/gateway_test.go
 +++ b/backend/internal/server/routes/gateway_test.go
 @@ -47,6 +47,34 @@ func newGatewayRoutesTestRouter(platform ...string) *gin.Engine {
@@ -246,7 +246,7 @@ index 2779dd8f..c0b6185f 100644
  func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
  	router := newGatewayRoutesTestRouter()
  
-@@ -194,3 +222,127 @@ func TestGatewayRoutesOpenAICountTokensPathIsRegistered(t *testing.T) {
+@@ -232,3 +260,127 @@ func TestGatewayRoutesOpenAICountTokensPathIsRegistered(t *testing.T) {
  	router.ServeHTTP(w, req)
  	require.NotEqual(t, http.StatusNotFound, w.Code)
  }
@@ -406,7 +406,7 @@ index f624a008..47780acb 100644
  	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastFilterPriorityPolicy())
  	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
-index bc143503..086729c7 100644
+index 507fb9d5..d7b3d3f1 100644
 --- a/backend/internal/service/openai_gateway_service_test.go
 +++ b/backend/internal/service/openai_gateway_service_test.go
 @@ -2818,12 +2818,24 @@ func TestExtractOpenAIUsageFromJSONBytes_AcceptsResponseAndChatUsageShapes(t *te
@@ -459,7 +459,7 @@ index 2622f7f2..69ecf613 100644
  
  func TestOpenAIWSEventShouldParseUsageTerminalEvents(t *testing.T) {
 diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
-index adae109e..f4b8f1b7 100644
+index bb4ac224..c234d1a6 100644
 --- a/backend/internal/service/openai_ws_forwarder_success_test.go
 +++ b/backend/internal/service/openai_ws_forwarder_success_test.go
 @@ -77,6 +77,16 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
@@ -770,7 +770,7 @@ index adae109e..f4b8f1b7 100644
  func TestOpenAIGatewayService_Forward_WSv2_ImageGenerationCountsOutputs(t *testing.T) {
  	gin.SetMode(gin.TestMode)
  
-@@ -1554,6 +1832,7 @@ func TestOpenAIGatewayService_Forward_WSv2ReadTimeoutAppliesPerRead(t *testing.T
+@@ -1556,6 +1834,7 @@ func TestOpenAIGatewayService_Forward_WSv2ReadTimeoutAppliesPerRead(t *testing.T
  type openAIWSCaptureDialer struct {
  	mu          sync.Mutex
  	conn        *openAIWSCaptureConn
@@ -778,7 +778,7 @@ index adae109e..f4b8f1b7 100644
  	lastHeaders http.Header
  	handshake   http.Header
  	dialCount   int
-@@ -1566,9 +1845,9 @@ func (d *openAIWSCaptureDialer) Dial(
+@@ -1568,9 +1847,9 @@ func (d *openAIWSCaptureDialer) Dial(
  	proxyURL string,
  ) (openAIWSClientConn, int, http.Header, error) {
  	_ = ctx
@@ -789,7 +789,7 @@ index adae109e..f4b8f1b7 100644
  	d.lastHeaders = cloneHeader(headers)
  	d.dialCount++
  	respHeaders := cloneHeader(d.handshake)
-@@ -1576,6 +1855,18 @@ func (d *openAIWSCaptureDialer) Dial(
+@@ -1578,6 +1857,18 @@ func (d *openAIWSCaptureDialer) Dial(
  	return d.conn, 0, respHeaders, nil
  }
  
@@ -808,7 +808,7 @@ index adae109e..f4b8f1b7 100644
  func (d *openAIWSCaptureDialer) DialCount() int {
  	d.mu.Lock()
  	defer d.mu.Unlock()
-@@ -1675,6 +1966,16 @@ func (c *openAIWSCaptureConn) Close() error {
+@@ -1677,6 +1968,16 @@ func (c *openAIWSCaptureConn) Close() error {
  	return nil
  }
  

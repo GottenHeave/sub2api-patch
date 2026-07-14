@@ -5,117 +5,27 @@ Subject: [PATCH] feat: map audio usage fields
 
 
 diff --git a/backend/internal/handler/dto/mappers.go b/backend/internal/handler/dto/mappers.go
-index 6270c2b9..4193131f 100644
+index 3c45c3b9..ff2c9ce1 100644
 --- a/backend/internal/handler/dto/mappers.go
 +++ b/backend/internal/handler/dto/mappers.go
-@@ -598,54 +598,59 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
- 		requestedModel = l.Model
- 	}
- 	return UsageLog{
--		ID:                    l.ID,
--		UserID:                l.UserID,
--		APIKeyID:              l.APIKeyID,
--		AccountID:             l.AccountID,
--		RequestID:             l.RequestID,
--		Model:                 requestedModel,
--		ServiceTier:           l.ServiceTier,
--		ReasoningEffort:       l.ReasoningEffort,
--		InboundEndpoint:       l.InboundEndpoint,
--		GroupID:               l.GroupID,
--		SubscriptionID:        l.SubscriptionID,
--		InputTokens:           l.InputTokens,
--		OutputTokens:          l.OutputTokens,
--		CacheCreationTokens:   l.CacheCreationTokens,
--		CacheReadTokens:       l.CacheReadTokens,
--		CacheCreation5mTokens: l.CacheCreation5mTokens,
--		CacheCreation1hTokens: l.CacheCreation1hTokens,
--		InputCost:             l.InputCost,
--		OutputCost:            l.OutputCost,
--		CacheCreationCost:     l.CacheCreationCost,
--		CacheReadCost:         l.CacheReadCost,
--		TotalCost:             l.TotalCost,
--		ActualCost:            l.ActualCost,
--		RateMultiplier:        l.RateMultiplier,
--		BillingType:           l.BillingType,
--		RequestType:           requestType.String(),
--		Stream:                stream,
--		OpenAIWSMode:          openAIWSMode,
--		DurationMs:            l.DurationMs,
--		FirstTokenMs:          l.FirstTokenMs,
--		ImageCount:            l.ImageCount,
--		ImageSize:             l.ImageSize,
--		ImageInputSize:        l.ImageInputSize,
--		ImageOutputSize:       l.ImageOutputSize,
--		ImageOutputTokens:     l.ImageOutputTokens,
--		ImageOutputCost:       l.ImageOutputCost,
--		ImageSizeSource:       l.ImageSizeSource,
--		ImageSizeBreakdown:    l.ImageSizeBreakdown,
--		MediaType:             l.MediaType,
--		UserAgent:             l.UserAgent,
--		IPAddress:             l.IPAddress,
--		CacheTTLOverridden:    l.CacheTTLOverridden,
--		BillingMode:           l.BillingMode,
--		CreatedAt:             l.CreatedAt,
--		User:                  UserFromServiceShallow(l.User),
--		APIKey:                APIKeyFromService(l.APIKey),
--		Group:                 GroupFromServiceShallow(l.Group),
--		Subscription:          UserSubscriptionFromService(l.Subscription),
-+		ID:                       l.ID,
-+		UserID:                   l.UserID,
-+		APIKeyID:                 l.APIKeyID,
-+		AccountID:                l.AccountID,
-+		RequestID:                l.RequestID,
-+		Model:                    requestedModel,
-+		ServiceTier:              l.ServiceTier,
-+		ReasoningEffort:          l.ReasoningEffort,
-+		InboundEndpoint:          l.InboundEndpoint,
-+		UpstreamEndpoint:         l.UpstreamEndpoint,
-+		GroupID:                  l.GroupID,
-+		SubscriptionID:           l.SubscriptionID,
-+		InputTokens:              l.InputTokens,
-+		OutputTokens:             l.OutputTokens,
-+		CacheCreationTokens:      l.CacheCreationTokens,
-+		CacheReadTokens:          l.CacheReadTokens,
-+		AudioInputTokens:         l.AudioInputTokens,
-+		AudioOutputTokens:        l.AudioOutputTokens,
-+		AudioCacheCreationTokens: l.AudioCacheCreationTokens,
-+		AudioCacheReadTokens:     l.AudioCacheReadTokens,
-+		CacheCreation5mTokens:    l.CacheCreation5mTokens,
-+		CacheCreation1hTokens:    l.CacheCreation1hTokens,
-+		InputCost:                l.InputCost,
-+		OutputCost:               l.OutputCost,
-+		CacheCreationCost:        l.CacheCreationCost,
-+		CacheReadCost:            l.CacheReadCost,
-+		TotalCost:                l.TotalCost,
-+		ActualCost:               l.ActualCost,
-+		RateMultiplier:           l.RateMultiplier,
-+		BillingType:              l.BillingType,
-+		RequestType:              requestType.String(),
-+		Stream:                   stream,
-+		OpenAIWSMode:             openAIWSMode,
-+		DurationMs:               l.DurationMs,
-+		FirstTokenMs:             l.FirstTokenMs,
-+		ImageCount:               l.ImageCount,
-+		ImageSize:                l.ImageSize,
-+		ImageInputSize:           l.ImageInputSize,
-+		ImageOutputSize:          l.ImageOutputSize,
-+		ImageOutputTokens:        l.ImageOutputTokens,
-+		ImageOutputCost:          l.ImageOutputCost,
-+		ImageSizeSource:          l.ImageSizeSource,
-+		ImageSizeBreakdown:       l.ImageSizeBreakdown,
-+		MediaType:                l.MediaType,
-+		UserAgent:                l.UserAgent,
-+		IPAddress:                l.IPAddress,
-+		CacheTTLOverridden:       l.CacheTTLOverridden,
-+		BillingMode:              l.BillingMode,
-+		CreatedAt:                l.CreatedAt,
-+		User:                     UserFromServiceShallow(l.User),
-+		APIKey:                   APIKeyFromService(l.APIKey),
-+		Group:                    GroupFromServiceShallow(l.Group),
-+		Subscription:             UserSubscriptionFromService(l.Subscription),
- 	}
- }
- 
+@@ -608,12 +608,17 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
+ 		ServiceTier:               l.ServiceTier,
+ 		ReasoningEffort:           l.ReasoningEffort,
+ 		InboundEndpoint:           l.InboundEndpoint,
++		UpstreamEndpoint:          l.UpstreamEndpoint,
+ 		GroupID:                   l.GroupID,
+ 		SubscriptionID:            l.SubscriptionID,
+ 		InputTokens:               l.InputTokens,
+ 		OutputTokens:              l.OutputTokens,
+ 		CacheCreationTokens:       l.CacheCreationTokens,
+ 		CacheReadTokens:           l.CacheReadTokens,
++		AudioInputTokens:          l.AudioInputTokens,
++		AudioOutputTokens:         l.AudioOutputTokens,
++		AudioCacheCreationTokens:  l.AudioCacheCreationTokens,
++		AudioCacheReadTokens:      l.AudioCacheReadTokens,
+ 		CacheCreation5mTokens:     l.CacheCreation5mTokens,
+ 		CacheCreation1hTokens:     l.CacheCreation1hTokens,
+ 		InputCost:                 l.InputCost,
 diff --git a/backend/internal/handler/dto/mappers_usage_test.go b/backend/internal/handler/dto/mappers_usage_test.go
 index 6cbcbada..2834afb8 100644
 --- a/backend/internal/handler/dto/mappers_usage_test.go
@@ -151,10 +61,10 @@ index 6cbcbada..2834afb8 100644
  	t.Parallel()
  
 diff --git a/backend/internal/handler/dto/types.go b/backend/internal/handler/dto/types.go
-index 7cfd1028..e9bc016e 100644
+index 619926c1..35e80552 100644
 --- a/backend/internal/handler/dto/types.go
 +++ b/backend/internal/handler/dto/types.go
-@@ -472,10 +472,14 @@ type UsageLog struct {
+@@ -474,10 +474,14 @@ type UsageLog struct {
  	GroupID        *int64 `json:"group_id"`
  	SubscriptionID *int64 `json:"subscription_id"`
  
@@ -376,10 +286,10 @@ index 29af4d2d..9c479a69 100644
  
  // PlatformUsage 表示某用户/某 API key 在单个"有效平台"维度的用量明细。
 diff --git a/backend/internal/server/api_contract_test.go b/backend/internal/server/api_contract_test.go
-index d260afe7..3df92035 100644
+index a5e3fde1..7a0e1f7d 100644
 --- a/backend/internal/server/api_contract_test.go
 +++ b/backend/internal/server/api_contract_test.go
-@@ -526,6 +526,10 @@ func TestAPIContracts(t *testing.T) {
+@@ -527,6 +527,10 @@ func TestAPIContracts(t *testing.T) {
  					"total_cache_tokens": 3,
  					"total_cache_creation_tokens": 1,
  					"total_cache_read_tokens": 2,
@@ -390,7 +300,7 @@ index d260afe7..3df92035 100644
  					"total_tokens": 53,
  					"total_cost": 0.75,
  					"total_actual_cost": 0.75,
-@@ -586,6 +590,10 @@ func TestAPIContracts(t *testing.T) {
+@@ -587,6 +591,10 @@ func TestAPIContracts(t *testing.T) {
  							"cache_read_tokens": 2,
  							"cache_creation_5m_tokens": 0,
  							"cache_creation_1h_tokens": 0,

@@ -307,7 +307,7 @@ index a0a4fbff..8f6b55f4 100644
  		RequiredImageCapability: requiredImageCapability,
  		RequireCompact:          requireCompact,
 diff --git a/backend/internal/service/ratelimit_service.go b/backend/internal/service/ratelimit_service.go
-index 100b2407..23c0f541 100644
+index 507e02d8..218752ba 100644
 --- a/backend/internal/service/ratelimit_service.go
 +++ b/backend/internal/service/ratelimit_service.go
 @@ -968,6 +968,10 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
