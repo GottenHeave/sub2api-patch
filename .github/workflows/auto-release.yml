@@ -12,6 +12,10 @@ on:
         description: Upstream ref to release
         required: false
         default: main
+      validated_mirror_sha:
+        description: Mirror SHA validated by Patch validation
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -109,6 +113,19 @@ jobs:
           set -euo pipefail
           upstream_sha="$(git -C worktree rev-parse HEAD)"
           sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_sha"
+
+      - name: Verify dispatched mirror SHA
+        if: github.event_name == 'workflow_dispatch' && inputs.validated_mirror_sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          actual="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/mirror/upstream-main" --jq .object.sha)"
+          expected="${{ inputs.validated_mirror_sha }}"
+          if [ "$actual" != "$expected" ]; then
+            echo "mirror branch moved after validation: expected $expected, got $actual" >&2
+            exit 1
+          fi
 
       - name: Setup Go
         if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
@@ -223,7 +240,7 @@ jobs:
             org.opencontainers.image.revision=${{ env.RELEASE_REVISION }}
 
       - name: Merge validated sync request
-        if: github.event_name == 'workflow_run'
+        if: github.event_name == 'workflow_run' || inputs.validated_mirror_sha != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -238,8 +255,12 @@ jobs:
             exit 1
           fi
           read -r pr_number pr_head_sha <<< "$pr_data"
-          if [ "$pr_head_sha" != "${{ github.event.workflow_run.head_sha }}" ]; then
-            echo "sync request moved after validation: expected ${{ github.event.workflow_run.head_sha }}, got $pr_head_sha" >&2
+          expected="${{ inputs.validated_mirror_sha }}"
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            expected="${{ github.event.workflow_run.head_sha }}"
+          fi
+          if [ "$pr_head_sha" != "$expected" ]; then
+            echo "sync request moved after validation: expected $expected, got $pr_head_sha" >&2
             exit 1
           fi
           gh pr merge "$pr_number" \
