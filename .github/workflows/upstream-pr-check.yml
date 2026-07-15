@@ -53,6 +53,9 @@ jobs:
           candidate_head="$(git -C worktree rev-parse HEAD)"
           upstream_commit="$candidate_head"
           case "$(git -C worktree show -s --format=%s HEAD)" in
+            "Prepare validated upstream promotion")
+              upstream_commit="$(git -C worktree rev-parse HEAD^2^)"
+              ;;
             "Remove upstream workflows from mirror branch"|"Install downstream validation workflow on mirror branch")
               upstream_commit="$(git -C worktree rev-parse HEAD^)"
               ;;

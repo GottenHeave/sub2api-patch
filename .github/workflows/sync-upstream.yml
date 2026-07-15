@@ -46,6 +46,7 @@ jobs:
       - name: Update mirror branch
         run: |
           set -euo pipefail
+          git fetch origin main
           validation_workflow="$(mktemp)"
           cp .github/workflows/upstream-pr-check.yml "$validation_workflow"
           git checkout -B "$MIRROR_BRANCH" "$UPSTREAM_SHA"
@@ -58,6 +59,13 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "Install downstream validation workflow on mirror branch"
           fi
+          candidate_commit="$(git rev-parse HEAD)"
+          candidate_tree="$(git rev-parse 'HEAD^{tree}')"
+          promotion_commit="$(printf '%s\n' 'Prepare validated upstream promotion' | git commit-tree \
+            "$candidate_tree" \
+            -p origin/main \
+            -p "$candidate_commit")"
+          git reset --hard "$promotion_commit"
           git push origin "$MIRROR_BRANCH" --force
 
       - name: Open internal sync request
