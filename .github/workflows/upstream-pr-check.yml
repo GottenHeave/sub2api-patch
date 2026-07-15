@@ -1,28 +1,15 @@
 name: Patch validation
 
 on:
-  pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - synchronize
-      - reopened
   workflow_dispatch:
-    inputs:
-      upstream_ref:
-        description: Upstream ref to validate
-        required: false
-        default: main
 
 permissions:
   contents: read
-  actions: read
+  actions: write
   checks: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  UPSTREAM_REPOSITORY: Wei-Shaw/sub2api
 
 jobs:
   validate:
@@ -35,20 +22,10 @@ jobs:
           path: sub2api-patch
           fetch-depth: 0
 
-      - name: Checkout upstream candidate
-        if: github.event_name == 'workflow_dispatch'
+      - name: Checkout mirror candidate
         uses: actions/checkout@v7.0.0
         with:
-          repository: ${{ env.UPSTREAM_REPOSITORY }}
-          ref: ${{ inputs.upstream_ref }}
-          path: worktree
-          fetch-depth: 0
-
-      - name: Checkout pull request candidate
-        if: github.event_name == 'pull_request'
-        uses: actions/checkout@v7.0.0
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           path: worktree
           fetch-depth: 0
 
@@ -76,6 +53,9 @@ jobs:
           candidate_head="$(git -C worktree rev-parse HEAD)"
           upstream_commit="$candidate_head"
           case "$(git -C worktree show -s --format=%s HEAD)" in
+            "Prepare validated upstream promotion")
+              upstream_commit="$(git -C worktree rev-parse HEAD^2^)"
+              ;;
             "Remove upstream workflows from mirror branch"|"Install downstream validation workflow on mirror branch")
               upstream_commit="$(git -C worktree rev-parse HEAD^)"
               ;;
@@ -124,3 +104,13 @@ jobs:
         with:
           name: patch-validation-artifacts
           path: artifacts
+
+      - name: Dispatch auto release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run auto-release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref patchset \
+            -f upstream_ref="$UPSTREAM_COMMIT" \
+            -f validated_mirror_sha="$VALIDATED_CANDIDATE"
