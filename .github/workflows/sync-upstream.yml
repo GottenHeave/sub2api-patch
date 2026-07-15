@@ -90,4 +90,6 @@ jobs:
               --jq .html_url
           fi
 
-          gh workflow run upstream-pr-check.yml --ref "$MIRROR_BRANCH"
+          gh workflow run upstream-pr-check.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$MIRROR_BRANCH"
