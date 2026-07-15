@@ -5,12 +5,12 @@ Subject: [PATCH] feat: bill audio usage accounting
 
 
 diff --git a/backend/internal/service/account_stats_pricing.go b/backend/internal/service/account_stats_pricing.go
-index 221021d8..9ca9e698 100644
+index 1098fff9..9c59923b 100644
 --- a/backend/internal/service/account_stats_pricing.go
 +++ b/backend/internal/service/account_stats_pricing.go
-@@ -65,10 +65,14 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
- 	if err != nil || pricing == nil {
- 		return nil
+@@ -72,10 +72,14 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
+ 		}
+ 		return &breakdown.TotalCost
  	}
 -	cost := float64(tokens.InputTokens)*pricing.InputPricePerToken +
 -		float64(tokens.OutputTokens)*pricing.OutputPricePerToken +
@@ -27,7 +27,7 @@ index 221021d8..9ca9e698 100644
  		float64(tokens.ImageOutputTokens)*pricing.ImageOutputPricePerToken
  	if cost <= 0 {
  		return nil
-@@ -76,6 +80,13 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
+@@ -83,6 +87,13 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
  	return &cost
  }
  
@@ -41,7 +41,7 @@ index 221021d8..9ca9e698 100644
  // tryCustomRules 遍历自定义规则，按数组顺序先命中为准。
  func tryCustomRules(
  	channel *Channel, accountID, groupID int64,
-@@ -203,10 +214,18 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
+@@ -210,10 +221,18 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
  		}
  		return *ptr
  	}
@@ -65,7 +65,7 @@ index 221021d8..9ca9e698 100644
  	if cost <= 0 {
  		return nil
 diff --git a/backend/internal/service/account_stats_pricing_test.go b/backend/internal/service/account_stats_pricing_test.go
-index 36e5eb74..72b496cc 100644
+index 57ace01c..46198428 100644
 --- a/backend/internal/service/account_stats_pricing_test.go
 +++ b/backend/internal/service/account_stats_pricing_test.go
 @@ -227,6 +227,56 @@ func TestCalculateStatsCost_TokenBilling_WithCache(t *testing.T) {
@@ -125,7 +125,7 @@ index 36e5eb74..72b496cc 100644
  func TestCalculateStatsCost_TokenBilling_WithImageOutput(t *testing.T) {
  	pricing := &ChannelModelPricing{
  		BillingMode:      BillingModeToken,
-@@ -530,6 +580,27 @@ func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
+@@ -550,6 +600,27 @@ func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
  	require.InDelta(t, 0.95, *result, 1e-12)
  }
  

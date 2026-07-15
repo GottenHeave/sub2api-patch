@@ -63,7 +63,7 @@ index dc8ad728..6107e6fd 100644
  		{"openai alpha search", EndpointAlphaSearch, "/backend-api/codex/alpha/search", service.PlatformOpenAI, EndpointAlphaSearch},
  		{"openai image generations", EndpointImagesGenerations, "/v1/images/generations", service.PlatformOpenAI, EndpointImagesGenerations},
 diff --git a/backend/internal/handler/failover_loop_test.go b/backend/internal/handler/failover_loop_test.go
-index 9fabe75f..a580bd65 100644
+index 8946eb52..eb40da38 100644
 --- a/backend/internal/handler/failover_loop_test.go
 +++ b/backend/internal/handler/failover_loop_test.go
 @@ -2,6 +2,7 @@ package handler
@@ -71,10 +71,10 @@ index 9fabe75f..a580bd65 100644
  import (
  	"context"
 +	"fmt"
+ 	"net/http"
+ 	"net/http/httptest"
  	"testing"
- 	"time"
- 
-@@ -401,6 +402,66 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
+@@ -448,6 +449,66 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
  	})
  }
  
@@ -163,10 +163,10 @@ index 0dacd74d..b99a398c 100644
  
  	for _, tt := range tests {
 diff --git a/backend/internal/handler/openai_gateway_handler_test.go b/backend/internal/handler/openai_gateway_handler_test.go
-index e4b594c0..dfac71f6 100644
+index d855f364..b2802abd 100644
 --- a/backend/internal/handler/openai_gateway_handler_test.go
 +++ b/backend/internal/handler/openai_gateway_handler_test.go
-@@ -95,6 +95,40 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
+@@ -96,6 +96,40 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
  	}
  }
  

@@ -1580,10 +1580,10 @@ index f2e0045f..2f6e7c63 100644
  		LEFT JOIN users u ON u.id = ul.user_id
  		WHERE ul.created_at >= $1 AND ul.created_at < $2
 diff --git a/backend/internal/service/ops_metrics_collector.go b/backend/internal/service/ops_metrics_collector.go
-index b654190c..5873f2fb 100644
+index d4f5c329..70bb9798 100644
 --- a/backend/internal/service/ops_metrics_collector.go
 +++ b/backend/internal/service/ops_metrics_collector.go
-@@ -436,7 +436,7 @@ func (c *OpsMetricsCollector) queryUsageCounts(ctx context.Context, start, end t
+@@ -447,7 +447,7 @@ func (c *OpsMetricsCollector) queryUsageCounts(ctx context.Context, start, end t
  	q := `
  SELECT
    COALESCE(COUNT(*), 0) AS success_count,

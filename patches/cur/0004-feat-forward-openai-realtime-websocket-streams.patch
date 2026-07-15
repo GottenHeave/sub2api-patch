@@ -3805,7 +3805,7 @@ index d41abaac..beac34a3 100644
  	result.RequestID = state.lastResponseID
  	result.TerminalEventType = state.terminalEventType
 diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-index d822d181..18d96ace 100644
+index d2cf26a8..8f81cd15 100644
 --- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 +++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 @@ -15,6 +15,7 @@ import (
@@ -3861,9 +3861,9 @@ index d822d181..18d96ace 100644
  ) error {
  	if s == nil {
  		return errors.New("service is nil")
-@@ -246,7 +278,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
- 	if strings.TrimSpace(token) == "" {
- 		return errors.New("token is empty")
+@@ -253,7 +285,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 		}
+ 		firstClientMessage = liteFirstMessage
  	}
 +	realtimeUpstreamModel := ""
 +	if strings.TrimSpace(upstreamEndpoint) == "/v1/realtime" {
@@ -3879,7 +3879,7 @@ index d822d181..18d96ace 100644
  	requestPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
  	logOpenAIWSV2Passthrough(
  		"relay_start account_id=%d model=%s previous_response_id=%s first_message_type=%s first_message_bytes=%d",
-@@ -270,10 +312,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -277,10 +319,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	// model would miss any admin-configured model whitelist and be silently
  	// passed through, defeating that policy on every frame after the first.
  	capturedSessionModel := openAIWSPassthroughPolicyModelForFrame(account, firstClientMessage)
@@ -3896,7 +3896,7 @@ index d822d181..18d96ace 100644
  	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
  	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
  	if policyErr != nil {
-@@ -297,6 +345,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -304,6 +352,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, blocked.Message, blocked)
  	}
  	firstClientMessage = updatedFirst
@@ -3904,7 +3904,7 @@ index d822d181..18d96ace 100644
  
  	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
  	// usage 上报：filter
-@@ -314,7 +363,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -321,7 +370,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	usageMeta.initFromFirstFrame(firstClientMessage, capturedSessionModel)
  	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "prompt_cache_key").String())
  
@@ -3913,9 +3913,9 @@ index d822d181..18d96ace 100644
  	if err != nil {
  		return fmt.Errorf("build ws url: %w", err)
  	}
-@@ -404,12 +453,35 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
- 			if msgType != coderws.MessageText {
- 				return payload, nil, nil
+@@ -444,12 +493,35 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 					payload = litePayload
+ 				}
  			}
 -			if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" && hooks != nil && hooks.BeforeRequest != nil {
 +			// 在评估策略前先刷新 capturedSessionModel：客户端可能通过
@@ -3951,7 +3951,7 @@ index d822d181..18d96ace 100644
  				if requestModel == "" {
  					requestModel = capturedSessionModel
  				}
-@@ -417,18 +489,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -457,18 +529,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  					return payload, nil, err
  				}
  			}
@@ -3970,7 +3970,7 @@ index d822d181..18d96ace 100644
  			// Per-frame model first; if the client omits "model" on a
  			// follow-up frame (legal in Realtime), fall back to the
  			// session-level model captured from the first frame so the
-@@ -485,6 +545,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -525,6 +585,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  		)
  	}
  	upstreamFirstMessageSent = true
@@ -3981,7 +3981,7 @@ index d822d181..18d96ace 100644
  
  	readNextClientFrame := func(readCtx context.Context, conn openaiwsv2.FrameConn) (coderws.MessageType, []byte, error) {
  		for {
-@@ -510,8 +574,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -550,8 +614,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			WriteTimeout:                    s.openAIWSWriteTimeout(),
  			IdleTimeout:                     s.openAIWSPassthroughIdleTimeout(),
  			FirstMessageType:                coderws.MessageText,
@@ -3992,7 +3992,7 @@ index d822d181..18d96ace 100644
  			ReadClientFrame:                 readNextClientFrame,
  			OnUsageParseFailure: func(eventType string, usageRaw string) {
  				logOpenAIWSV2Passthrough(
-@@ -529,6 +594,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -569,6 +634,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  						OutputTokens:             turn.Usage.OutputTokens,
  						CacheCreationInputTokens: turn.Usage.CacheCreationInputTokens,
  						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
@@ -4003,7 +4003,7 @@ index d822d181..18d96ace 100644
  						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
  					},
  					Model:           turn.RequestModel,
-@@ -604,6 +673,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -644,6 +713,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			OutputTokens:             relayResult.Usage.OutputTokens,
  			CacheCreationInputTokens: relayResult.Usage.CacheCreationInputTokens,
  			CacheReadInputTokens:     relayResult.Usage.CacheReadInputTokens,

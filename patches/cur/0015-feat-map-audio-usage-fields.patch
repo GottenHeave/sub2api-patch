@@ -286,7 +286,7 @@ index 29af4d2d..9c479a69 100644
  
  // PlatformUsage 表示某用户/某 API key 在单个"有效平台"维度的用量明细。
 diff --git a/backend/internal/server/api_contract_test.go b/backend/internal/server/api_contract_test.go
-index a5e3fde1..7a0e1f7d 100644
+index da766a75..2467c173 100644
 --- a/backend/internal/server/api_contract_test.go
 +++ b/backend/internal/server/api_contract_test.go
 @@ -527,6 +527,10 @@ func TestAPIContracts(t *testing.T) {

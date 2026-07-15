@@ -921,10 +921,10 @@ index b47c2c86..52702ed8 100644
  	if len(reqBody) == 0 {
  		return false
 diff --git a/backend/internal/service/openai_gateway_response_handling.go b/backend/internal/service/openai_gateway_response_handling.go
-index 1d70245e..b10c745d 100644
+index 436e4311..959ffe4c 100644
 --- a/backend/internal/service/openai_gateway_response_handling.go
 +++ b/backend/internal/service/openai_gateway_response_handling.go
-@@ -784,6 +784,32 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+@@ -1021,6 +1021,32 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
  		CacheCreationInputTokens: cacheCreationTokens,
  		CacheReadInputTokens:     cacheReadTokens,
  		ImageOutputTokens:        int(imageOutputTokens),
@@ -957,7 +957,7 @@ index 1d70245e..b10c745d 100644
  	}, true
  }
  
-@@ -824,6 +850,16 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
+@@ -1061,6 +1087,16 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
  	)
  }
  
@@ -975,10 +975,10 @@ index 1d70245e..b10c745d 100644
  	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
  	if err != nil {
 diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
-index 651c8741..bc431776 100644
+index faaab7cf..c21d39ce 100644
 --- a/backend/internal/service/openai_gateway_service.go
 +++ b/backend/internal/service/openai_gateway_service.go
-@@ -1140,4917 +1140,3 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
+@@ -1154,4917 +1154,3 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
  		return "", "", fmt.Errorf("unsupported account type: %s", account.Type)
  	}
  }
@@ -9605,7 +9605,7 @@ index 733a116d..86f7a816 100644
 -	s.openaiWSFallbackUntil.Delete(accountID)
 -}
 diff --git a/backend/internal/service/openai_ws_forwarder_ingress.go b/backend/internal/service/openai_ws_forwarder_ingress.go
-index b632c451..c116e752 100644
+index 51aace64..9c04a325 100644
 --- a/backend/internal/service/openai_ws_forwarder_ingress.go
 +++ b/backend/internal/service/openai_ws_forwarder_ingress.go
 @@ -86,6 +86,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
@@ -9617,7 +9617,7 @@ index b632c451..c116e752 100644
  			)
  		case OpenAIWSIngressModeHTTPBridge:
  			forceHTTPBridge = true
-@@ -1615,3 +1617,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
+@@ -1639,3 +1641,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
  		turn++
  	}
  }
@@ -9663,11 +9663,11 @@ index b632c451..c116e752 100644
 +	return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision, upstreamEndpoint, model)
 +}
 diff --git a/backend/internal/service/openai_ws_forwarder_payload.go b/backend/internal/service/openai_ws_forwarder_payload.go
-index 58304448..2f31b5f5 100644
+index 511b28d0..77428965 100644
 --- a/backend/internal/service/openai_ws_forwarder_payload.go
 +++ b/backend/internal/service/openai_ws_forwarder_payload.go
-@@ -16,26 +16,62 @@ import (
- )
+@@ -26,26 +26,62 @@ func validateOpenAIWSBearerToken(account *Account, token string) error {
+ }
  
  func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (string, error) {
 +	return s.buildOpenAIWSURL(account, "/v1/responses", "")
@@ -9733,7 +9733,7 @@ index 58304448..2f31b5f5 100644
  	}
  
  	parsed, err := url.Parse(strings.TrimSpace(targetURL))
-@@ -52,9 +88,21 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
+@@ -62,9 +98,21 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
  	default:
  		return "", fmt.Errorf("unsupported scheme for ws: %s", parsed.Scheme)
  	}
@@ -9755,7 +9755,7 @@ index 58304448..2f31b5f5 100644
  func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
  	ctx context.Context,
  	c *gin.Context,
-@@ -115,7 +163,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
+@@ -127,7 +175,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
  	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
  		betaValue = openAIWSBetaV1Value
  	}

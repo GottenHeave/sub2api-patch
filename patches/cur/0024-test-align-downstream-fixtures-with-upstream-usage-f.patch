@@ -5,10 +5,10 @@ Subject: [PATCH] test: align downstream fixtures with upstream usage fields
 
 
 diff --git a/backend/internal/handler/failover_loop_test.go b/backend/internal/handler/failover_loop_test.go
-index a580bd65..11520ac7 100644
+index eb40da38..7910fe42 100644
 --- a/backend/internal/handler/failover_loop_test.go
 +++ b/backend/internal/handler/failover_loop_test.go
-@@ -411,13 +411,13 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
+@@ -458,13 +458,13 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
  				err := newTestFailoverErr(statusCode, true, false)
  
  				for i := 1; i <= maxSameAccountRetries; i++ {
@@ -24,7 +24,7 @@ index a580bd65..11520ac7 100644
  				require.Equal(t, FailoverContinue, action)
  				require.Equal(t, 1, fs.SwitchCount)
  				require.Contains(t, fs.FailedAccountIDs, int64(101))
-@@ -435,7 +435,7 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
+@@ -482,7 +482,7 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
  				fs := NewFailoverState(2, false)
  				err := newTestFailoverErr(statusCode, false, false)
  
@@ -33,7 +33,7 @@ index a580bd65..11520ac7 100644
  
  				require.Equal(t, FailoverContinue, action)
  				require.Equal(t, 1, fs.SwitchCount)
-@@ -450,11 +450,11 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
+@@ -497,11 +497,11 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
  		mock := &mockTempUnscheduler{}
  		fs := NewFailoverState(1, false)
  
