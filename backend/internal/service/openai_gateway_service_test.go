@@ -1520,7 +1520,7 @@ func TestOpenAIStreamingPostOutputDisconnectQuarantinesSharedProxyWithoutSameStr
 func TestOpenAIStreamingTerminalAndClientCancellationDoNotQuarantineProxy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	proxyID := int64(4699)
-	account := &Account{ID: 469901, Name: "oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, ProxyID: &proxyID}
+	account := &Account{ID: 469901, Name: "oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, ProxyID: &proxyID}
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
 
 	terminalRecorder := httptest.NewRecorder()
