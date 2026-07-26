@@ -80,6 +80,7 @@ func newGatewayRoutesTestRouterForPlatform(platform string) *gin.Engine {
 		nil,
 		nil,
 		nil,
+		nil,
 		&config.Config{},
 	)
 
