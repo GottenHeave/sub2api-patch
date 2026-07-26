@@ -1,0 +1,261 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sun, 26 Jul 2026 21:54:28 +0000
+Subject: [PATCH] fix: align upstream 0.1.165 interfaces and audit coverage
+
+
+diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
+index efd6c093b..e81fb6c3d 100644
+--- a/backend/internal/handler/openai_audio_transcriptions.go
++++ b/backend/internal/handler/openai_audio_transcriptions.go
+@@ -69,6 +69,10 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
+ 	reqLog = reqLog.With(zap.String("model", parsed.Model), zap.String("endpoint", parsed.Endpoint))
+ 	setOpsRequestContext(c, parsed.Model, false)
+ 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
++	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIChat, parsed.Model, body); decision != nil && !decision.AllowNextStage {
++		h.openAISecurityAuditError(c, decision)
++		return
++	}
+ 
+ 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, parsed.Model)
+ 	if h.errorPassthroughService != nil {
+@@ -149,6 +153,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
+ 		)
+ 
+ 		account := selection.Account
++		scheduledModel := account.GetMappedModel(selectionModel)
+ 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
+ 		setOpsSelectedAccount(c, account.ID, account.Platform)
+ 
+@@ -174,7 +179,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
+ 		if err != nil {
+ 			var failoverErr *service.UpstreamFailoverError
+ 			if errors.As(err, &failoverErr) {
+-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
++				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
+ 				if failoverErr.RetryableOnSameAccount {
+ 					retryLimit := account.GetPoolModeRetryCount()
+ 					if sameAccountRetryCount[account.ID] < retryLimit {
+@@ -203,7 +208,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
+ 				switchCount++
+ 				continue
+ 			}
+-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
+ 			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
+ 			fields := []zap.Field{
+ 				zap.Int64("account_id", account.ID),
+@@ -219,9 +224,9 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
+ 		}
+ 
+ 		if result != nil {
+-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, true, result.FirstTokenMs)
+ 		} else {
+-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, true, nil)
+ 		}
+ 
+ 		userAgent := c.GetHeader("User-Agent")
+diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
+index cf368f00b..d3f9f30f9 100644
+--- a/backend/internal/handler/openai_realtime_calls.go
++++ b/backend/internal/handler/openai_realtime_calls.go
+@@ -71,8 +71,8 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
+ 	setOpsRequestContext(c, parsed.Model, false)
+ 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
+ 
+-	if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIRealtime, parsed.Model, body); decision != nil && decision.Blocked {
+-		h.errorResponse(c, contentModerationStatus(decision), contentModerationErrorCode(decision), decision.Message)
++	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIRealtime, parsed.Model, body); decision != nil && !decision.AllowNextStage {
++		h.openAISecurityAuditError(c, decision)
+ 		return
+ 	}
+ 
+@@ -160,6 +160,7 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
+ 		)
+ 
+ 		account := selection.Account
++		scheduledModel := account.GetMappedModel(parsed.Model)
+ 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
+ 		setOpsSelectedAccount(c, account.ID, account.Platform)
+ 
+@@ -185,7 +186,7 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
+ 		if err != nil {
+ 			var failoverErr *service.UpstreamFailoverError
+ 			if errors.As(err, &failoverErr) {
+-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
++				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
+ 				if failoverErr.RetryableOnSameAccount {
+ 					retryLimit := account.GetPoolModeRetryCount()
+ 					if sameAccountRetryCount[account.ID] < retryLimit {
+@@ -214,7 +215,7 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
+ 				switchCount++
+ 				continue
+ 			}
+-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
+ 			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
+ 			fields := []zap.Field{
+ 				zap.Int64("account_id", account.ID),
+@@ -230,9 +231,9 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
+ 		}
+ 
+ 		if result != nil {
+-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, true, result.FirstTokenMs)
+ 		} else {
+-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, true, nil)
+ 		}
+ 		return
+ 	}
+diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
+index 8915f9bc9..df967215f 100644
+--- a/backend/internal/server/routes/gateway.go
++++ b/backend/internal/server/routes/gateway.go
+@@ -200,6 +200,7 @@ func RegisterGatewayRoutes(
+ 		gateway.POST("/alpha/search", textBodyLimit, h.OpenAIGateway.AlphaSearch)
+ 		gateway.GET("/responses", func(c *gin.Context) {
+ 			h.OpenAIGateway.ResponsesWebSocket(c)
++		})
+ 		gateway.GET("/realtime", func(c *gin.Context) {
+ 			if getGroupPlatform(c) != service.PlatformOpenAI {
+ 				c.JSON(http.StatusNotFound, gin.H{
+diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
+index 1d8da7afb..097e90e74 100644
+--- a/backend/internal/server/routes/gateway_test.go
++++ b/backend/internal/server/routes/gateway_test.go
+@@ -80,6 +80,7 @@ func newGatewayRoutesTestRouterForPlatform(platform string) *gin.Engine {
+ 		nil,
+ 		nil,
+ 		nil,
++		nil,
+ 		&config.Config{},
+ 	)
+ 
+diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
+index 1620a1831..a5373b287 100644
+--- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
++++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
+@@ -28,23 +28,34 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
+ 	}
+ 
+ 	audited := map[string][]string{
+-		"/messages":                 {"gateway_handler.go", "openai_gateway_handler.go"},
+-		"/responses":                {"gateway_handler_responses.go", "openai_gateway_handler.go"},
+-		"/responses/*subpath":       {"gateway_handler_responses.go", "openai_gateway_handler.go"},
+-		"/chat/completions":         {"gateway_handler_chat_completions.go", "openai_chat_completions.go"},
+-		"/embeddings":               {"openai_embeddings.go"},
+-		"/alpha/search":             {"openai_alpha_search.go"},
+-		"/live":                     {"openai_live.go"},
+-		"/realtime/calls":           {"openai_live.go"},
+-		"/images/generations":       {"openai_images.go", "grok_media.go"},
+-		"/images/edits":             {"openai_images.go", "grok_media.go"},
+-		"/images/generations/async": {"image_task_handler.go"},
+-		"/images/edits/async":       {"image_task_handler.go"},
+-		"/images/batches":           {"batch_image_handler.go"},
+-		"/videos/generations":       {"grok_media.go"},
+-		"/videos/edits":             {"grok_media.go"},
+-		"/videos/extensions":        {"grok_media.go"},
+-		"/models/*modelAction":      {"gemini_v1beta_handler.go"},
++		"/messages":                             {"gateway_handler.go", "openai_gateway_handler.go"},
++		"/responses":                            {"gateway_handler_responses.go", "openai_gateway_handler.go"},
++		"/responses/*subpath":                   {"gateway_handler_responses.go", "openai_gateway_handler.go"},
++		"/chat/completions":                     {"gateway_handler_chat_completions.go", "openai_chat_completions.go"},
++		"/embeddings":                           {"openai_embeddings.go"},
++		"/alpha/search":                         {"openai_alpha_search.go"},
++		"/live":                                 {"openai_live.go"},
++		"/realtime/calls":                       {"openai_live.go"},
++		"/realtime/calls/:call_id/accept":       {"openai_realtime_calls.go"},
++		"/realtime/calls/:call_id/hangup":       {"openai_realtime_calls.go"},
++		"/realtime/calls/:call_id/refer":        {"openai_realtime_calls.go"},
++		"/realtime/calls/:call_id/reject":       {"openai_realtime_calls.go"},
++		"/realtime/client_secrets":              {"openai_realtime_calls.go"},
++		"/realtime/sessions":                    {"openai_realtime_calls.go"},
++		"/realtime/transcription_sessions":      {"openai_realtime_calls.go"},
++		"/realtime/translations/calls":          {"openai_realtime_calls.go"},
++		"/realtime/translations/client_secrets": {"openai_realtime_calls.go"},
++		"/audio/transcriptions":                 {"openai_audio_transcriptions.go"},
++		"/transcribe":                           {"openai_audio_transcriptions.go"},
++		"/images/generations":                   {"openai_images.go", "grok_media.go"},
++		"/images/edits":                         {"openai_images.go", "grok_media.go"},
++		"/images/generations/async":             {"image_task_handler.go"},
++		"/images/edits/async":                   {"image_task_handler.go"},
++		"/images/batches":                       {"batch_image_handler.go"},
++		"/videos/generations":                   {"grok_media.go"},
++		"/videos/edits":                         {"grok_media.go"},
++		"/videos/extensions":                    {"grok_media.go"},
++		"/models/*modelAction":                  {"gemini_v1beta_handler.go"},
+ 	}
+ 	excluded := map[string]string{
+ 		"/messages/count_tokens":     "tokenization only; it does not execute a model request",
+diff --git a/backend/internal/service/billing_service_test.go b/backend/internal/service/billing_service_test.go
+index 855a95922..eef3d97e6 100644
+--- a/backend/internal/service/billing_service_test.go
++++ b/backend/internal/service/billing_service_test.go
+@@ -869,8 +869,8 @@ func TestComputeTokenBreakdown_GptImage2ImageEditIssue4386(t *testing.T) {
+ 
+ 	cost := svc.computeTokenBreakdown(pricing, tokens, 1.0, "", false)
+ 
+-	wantTextInput := float64(19) * 5e-6    // 0.000095
+-	wantImageInput := float64(352) * 8e-6  // 0.002816
++	wantTextInput := float64(19) * 5e-6     // 0.000095
++	wantImageInput := float64(352) * 8e-6   // 0.002816
+ 	wantImageOutput := float64(439) * 30e-6 // 0.013170
+ 	require.InDelta(t, wantTextInput, cost.InputCost, 1e-15, "InputCost 仅含文本输入")
+ 	require.InDelta(t, wantImageInput, cost.ImageInputCost, 1e-15, "图片输入按 $8/1M 独立计费")
+diff --git a/backend/internal/service/openai_account_scheduler_test.go b/backend/internal/service/openai_account_scheduler_test.go
+index dd343f6ba..f352b0fdc 100644
+--- a/backend/internal/service/openai_account_scheduler_test.go
++++ b/backend/internal/service/openai_account_scheduler_test.go
+@@ -2667,7 +2667,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesAccountPriorityWith
+ 
+ func TestOpenAIAccountScheduler_SkipsAccountBlockedForRequestedModel(t *testing.T) {
+ 	now := time.Now()
+-	account := &Account{ID: 21633, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
++	account := &Account{ID: 21633, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+ 	svc := &OpenAIGatewayService{openaiModelTransient: newOpenAIAccountModelTransientState(128)}
+ 	svc.openaiModelTransient.recordFailure(account.ID, "gpt-5.5", now)
+ 	svc.openaiModelTransient.recordFailure(account.ID, "gpt-5.5", now.Add(time.Millisecond))
+diff --git a/backend/internal/service/openai_audio_transcriptions_test.go b/backend/internal/service/openai_audio_transcriptions_test.go
+index c82ba0776..4a774add2 100644
+--- a/backend/internal/service/openai_audio_transcriptions_test.go
++++ b/backend/internal/service/openai_audio_transcriptions_test.go
+@@ -196,6 +196,10 @@ func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulableUngroupedByP
+ 	return nil, nil
+ }
+ 
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListModelAvailabilityCandidates(context.Context, *int64, []string, bool) ([]Account, error) {
++	return nil, nil
++}
++
+ func (r *audioTranscriptionRateLimitAccountRepoStub) SetOverloaded(context.Context, int64, time.Time) error {
+ 	return nil
+ }
+diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
+index a233620c7..207d5ddec 100644
+--- a/backend/internal/service/openai_gateway_service_test.go
++++ b/backend/internal/service/openai_gateway_service_test.go
+@@ -1393,7 +1393,7 @@ func TestOpenAIStreamingPostOutputDisconnectQuarantinesSharedProxyWithoutSameStr
+ func TestOpenAIStreamingTerminalAndClientCancellationDoNotQuarantineProxy(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 	proxyID := int64(4699)
+-	account := &Account{ID: 469901, Name: "oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, ProxyID: &proxyID}
++	account := &Account{ID: 469901, Name: "oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, ProxyID: &proxyID}
+ 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+ 
+ 	terminalRecorder := httptest.NewRecorder()
+diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
+index 7dcf69196..96d04a677 100644
+--- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
++++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
+@@ -200,7 +200,7 @@ func openAIWSPassthroughRequestModelFromSessionFrame(payload []byte) string {
+ 
+ const openaiWSV2PassthroughModeFields = "ws_mode=passthrough ws_router=v2"
+ 
+-	var errOpenAIWSPassthroughFirstOutputTimeout = errors.New("openai websocket passthrough first output timeout")
++var errOpenAIWSPassthroughFirstOutputTimeout = errors.New("openai websocket passthrough first output timeout")
+ var errOpenAIWSPassthroughActiveTurnTimeout = errors.New("openai websocket passthrough active turn read timeout")
+ 
+ type openAIWSPassthroughDeadlinePhase uint8

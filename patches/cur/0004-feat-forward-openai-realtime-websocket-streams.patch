@@ -5,24 +5,10 @@ Subject: [PATCH] feat: forward OpenAI realtime websocket streams
 
 
 diff --git a/backend/internal/service/openai_ws_forwarder.go b/backend/internal/service/openai_ws_forwarder.go
-index e0bd769c..733a116d 100644
+index d22bec21d..771c5dabb 100644
 --- a/backend/internal/service/openai_ws_forwarder.go
 +++ b/backend/internal/service/openai_ws_forwarder.go
-@@ -211,8 +211,11 @@ type OpenAIWSIngressHooks struct {
- 	// 的 reasoning effort 后缀推导，禁止用于上游请求或计费模型。
- 	InitialRequestModel string
- 	BeforeTurn          func(turn int) error
--	BeforeRequest       func(turn int, payload []byte, originalModel string) error
--	AfterTurn           func(turn int, result *OpenAIForwardResult, turnErr error)
-+	// BeforeRequest runs for every client text frame before it is sent upstream.
-+	// For non-response.create events, turn is the next response turn and originalModel
-+	// is the best current session model.
-+	BeforeRequest func(turn int, payload []byte, originalModel string) error
-+	AfterTurn     func(turn int, result *OpenAIForwardResult, turnErr error)
- }
- 
- func (s *OpenAIGatewayService) getOpenAIWSConnPool() *openAIWSConnPool {
-@@ -385,3 +388,3601 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
+@@ -389,3 +389,3601 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
  	}
  	return dial + 2*time.Second
  }
@@ -3625,7 +3611,7 @@ index e0bd769c..733a116d 100644
 +	s.openaiWSFallbackUntil.Delete(accountID)
 +}
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay.go b/backend/internal/service/openai_ws_v2/passthrough_relay.go
-index d41abaac..beac34a3 100644
+index 4dae079b5..0400af2f7 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay.go
 @@ -25,6 +25,10 @@ type Usage struct {
@@ -3639,7 +3625,7 @@ index d41abaac..beac34a3 100644
  	ImageOutputTokens        int
  }
  
-@@ -60,6 +64,7 @@ type RelayOptions struct {
+@@ -61,6 +65,7 @@ type RelayOptions struct {
  	IdleTimeout                     time.Duration
  	UpstreamDrainTimeout            time.Duration
  	FirstMessageType                coderws.MessageType
@@ -3647,7 +3633,7 @@ index d41abaac..beac34a3 100644
  	FirstMessageSent                bool
  	StartClientAfterFirstDownstream bool
  	OnUsageParseFailure             func(eventType string, usageRaw string)
-@@ -119,6 +124,9 @@ func Relay(
+@@ -123,6 +128,9 @@ func Relay(
  	options RelayOptions,
  ) (RelayResult, *RelayExit) {
  	result := RelayResult{RequestModel: strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())}
@@ -3657,7 +3643,7 @@ index d41abaac..beac34a3 100644
  	if clientConn == nil || upstreamConn == nil {
  		return result, &RelayExit{Stage: "relay_init", Err: errors.New("relay connection is nil")}
  	}
-@@ -182,7 +190,7 @@ func Relay(
+@@ -186,7 +194,7 @@ func Relay(
  			MessageType:  relayMessageTypeString(firstMessageType),
  			PayloadBytes: len(firstClientMessage),
  		})
@@ -3666,7 +3652,7 @@ index d41abaac..beac34a3 100644
  		if err := writeUpstream(firstMessageType, firstClientMessage); err != nil {
  			result.Duration = nowFn().Sub(startAt)
  			emitRelayTrace(onTrace, RelayTraceEvent{
-@@ -194,16 +202,15 @@ func Relay(
+@@ -198,16 +206,15 @@ func Relay(
  			})
  			return result, &RelayExit{Stage: "write_upstream", Err: err}
  		}
@@ -3685,7 +3671,7 @@ index d41abaac..beac34a3 100644
  	exitCh := make(chan relayExitSignal, 3)
  	dropDownstreamWrites := atomic.Bool{}
  	clientReaderStarted := atomic.Bool{}
-@@ -756,18 +763,15 @@ func parseUsageAndAccumulate(
+@@ -786,18 +793,15 @@ func parseUsageAndAccumulate(
  		return Usage{}
  	}
  
@@ -3713,7 +3699,7 @@ index d41abaac..beac34a3 100644
  	imageTokens := usageResult.Get("output_tokens_details.image_tokens").Int()
  	if imageTokens == 0 {
  		imageTokens = usageResult.Get("completion_tokens_details.image_tokens").Int()
-@@ -775,8 +779,9 @@ func parseUsageAndAccumulate(
+@@ -805,8 +809,9 @@ func parseUsageAndAccumulate(
  
  	inputTokens, inputOK := parseUsageIntField(inputResult, true)
  	outputTokens, outputOK := parseUsageIntField(outputResult, true)
@@ -3724,7 +3710,7 @@ index d41abaac..beac34a3 100644
  		recordUsageParseFailure()
  		if onParseFailure != nil {
  			onParseFailure(eventType, usageRaw)
-@@ -789,17 +794,67 @@ func parseUsageAndAccumulate(
+@@ -819,17 +824,67 @@ func parseUsageAndAccumulate(
  		OutputTokens:             outputTokens,
  		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
  		CacheReadInputTokens:     cachedTokens,
@@ -3793,7 +3779,7 @@ index d41abaac..beac34a3 100644
  func parseUsageIntField(value gjson.Result, required bool) (int, bool) {
  	if !value.Exists() {
  		return 0, !required
-@@ -843,7 +898,9 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
+@@ -873,7 +928,9 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
  	if state == nil {
  		return
  	}
@@ -3805,10 +3791,10 @@ index d41abaac..beac34a3 100644
  	result.RequestID = state.lastResponseID
  	result.TerminalEventType = state.terminalEventType
 diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-index d2cf26a8..8f81cd15 100644
+index 934a35fcc..7dcf69196 100644
 --- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 +++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-@@ -15,6 +15,7 @@ import (
+@@ -17,6 +17,7 @@ import (
  	coderws "github.com/coder/websocket"
  	"github.com/gin-gonic/gin"
  	"github.com/tidwall/gjson"
@@ -3816,9 +3802,18 @@ index d2cf26a8..8f81cd15 100644
  )
  
  type openAIWSClientFrameConn struct {
-@@ -193,6 +194,35 @@ func openAIWSPassthroughRequestModelFromSessionFrame(payload []byte) string {
+@@ -199,7 +200,7 @@ func openAIWSPassthroughRequestModelFromSessionFrame(payload []byte) string {
  
  const openaiWSV2PassthroughModeFields = "ws_mode=passthrough ws_router=v2"
+ 
+-var errOpenAIWSPassthroughFirstOutputTimeout = errors.New("openai websocket passthrough first output timeout")
++	var errOpenAIWSPassthroughFirstOutputTimeout = errors.New("openai websocket passthrough first output timeout")
+ var errOpenAIWSPassthroughActiveTurnTimeout = errors.New("openai websocket passthrough active turn read timeout")
+ 
+ type openAIWSPassthroughDeadlinePhase uint8
+@@ -534,6 +535,35 @@ func openAIWSPassthroughIsTerminalOutput(payload []byte) bool {
+ 	}
+ }
  
 +func rewriteOpenAIRealtimeSessionModel(payload []byte, model string) []byte {
 +	model = strings.TrimSpace(model)
@@ -3850,9 +3845,9 @@ index d2cf26a8..8f81cd15 100644
 +}
 +
  var _ openaiwsv2.FrameConn = (*openAIWSClientFrameConn)(nil)
+ var _ openaiwsv2.FrameConn = (*openAIWSPassthroughFirstOutputFrameConn)(nil)
  
- func (c *openAIWSClientFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
-@@ -233,6 +263,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -607,6 +637,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	firstClientMessage []byte,
  	hooks *OpenAIWSIngressHooks,
  	wsDecision OpenAIWSProtocolDecision,
@@ -3861,9 +3856,9 @@ index d2cf26a8..8f81cd15 100644
  ) error {
  	if s == nil {
  		return errors.New("service is nil")
-@@ -253,7 +285,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -632,7 +664,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 			firstClientMessage = capped
  		}
- 		firstClientMessage = liteFirstMessage
  	}
 +	realtimeUpstreamModel := ""
 +	if strings.TrimSpace(upstreamEndpoint) == "/v1/realtime" {
@@ -3879,7 +3874,7 @@ index d2cf26a8..8f81cd15 100644
  	requestPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
  	logOpenAIWSV2Passthrough(
  		"relay_start account_id=%d model=%s previous_response_id=%s first_message_type=%s first_message_bytes=%d",
-@@ -277,10 +319,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -656,10 +698,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	// model would miss any admin-configured model whitelist and be silently
  	// passed through, defeating that policy on every frame after the first.
  	capturedSessionModel := openAIWSPassthroughPolicyModelForFrame(account, firstClientMessage)
@@ -3896,7 +3891,7 @@ index d2cf26a8..8f81cd15 100644
  	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
  	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
  	if policyErr != nil {
-@@ -304,6 +352,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -683,6 +731,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, blocked.Message, blocked)
  	}
  	firstClientMessage = updatedFirst
@@ -3904,7 +3899,7 @@ index d2cf26a8..8f81cd15 100644
  
  	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
  	// usage 上报：filter
-@@ -321,7 +370,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -700,7 +749,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	usageMeta.initFromFirstFrame(firstClientMessage, capturedSessionModel)
  	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "prompt_cache_key").String())
  
@@ -3913,11 +3908,11 @@ index d2cf26a8..8f81cd15 100644
  	if err != nil {
  		return fmt.Errorf("build ws url: %w", err)
  	}
-@@ -444,12 +493,35 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
- 					payload = litePayload
+@@ -878,12 +927,35 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 					}
  				}
  			}
--			if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" && hooks != nil && hooks.BeforeRequest != nil {
+-			if isResponseCreate && hooks != nil && hooks.BeforeRequest != nil {
 +			// 在评估策略前先刷新 capturedSessionModel：客户端可能通过
 +			// session.update 修改 session-level model（Realtime /
 +			// Responses WS 协议允许），如果不刷新就会出现
@@ -3951,7 +3946,7 @@ index d2cf26a8..8f81cd15 100644
  				if requestModel == "" {
  					requestModel = capturedSessionModel
  				}
-@@ -457,18 +529,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -891,18 +963,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  					return payload, nil, err
  				}
  			}
@@ -3970,7 +3965,7 @@ index d2cf26a8..8f81cd15 100644
  			// Per-frame model first; if the client omits "model" on a
  			// follow-up frame (legal in Realtime), fall back to the
  			// session-level model captured from the first frame so the
-@@ -525,6 +585,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -959,6 +1019,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  		)
  	}
  	upstreamFirstMessageSent = true
@@ -3981,9 +3976,9 @@ index d2cf26a8..8f81cd15 100644
  
  	readNextClientFrame := func(readCtx context.Context, conn openaiwsv2.FrameConn) (coderws.MessageType, []byte, error) {
  		for {
-@@ -550,8 +614,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
- 			WriteTimeout:                    s.openAIWSWriteTimeout(),
- 			IdleTimeout:                     s.openAIWSPassthroughIdleTimeout(),
+@@ -987,8 +1051,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 			// terminate a healthy active upstream turn.
+ 			IdleTimeout:                     0,
  			FirstMessageType:                coderws.MessageText,
 +			InitialRequestModel:             strings.TrimSpace(realtimeModel),
  			FirstMessageSent:                upstreamFirstMessageSent,
@@ -3992,7 +3987,7 @@ index d2cf26a8..8f81cd15 100644
  			ReadClientFrame:                 readNextClientFrame,
  			OnUsageParseFailure: func(eventType string, usageRaw string) {
  				logOpenAIWSV2Passthrough(
-@@ -569,6 +634,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1006,6 +1071,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  						OutputTokens:             turn.Usage.OutputTokens,
  						CacheCreationInputTokens: turn.Usage.CacheCreationInputTokens,
  						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
@@ -4002,8 +3997,8 @@ index d2cf26a8..8f81cd15 100644
 +						CacheReadAudioTokens:     turn.Usage.CacheReadAudioTokens,
  						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
  					},
- 					Model:           turn.RequestModel,
-@@ -644,6 +713,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 					Model:                 turn.RequestModel,
+@@ -1121,6 +1190,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			OutputTokens:             relayResult.Usage.OutputTokens,
  			CacheCreationInputTokens: relayResult.Usage.CacheCreationInputTokens,
  			CacheReadInputTokens:     relayResult.Usage.CacheReadInputTokens,
@@ -4013,4 +4008,4 @@ index d2cf26a8..8f81cd15 100644
 +			CacheReadAudioTokens:     relayResult.Usage.CacheReadAudioTokens,
  			ImageOutputTokens:        relayResult.Usage.ImageOutputTokens,
  		},
- 		Model:           relayResult.RequestModel,
+ 		Model:                 relayResult.RequestModel,

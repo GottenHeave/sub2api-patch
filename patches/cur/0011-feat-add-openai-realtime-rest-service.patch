@@ -6,7 +6,7 @@ Subject: [PATCH] feat: add OpenAI realtime REST service
 
 diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
 new file mode 100644
-index 00000000..34b96c41
+index 000000000..34b96c41b
 --- /dev/null
 +++ b/backend/internal/service/openai_realtime_calls.go
 @@ -0,0 +1,425 @@

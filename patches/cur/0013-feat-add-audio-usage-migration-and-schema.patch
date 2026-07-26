@@ -5,10 +5,10 @@ Subject: [PATCH] feat: add audio usage migration and schema
 
 
 diff --git a/backend/ent/migrate/schema.go b/backend/ent/migrate/schema.go
-index 52229f91..53f18c6c 100644
+index 5d78a7433..2b1fa2818 100644
 --- a/backend/ent/migrate/schema.go
 +++ b/backend/ent/migrate/schema.go
-@@ -1551,6 +1551,10 @@ var (
+@@ -1626,6 +1626,10 @@ var (
  		{Name: "output_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "cache_creation_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "cache_read_tokens", Type: field.TypeInt, Default: 0},
@@ -19,7 +19,7 @@ index 52229f91..53f18c6c 100644
  		{Name: "cache_creation_5m_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "cache_creation_1h_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "input_cost", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,10)"}},
-@@ -1593,31 +1597,31 @@ var (
+@@ -1668,31 +1672,31 @@ var (
  		ForeignKeys: []*schema.ForeignKey{
  			{
  				Symbol:     "usage_logs_api_keys_usage_logs",
@@ -56,7 +56,7 @@ index 52229f91..53f18c6c 100644
  				RefColumns: []*schema.Column{UserSubscriptionsColumns[0]},
  				OnDelete:   schema.SetNull,
  			},
-@@ -1626,32 +1630,32 @@ var (
+@@ -1701,32 +1705,32 @@ var (
  			{
  				Name:    "usagelog_user_id",
  				Unique:  false,
@@ -95,7 +95,7 @@ index 52229f91..53f18c6c 100644
  			},
  			{
  				Name:    "usagelog_model",
-@@ -1671,17 +1675,17 @@ var (
+@@ -1746,17 +1750,17 @@ var (
  			{
  				Name:    "usagelog_user_id_created_at",
  				Unique:  false,
@@ -117,7 +117,7 @@ index 52229f91..53f18c6c 100644
  		},
  	}
 diff --git a/backend/ent/schema/usage_log.go b/backend/ent/schema/usage_log.go
-index 6d8c2d41..b817b044 100644
+index 6d8c2d419..b817b0446 100644
 --- a/backend/ent/schema/usage_log.go
 +++ b/backend/ent/schema/usage_log.go
 @@ -73,6 +73,14 @@ func (UsageLog) Fields() []ent.Field {
@@ -137,7 +137,7 @@ index 6d8c2d41..b817b044 100644
  		field.Int("cache_creation_1h_tokens").
 diff --git a/backend/migrations/142_usage_log_audio_fields.sql b/backend/migrations/142_usage_log_audio_fields.sql
 new file mode 100644
-index 00000000..36473bf3
+index 000000000..36473bf37
 --- /dev/null
 +++ b/backend/migrations/142_usage_log_audio_fields.sql
 @@ -0,0 +1,19 @@

@@ -5,10 +5,10 @@ Subject: [PATCH] feat: regenerate audio usage ent code
 
 
 diff --git a/backend/ent/mutation.go b/backend/ent/mutation.go
-index fb355318..cb078013 100644
+index cf9258ffa..9ff6b16a5 100644
 --- a/backend/ent/mutation.go
 +++ b/backend/ent/mutation.go
-@@ -41763,84 +41763,92 @@ func (m *UsageCleanupTaskMutation) ResetEdge(name string) error {
+@@ -43121,84 +43121,92 @@ func (m *UsageCleanupTaskMutation) ResetEdge(name string) error {
  // UsageLogMutation represents an operation that mutates the UsageLog nodes in the graph.
  type UsageLogMutation struct {
  	config
@@ -179,7 +179,7 @@ index fb355318..cb078013 100644
  }
  
  var _ ent.Mutation = (*UsageLogMutation)(nil)
-@@ -42758,6 +42766,230 @@ func (m *UsageLogMutation) ResetCacheReadTokens() {
+@@ -44116,6 +44124,230 @@ func (m *UsageLogMutation) ResetCacheReadTokens() {
  	m.addcache_read_tokens = nil
  }
  
@@ -410,7 +410,7 @@ index fb355318..cb078013 100644
  // SetCacheCreation5mTokens sets the "cache_creation_5m_tokens" field.
  func (m *UsageLogMutation) SetCacheCreation5mTokens(i int) {
  	m.cache_creation_5m_tokens = &i
-@@ -44415,7 +44647,7 @@ func (m *UsageLogMutation) Type() string {
+@@ -45773,7 +46005,7 @@ func (m *UsageLogMutation) Type() string {
  // order to get all numeric fields that were incremented/decremented, call
  // AddedFields().
  func (m *UsageLogMutation) Fields() []string {
@@ -419,7 +419,7 @@ index fb355318..cb078013 100644
  	if m.user != nil {
  		fields = append(fields, usagelog.FieldUserID)
  	}
-@@ -44467,6 +44699,18 @@ func (m *UsageLogMutation) Fields() []string {
+@@ -45825,6 +46057,18 @@ func (m *UsageLogMutation) Fields() []string {
  	if m.cache_read_tokens != nil {
  		fields = append(fields, usagelog.FieldCacheReadTokens)
  	}
@@ -438,7 +438,7 @@ index fb355318..cb078013 100644
  	if m.cache_creation_5m_tokens != nil {
  		fields = append(fields, usagelog.FieldCacheCreation5mTokens)
  	}
-@@ -44593,6 +44837,14 @@ func (m *UsageLogMutation) Field(name string) (ent.Value, bool) {
+@@ -45951,6 +46195,14 @@ func (m *UsageLogMutation) Field(name string) (ent.Value, bool) {
  		return m.CacheCreationTokens()
  	case usagelog.FieldCacheReadTokens:
  		return m.CacheReadTokens()
@@ -453,7 +453,7 @@ index fb355318..cb078013 100644
  	case usagelog.FieldCacheCreation5mTokens:
  		return m.CacheCreation5mTokens()
  	case usagelog.FieldCacheCreation1hTokens:
-@@ -44692,6 +44944,14 @@ func (m *UsageLogMutation) OldField(ctx context.Context, name string) (ent.Value
+@@ -46050,6 +46302,14 @@ func (m *UsageLogMutation) OldField(ctx context.Context, name string) (ent.Value
  		return m.OldCacheCreationTokens(ctx)
  	case usagelog.FieldCacheReadTokens:
  		return m.OldCacheReadTokens(ctx)
@@ -468,7 +468,7 @@ index fb355318..cb078013 100644
  	case usagelog.FieldCacheCreation5mTokens:
  		return m.OldCacheCreation5mTokens(ctx)
  	case usagelog.FieldCacheCreation1hTokens:
-@@ -44876,6 +45136,34 @@ func (m *UsageLogMutation) SetField(name string, value ent.Value) error {
+@@ -46234,6 +46494,34 @@ func (m *UsageLogMutation) SetField(name string, value ent.Value) error {
  		}
  		m.SetCacheReadTokens(v)
  		return nil
@@ -503,7 +503,7 @@ index fb355318..cb078013 100644
  	case usagelog.FieldCacheCreation5mTokens:
  		v, ok := value.(int)
  		if !ok {
-@@ -45095,6 +45383,18 @@ func (m *UsageLogMutation) AddedFields() []string {
+@@ -46453,6 +46741,18 @@ func (m *UsageLogMutation) AddedFields() []string {
  	if m.addcache_read_tokens != nil {
  		fields = append(fields, usagelog.FieldCacheReadTokens)
  	}
@@ -522,7 +522,7 @@ index fb355318..cb078013 100644
  	if m.addcache_creation_5m_tokens != nil {
  		fields = append(fields, usagelog.FieldCacheCreation5mTokens)
  	}
-@@ -45161,6 +45461,14 @@ func (m *UsageLogMutation) AddedField(name string) (ent.Value, bool) {
+@@ -46519,6 +46819,14 @@ func (m *UsageLogMutation) AddedField(name string) (ent.Value, bool) {
  		return m.AddedCacheCreationTokens()
  	case usagelog.FieldCacheReadTokens:
  		return m.AddedCacheReadTokens()
@@ -537,7 +537,7 @@ index fb355318..cb078013 100644
  	case usagelog.FieldCacheCreation5mTokens:
  		return m.AddedCacheCreation5mTokens()
  	case usagelog.FieldCacheCreation1hTokens:
-@@ -45237,6 +45545,34 @@ func (m *UsageLogMutation) AddField(name string, value ent.Value) error {
+@@ -46595,6 +46903,34 @@ func (m *UsageLogMutation) AddField(name string, value ent.Value) error {
  		}
  		m.AddCacheReadTokens(v)
  		return nil
@@ -572,7 +572,7 @@ index fb355318..cb078013 100644
  	case usagelog.FieldCacheCreation5mTokens:
  		v, ok := value.(int)
  		if !ok {
-@@ -45550,6 +45886,18 @@ func (m *UsageLogMutation) ResetField(name string) error {
+@@ -46908,6 +47244,18 @@ func (m *UsageLogMutation) ResetField(name string) error {
  	case usagelog.FieldCacheReadTokens:
  		m.ResetCacheReadTokens()
  		return nil
@@ -592,10 +592,10 @@ index fb355318..cb078013 100644
  		m.ResetCacheCreation5mTokens()
  		return nil
 diff --git a/backend/ent/runtime/runtime.go b/backend/ent/runtime/runtime.go
-index 867f1cbd..36ea23af 100644
+index 58d1a5f35..07616df2f 100644
 --- a/backend/ent/runtime/runtime.go
 +++ b/backend/ent/runtime/runtime.go
-@@ -1904,96 +1904,112 @@ func init() {
+@@ -1998,96 +1998,112 @@ func init() {
  	usagelogDescCacheReadTokens := usagelogFields[16].Descriptor()
  	// usagelog.DefaultCacheReadTokens holds the default value on creation for the cache_read_tokens field.
  	usagelog.DefaultCacheReadTokens = usagelogDescCacheReadTokens.Default.(int)
@@ -732,7 +732,7 @@ index 867f1cbd..36ea23af 100644
  	usagelog.DefaultCreatedAt = usagelogDescCreatedAt.Default.(func() time.Time)
  	userMixin := schema.User{}.Mixin()
 diff --git a/backend/ent/usagelog.go b/backend/ent/usagelog.go
-index b13e29b2..780b19dc 100644
+index b13e29b2f..780b19dcf 100644
 --- a/backend/ent/usagelog.go
 +++ b/backend/ent/usagelog.go
 @@ -57,6 +57,14 @@ type UsageLog struct {
@@ -810,7 +810,7 @@ index b13e29b2..780b19dc 100644
  	builder.WriteString(fmt.Sprintf("%v", _m.CacheCreation5mTokens))
  	builder.WriteString(", ")
 diff --git a/backend/ent/usagelog/usagelog.go b/backend/ent/usagelog/usagelog.go
-index a87d9371..b4d7f8e7 100644
+index a87d93719..b4d7f8e71 100644
 --- a/backend/ent/usagelog/usagelog.go
 +++ b/backend/ent/usagelog/usagelog.go
 @@ -48,6 +48,14 @@ const (
@@ -882,7 +882,7 @@ index a87d9371..b4d7f8e7 100644
  func ByCacheCreation5mTokens(opts ...sql.OrderTermOption) OrderOption {
  	return sql.OrderByField(FieldCacheCreation5mTokens, opts...).ToFunc()
 diff --git a/backend/ent/usagelog/where.go b/backend/ent/usagelog/where.go
-index a9462e0d..08676fe6 100644
+index a9462e0d0..08676fe6e 100644
 --- a/backend/ent/usagelog/where.go
 +++ b/backend/ent/usagelog/where.go
 @@ -140,6 +140,26 @@ func CacheReadTokens(v int) predicate.UsageLog {
@@ -1080,7 +1080,7 @@ index a9462e0d..08676fe6 100644
  func CacheCreation5mTokensEQ(v int) predicate.UsageLog {
  	return predicate.UsageLog(sql.FieldEQ(FieldCacheCreation5mTokens, v))
 diff --git a/backend/ent/usagelog_create.go b/backend/ent/usagelog_create.go
-index 31cf4532..539993c8 100644
+index 31cf45328..539993c84 100644
 --- a/backend/ent/usagelog_create.go
 +++ b/backend/ent/usagelog_create.go
 @@ -225,6 +225,62 @@ func (_c *UsageLogCreate) SetNillableCacheReadTokens(v *int) *UsageLogCreate {
@@ -1473,7 +1473,7 @@ index 31cf4532..539993c8 100644
  func (u *UsageLogUpsertBulk) SetCacheCreation5mTokens(v int) *UsageLogUpsertBulk {
  	return u.Update(func(s *UsageLogUpsert) {
 diff --git a/backend/ent/usagelog_update.go b/backend/ent/usagelog_update.go
-index 2a60d6f4..81f98bbd 100644
+index 2a60d6f44..81f98bbdf 100644
 --- a/backend/ent/usagelog_update.go
 +++ b/backend/ent/usagelog_update.go
 @@ -353,6 +353,90 @@ func (_u *UsageLogUpdate) AddCacheReadTokens(v int) *UsageLogUpdate {

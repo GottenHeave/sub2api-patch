@@ -4,8 +4,20 @@ Date: Sat, 13 Jun 2026 18:23:50 +0000
 Subject: [PATCH] feat: schedule audio transcription account selection
 
 
+diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
+index e43e6a8c0..dfe9ce675 100644
+--- a/backend/internal/handler/openai_gateway_handler.go
++++ b/backend/internal/handler/openai_gateway_handler.go
+@@ -1714,6 +1714,7 @@ func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSoc
+ 			failedAccountIDs,
+ 			requiredTransport,
+ 			requiredCapability,
++			openAIWebSocketRequiredAccountType(opts),
+ 			false,
+ 			previousResponseCanMove,
+ 			!imageIntent,
 diff --git a/backend/internal/service/model_rate_limit.go b/backend/internal/service/model_rate_limit.go
-index 195f5a1d..e4feec8b 100644
+index 195f5a1df..e4feec8b9 100644
 --- a/backend/internal/service/model_rate_limit.go
 +++ b/backend/internal/service/model_rate_limit.go
 @@ -17,6 +17,33 @@ const (
@@ -85,18 +97,18 @@ index 195f5a1d..e4feec8b 100644
  	if isOpenAIImageGenerationModel(requestedModel) || isOpenAIImageGenerationModel(modelKey) {
  		return true
 diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
-index a0a4fbff..8f6b55f4 100644
+index 870a6e0ef..b2828d294 100644
 --- a/backend/internal/service/openai_account_scheduler.go
 +++ b/backend/internal/service/openai_account_scheduler.go
-@@ -68,6 +68,7 @@ type OpenAIAccountScheduleRequest struct {
- 	PreviousResponseCanMove bool
+@@ -79,6 +79,7 @@ type OpenAIAccountScheduleRequest struct {
+ 	UseUpstreamTokenCost    bool
  	RequestedModel          string
  	RequiredTransport       OpenAIUpstreamTransport
 +	RequiredAccountType     string
  	RequiredCapability      OpenAIEndpointCapability
  	RequiredImageCapability OpenAIImagesCapability
  	RequireCompact          bool
-@@ -319,7 +320,8 @@ func (s *defaultOpenAIAccountScheduler) Select(
+@@ -392,7 +393,8 @@ func (s *defaultOpenAIAccountScheduler) Select(
  			return nil, decision, err
  		}
  		if selection != nil && selection.Account != nil {
@@ -106,41 +118,41 @@ index a0a4fbff..8f6b55f4 100644
  				if selection.ReleaseFunc != nil {
  					selection.ReleaseFunc()
  				}
-@@ -421,7 +423,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
+@@ -494,7 +496,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
  		return nil, false, nil
  	}
- 	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.Platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
--	if account == nil || !openAIStickyAccountMatchesGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+ 	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.GroupID, req.Platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
+-	if account == nil || !s.service.openAIAccountMatchesSchedulingGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 +	if account == nil || !openAIStickyAccountMatchesGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, account, req) {
  		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
  		return nil, false, nil
  	}
-@@ -1369,9 +1371,12 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
- 	if s != nil && s.service != nil && s.service.isOpenAIAccountRuntimeBlocked(account) {
- 		return false
+@@ -1681,9 +1683,12 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 	if s != nil && s.service != nil && s.service.isOpenAIProxyStreamQuarantined(account) {
+ 		return false, "proxy_stream_quarantined"
  	}
 +	if !openAIAccountTypeCompatible(account, req.RequiredAccountType) {
-+		return false
++		return false, "account_type_mismatch"
 +	}
  	// Quota auto-pause must be evaluated during the initial filter too. Without it the
  	// TopK candidate pool can be filled with paused accounts and the later fresh/DB
 -	// rechecks won't reach healthy accounts that fell outside TopK — manifesting as
 +	// rechecks won't reach healthy accounts that fell outside TopK, manifesting as
  	// "no available accounts" even though healthy ones exist.
- 	if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
- 		return false
-@@ -1387,6 +1392,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
+ 	if paused, decision := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
+ 		reason := "quota_auto_pause"
+@@ -1703,6 +1708,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
  	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
- 		return false
+ 		return false, "model_not_supported"
  	}
 +	if !account.IsSchedulableForModelWithContext(ctx, req.RequestedModel) {
-+		return false
++		return false, "model_not_schedulable"
 +	}
  	if req.GroupID != nil && s != nil && s.service != nil &&
  		s.service.needsUpstreamChannelRestrictionCheck(ctx, req.GroupID) &&
  		s.service.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
-@@ -1395,6 +1403,22 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
- 	return accountSupportsOpenAICapabilities(account, req.RequiredCapability, req.RequiredImageCapability)
+@@ -1714,6 +1722,22 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 	return true, ""
  }
  
 +func openAIAccountTypeCompatible(account *Account, requiredAccountType string) bool {
@@ -162,12 +174,12 @@ index a0a4fbff..8f6b55f4 100644
  func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
  	if s == nil || s.stats == nil {
  		return
-@@ -1644,7 +1668,21 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
+@@ -1989,7 +2013,21 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
  	requiredTransport OpenAIUpstreamTransport,
  	requireCompact bool,
  ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
--	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", requireCompact, PlatformOpenAI, false)
-+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", "", requireCompact, PlatformOpenAI, false)
+-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", requireCompact, PlatformOpenAI, false, true)
++	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", "", requireCompact, PlatformOpenAI, false, true)
 +}
 +
 +func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAccountType(
@@ -181,16 +193,16 @@ index a0a4fbff..8f6b55f4 100644
 +	requiredAccountType string,
 +	requireCompact bool,
 +) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", requiredAccountType, requireCompact, PlatformOpenAI, false)
++	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", requiredAccountType, requireCompact, PlatformOpenAI, false, false)
  }
  
  // SelectAccountWithSchedulerForCapability 按能力要求调度账号。
-@@ -1667,7 +1705,67 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
+@@ -2013,7 +2051,74 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
  	if len(platformOverride) > 0 {
  		platform = platformOverride[0]
  	}
--	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, previousResponseCanMove)
-+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", "", requireCompact, platform, previousResponseCanMove)
+-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
++	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", "", requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
 +}
 +
 +func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndAccountType(
@@ -204,8 +216,15 @@ index a0a4fbff..8f6b55f4 100644
 +	requiredCapability OpenAIEndpointCapability,
 +	requiredAccountType string,
 +	requireCompact bool,
++	previousResponseCanMove bool,
++	useUpstreamTokenCost bool,
++	platformOverride ...string,
 +) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requiredAccountType, requireCompact, PlatformOpenAI, false)
++	platform := PlatformOpenAI
++	if len(platformOverride) > 0 {
++		platform = platformOverride[0]
++	}
++	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requiredAccountType, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
 +}
 +
 +func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
@@ -254,23 +273,23 @@ index a0a4fbff..8f6b55f4 100644
  }
  
  func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
-@@ -1678,13 +1776,13 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
+@@ -2024,13 +2129,13 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
  	excludedIDs map[int64]struct{},
  	requiredCapability OpenAIImagesCapability,
  ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
--	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false)
-+	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, "", false, PlatformOpenAI, false)
+-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false, false)
++	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, "", false, PlatformOpenAI, false, false)
  	if err == nil && selection != nil && selection.Account != nil {
  		return selection, decision, nil
  	}
  	// 如果要求 native 能力（如指定了模型）但没有可用的 APIKey 账号，回退到 basic（OAuth 账号）
  	if requiredCapability == OpenAIImagesCapabilityNative {
--		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false)
-+		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, "", false, PlatformOpenAI, false)
+-		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false, false)
++		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, "", false, PlatformOpenAI, false, false)
  	}
  	return selection, decision, err
  }
-@@ -1699,6 +1797,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
+@@ -2045,6 +2150,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
  	requiredTransport OpenAIUpstreamTransport,
  	requiredCapability OpenAIEndpointCapability,
  	requiredImageCapability OpenAIImagesCapability,
@@ -278,7 +297,7 @@ index a0a4fbff..8f6b55f4 100644
  	requireCompact bool,
  	platform string,
  	previousResponseCanMove bool,
-@@ -1719,7 +1818,8 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
+@@ -2066,7 +2172,8 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
  				if selection == nil || selection.Account == nil {
  					return selection, decision, nil
  				}
@@ -288,7 +307,7 @@ index a0a4fbff..8f6b55f4 100644
  					return selection, decision, nil
  				}
  				if selection.ReleaseFunc != nil {
-@@ -1745,7 +1845,8 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
+@@ -2092,7 +2199,8 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
  				return selection, decision, nil
  			}
  			if s.isOpenAIAccountTransportCompatible(selection.Account, requiredTransport) &&
@@ -298,8 +317,8 @@ index a0a4fbff..8f6b55f4 100644
  				return selection, decision, nil
  			}
  			if selection.ReleaseFunc != nil {
-@@ -1793,6 +1894,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
- 		PreviousResponseCanMove: previousResponseCanMove,
+@@ -2141,6 +2249,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
+ 		UseUpstreamTokenCost:    useUpstreamTokenCost,
  		RequestedModel:          requestedModel,
  		RequiredTransport:       requiredTransport,
 +		RequiredAccountType:     requiredAccountType,
@@ -307,10 +326,10 @@ index a0a4fbff..8f6b55f4 100644
  		RequiredImageCapability: requiredImageCapability,
  		RequireCompact:          requireCompact,
 diff --git a/backend/internal/service/ratelimit_service.go b/backend/internal/service/ratelimit_service.go
-index 507e02d8..218752ba 100644
+index 266f806e8..827bc6446 100644
 --- a/backend/internal/service/ratelimit_service.go
 +++ b/backend/internal/service/ratelimit_service.go
-@@ -968,6 +968,10 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
+@@ -979,6 +979,10 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
  	if resetTimestamp == "" {
  		switch account.Platform {
  		case PlatformOpenAI:
@@ -321,7 +340,7 @@ index 507e02d8..218752ba 100644
  			// 尝试解析 OpenAI 的 usage_limit_reached 错误
  			if resetAt := parseOpenAIRateLimitResetTime(responseBody); resetAt != nil {
  				resetTime := time.Unix(*resetAt, 0)
-@@ -1500,6 +1504,46 @@ func parseOpenAIRateLimitResetTime(body []byte) *int64 {
+@@ -1511,6 +1515,46 @@ func parseOpenAIRateLimitResetTime(body []byte) *int64 {
  	return nil
  }
  

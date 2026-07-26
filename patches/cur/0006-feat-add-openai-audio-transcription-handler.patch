@@ -6,7 +6,7 @@ Subject: [PATCH] feat: add OpenAI audio transcription handler
 
 diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
 new file mode 100644
-index 00000000..efd6c093
+index 000000000..efd6c093b
 --- /dev/null
 +++ b/backend/internal/handler/openai_audio_transcriptions.go
 @@ -0,0 +1,263 @@

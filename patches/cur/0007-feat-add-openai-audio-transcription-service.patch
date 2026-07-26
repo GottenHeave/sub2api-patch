@@ -6,7 +6,7 @@ Subject: [PATCH] feat: add OpenAI audio transcription service
 
 diff --git a/backend/internal/service/openai_audio_transcriptions.go b/backend/internal/service/openai_audio_transcriptions.go
 new file mode 100644
-index 00000000..ae749745
+index 000000000..ae7497453
 --- /dev/null
 +++ b/backend/internal/service/openai_audio_transcriptions.go
 @@ -0,0 +1,552 @@

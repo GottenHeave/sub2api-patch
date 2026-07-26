@@ -6,7 +6,7 @@ Subject: [PATCH] test: cover OpenAI realtime REST endpoints
 
 diff --git a/backend/internal/handler/openai_realtime_calls_test.go b/backend/internal/handler/openai_realtime_calls_test.go
 new file mode 100644
-index 00000000..b9f1d3af
+index 000000000..b9f1d3af7
 --- /dev/null
 +++ b/backend/internal/handler/openai_realtime_calls_test.go
 @@ -0,0 +1,283 @@
@@ -295,7 +295,7 @@ index 00000000..b9f1d3af
 +}
 diff --git a/backend/internal/service/openai_realtime_calls_test.go b/backend/internal/service/openai_realtime_calls_test.go
 new file mode 100644
-index 00000000..a2906351
+index 000000000..a29063514
 --- /dev/null
 +++ b/backend/internal/service/openai_realtime_calls_test.go
 @@ -0,0 +1,413 @@

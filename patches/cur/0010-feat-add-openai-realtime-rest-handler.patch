@@ -6,7 +6,7 @@ Subject: [PATCH] feat: add OpenAI realtime REST handler
 
 diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
 new file mode 100644
-index 00000000..cf368f00
+index 000000000..cf368f00b
 --- /dev/null
 +++ b/backend/internal/handler/openai_realtime_calls.go
 @@ -0,0 +1,239 @@

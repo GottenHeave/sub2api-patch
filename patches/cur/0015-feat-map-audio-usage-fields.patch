@@ -5,10 +5,10 @@ Subject: [PATCH] feat: map audio usage fields
 
 
 diff --git a/backend/internal/handler/dto/mappers.go b/backend/internal/handler/dto/mappers.go
-index 3c45c3b9..ff2c9ce1 100644
+index 04c811ced..d624f403c 100644
 --- a/backend/internal/handler/dto/mappers.go
 +++ b/backend/internal/handler/dto/mappers.go
-@@ -608,12 +608,17 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
+@@ -635,12 +635,17 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
  		ServiceTier:               l.ServiceTier,
  		ReasoningEffort:           l.ReasoningEffort,
  		InboundEndpoint:           l.InboundEndpoint,
@@ -27,7 +27,7 @@ index 3c45c3b9..ff2c9ce1 100644
  		CacheCreation1hTokens:     l.CacheCreation1hTokens,
  		InputCost:                 l.InputCost,
 diff --git a/backend/internal/handler/dto/mappers_usage_test.go b/backend/internal/handler/dto/mappers_usage_test.go
-index 6cbcbada..2834afb8 100644
+index 6cbcbada5..2834afb8d 100644
 --- a/backend/internal/handler/dto/mappers_usage_test.go
 +++ b/backend/internal/handler/dto/mappers_usage_test.go
 @@ -28,6 +28,29 @@ func TestUsageLogFromService_IncludesOpenAIWSMode(t *testing.T) {
@@ -61,10 +61,10 @@ index 6cbcbada..2834afb8 100644
  	t.Parallel()
  
 diff --git a/backend/internal/handler/dto/types.go b/backend/internal/handler/dto/types.go
-index 619926c1..35e80552 100644
+index d5ba4e9db..496e25859 100644
 --- a/backend/internal/handler/dto/types.go
 +++ b/backend/internal/handler/dto/types.go
-@@ -474,10 +474,14 @@ type UsageLog struct {
+@@ -482,10 +482,14 @@ type UsageLog struct {
  	GroupID        *int64 `json:"group_id"`
  	SubscriptionID *int64 `json:"subscription_id"`
  
@@ -84,7 +84,7 @@ index 619926c1..35e80552 100644
  	CacheCreation5mTokens int `json:"cache_creation_5m_tokens"`
  	CacheCreation1hTokens int `json:"cache_creation_1h_tokens"`
 diff --git a/backend/internal/pkg/usagestats/usage_log_types.go b/backend/internal/pkg/usagestats/usage_log_types.go
-index 29af4d2d..9c479a69 100644
+index 29af4d2d5..9c479a69a 100644
 --- a/backend/internal/pkg/usagestats/usage_log_types.go
 +++ b/backend/internal/pkg/usagestats/usage_log_types.go
 @@ -50,26 +50,34 @@ type DashboardStats struct {
@@ -286,10 +286,10 @@ index 29af4d2d..9c479a69 100644
  
  // PlatformUsage 表示某用户/某 API key 在单个"有效平台"维度的用量明细。
 diff --git a/backend/internal/server/api_contract_test.go b/backend/internal/server/api_contract_test.go
-index da766a75..2467c173 100644
+index 06c738cd3..0d0a7070f 100644
 --- a/backend/internal/server/api_contract_test.go
 +++ b/backend/internal/server/api_contract_test.go
-@@ -527,6 +527,10 @@ func TestAPIContracts(t *testing.T) {
+@@ -530,6 +530,10 @@ func TestAPIContracts(t *testing.T) {
  					"total_cache_tokens": 3,
  					"total_cache_creation_tokens": 1,
  					"total_cache_read_tokens": 2,
@@ -300,7 +300,7 @@ index da766a75..2467c173 100644
  					"total_tokens": 53,
  					"total_cost": 0.75,
  					"total_actual_cost": 0.75,
-@@ -587,6 +591,10 @@ func TestAPIContracts(t *testing.T) {
+@@ -590,6 +594,10 @@ func TestAPIContracts(t *testing.T) {
  							"cache_read_tokens": 2,
  							"cache_creation_5m_tokens": 0,
  							"cache_creation_1h_tokens": 0,
