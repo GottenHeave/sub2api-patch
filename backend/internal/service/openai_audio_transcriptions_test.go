@@ -196,6 +196,10 @@ func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulableUngroupedByP
 	return nil, nil
 }
 
+func (r *audioTranscriptionRateLimitAccountRepoStub) ListModelAvailabilityCandidates(context.Context, *int64, []string, bool) ([]Account, error) {
+	return nil, nil
+}
+
 func (r *audioTranscriptionRateLimitAccountRepoStub) SetOverloaded(context.Context, int64, time.Time) error {
 	return nil
 }
