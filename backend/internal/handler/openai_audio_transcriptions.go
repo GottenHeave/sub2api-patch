@@ -69,6 +69,10 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 	reqLog = reqLog.With(zap.String("model", parsed.Model), zap.String("endpoint", parsed.Endpoint))
 	setOpsRequestContext(c, parsed.Model, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
+	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIChat, parsed.Model, body); decision != nil && !decision.AllowNextStage {
+		h.openAISecurityAuditError(c, decision)
+		return
+	}
 
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, parsed.Model)
 	if h.errorPassthroughService != nil {
@@ -149,6 +153,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 		)
 
 		account := selection.Account
+		scheduledModel := account.GetMappedModel(selectionModel)
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
@@ -174,7 +179,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
 				if failoverErr.RetryableOnSameAccount {
 					retryLimit := account.GetPoolModeRetryCount()
 					if sameAccountRetryCount[account.ID] < retryLimit {
@@ -203,7 +208,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 				switchCount++
 				continue
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
 			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 			fields := []zap.Field{
 				zap.Int64("account_id", account.ID),
@@ -219,9 +224,9 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 		}
 
 		if result != nil {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, true, result.FirstTokenMs)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, true, nil)
 		}
 
 		userAgent := c.GetHeader("User-Agent")
