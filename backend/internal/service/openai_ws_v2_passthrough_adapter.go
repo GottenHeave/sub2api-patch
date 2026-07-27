@@ -1041,7 +1041,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if requestModelForThisFrame == "" {
 				requestModelForThisFrame = capturedSessionModel
 			}
-			if isResponseCreate && hooks != nil && hooks.BeforeRequest != nil {
+			if hooks != nil && hooks.BeforeRequest != nil {
 				if err := hooks.BeforeRequest(turnNo, payload, requestModelForThisFrame); err != nil {
 					return payload, nil, err
 				}
