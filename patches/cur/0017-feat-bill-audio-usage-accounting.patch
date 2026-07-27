@@ -65,10 +65,10 @@ index 1098fff9e..9c59923b0 100644
  	if cost <= 0 {
  		return nil
 diff --git a/backend/internal/service/account_stats_pricing_test.go b/backend/internal/service/account_stats_pricing_test.go
-index 57ace01c2..461984286 100644
+index a934a5621..6d878d45b 100644
 --- a/backend/internal/service/account_stats_pricing_test.go
 +++ b/backend/internal/service/account_stats_pricing_test.go
-@@ -227,6 +227,56 @@ func TestCalculateStatsCost_TokenBilling_WithCache(t *testing.T) {
+@@ -228,6 +228,56 @@ func TestCalculateStatsCost_TokenBilling_WithCache(t *testing.T) {
  	require.InDelta(t, 0.95, *result, 1e-12)
  }
  
@@ -125,7 +125,7 @@ index 57ace01c2..461984286 100644
  func TestCalculateStatsCost_TokenBilling_WithImageOutput(t *testing.T) {
  	pricing := &ChannelModelPricing{
  		BillingMode:      BillingModeToken,
-@@ -550,6 +600,27 @@ func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
+@@ -551,6 +601,27 @@ func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
  	require.InDelta(t, 0.95, *result, 1e-12)
  }
  
@@ -154,7 +154,7 @@ index 57ace01c2..461984286 100644
  // resolveAccountStatsCost — integration tests covering the 4-level priority chain
  // ---------------------------------------------------------------------------
 diff --git a/backend/internal/service/billing_service.go b/backend/internal/service/billing_service.go
-index 98eb9c3ec..468cb6147 100644
+index 748eaf009..569f73a97 100644
 --- a/backend/internal/service/billing_service.go
 +++ b/backend/internal/service/billing_service.go
 @@ -102,6 +102,11 @@ type ModelPricing struct {
@@ -206,7 +206,7 @@ index 98eb9c3ec..468cb6147 100644
  }
  
  // CostBreakdown 费用明细
-@@ -811,6 +821,11 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
+@@ -825,6 +835,11 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
  				CacheReadPricePerTokenPriority:     litellmPricing.CacheReadInputTokenCostPriority,
  				CacheCreation5mPrice:               price5m,
  				CacheCreation1hPrice:               price1h,
@@ -218,7 +218,7 @@ index 98eb9c3ec..468cb6147 100644
  				SupportsCacheBreakdown:             enableBreakdown,
  				LongContextInputThreshold:          litellmPricing.LongContextInputTokenThreshold,
  				LongContextInputMultiplier:         litellmPricing.LongContextInputCostMultiplier,
-@@ -851,10 +866,13 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
+@@ -865,10 +880,13 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
  	if channelPricing.InputPrice != nil {
  		pricing.InputPricePerToken = *channelPricing.InputPrice
  		pricing.InputPricePerTokenPriority = *channelPricing.InputPrice
@@ -232,7 +232,7 @@ index 98eb9c3ec..468cb6147 100644
  	}
  	if channelPricing.CacheWritePrice != nil {
  		pricing.CacheCreationPricePerToken = *channelPricing.CacheWritePrice
-@@ -862,10 +880,12 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
+@@ -876,10 +894,12 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
  		pricing.CacheCreationPriceExplicit = true
  		pricing.CacheCreation5mPrice = *channelPricing.CacheWritePrice
  		pricing.CacheCreation1hPrice = *channelPricing.CacheWritePrice
@@ -245,7 +245,7 @@ index 98eb9c3ec..468cb6147 100644
  	}
  	if channelPricing.ImageOutputPrice != nil {
  		pricing.ImageOutputPricePerToken = *channelPricing.ImageOutputPrice
-@@ -1019,30 +1039,44 @@ func (s *BillingService) computeTokenBreakdown(
+@@ -1033,30 +1053,44 @@ func (s *BillingService) computeTokenBreakdown(
  	// 分离图片输入 token 与文本输入 token（多模态 embedding、图片编辑等图文不同价场景）。
  	// InputCost 仅计文本输入，图片输入费用单独记入 ImageInputCost，便于对账；总额不变。
  	// ImageInputTokens 为 0 时（绝大多数 chat/vision 流量）走原始单价路径，行为不变。
@@ -302,7 +302,7 @@ index 98eb9c3ec..468cb6147 100644
  
  	// 图片输出 token 费用（独立费率）
  	if tokens.ImageOutputTokens > 0 {
-@@ -1055,8 +1089,23 @@ func (s *BillingService) computeTokenBreakdown(
+@@ -1069,8 +1103,23 @@ func (s *BillingService) computeTokenBreakdown(
  
  	// 缓存创建费用
  	bd.CacheCreationCost = s.computeCacheCreationCost(pricing, tokens, cacheCreationPrice, cacheCreationMultiplier)
@@ -327,7 +327,7 @@ index 98eb9c3ec..468cb6147 100644
  
  	if tierMultiplier != 1.0 {
  		bd.InputCost *= tierMultiplier
-@@ -1078,15 +1127,46 @@ func (s *BillingService) computeTokenBreakdown(
+@@ -1092,15 +1141,46 @@ func (s *BillingService) computeTokenBreakdown(
  // computeCacheCreationCost 计算缓存创建费用（支持 5m/1h 分类或标准计费）。
  // multiplier 用于长上下文等场景下的整体价格缩放（普通调用传 1.0 即可）。
  func (s *BillingService) computeCacheCreationCost(pricing *ModelPricing, tokens UsageTokens, price, multiplier float64) float64 {
@@ -756,7 +756,7 @@ index ea5f4a29d..8ffe6aa93 100644
  	// 渠道定价覆盖一切：显式配置则用配置值，未配置则归零（不回退到 LiteLLM）
  	if chPricing.ImageOutputPrice != nil {
 diff --git a/backend/internal/service/openai_gateway_record_usage_test.go b/backend/internal/service/openai_gateway_record_usage_test.go
-index d2eca05d7..137197667 100644
+index f0dc78b74..bccff12d7 100644
 --- a/backend/internal/service/openai_gateway_record_usage_test.go
 +++ b/backend/internal/service/openai_gateway_record_usage_test.go
 @@ -258,10 +258,15 @@ func expectedOpenAICost(t *testing.T, svc *OpenAIGatewayService, model string, u
@@ -834,7 +834,7 @@ index d2eca05d7..137197667 100644
  	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
  	userRepo := &openAIRecordUsageUserRepoStub{}
 diff --git a/backend/internal/service/pricing_service.go b/backend/internal/service/pricing_service.go
-index 636bd690c..45ffc549d 100644
+index c969ec18d..51eba8672 100644
 --- a/backend/internal/service/pricing_service.go
 +++ b/backend/internal/service/pricing_service.go
 @@ -111,10 +111,15 @@ type LiteLLMModelPricing struct {
@@ -938,7 +938,7 @@ index 636bd690c..45ffc549d 100644
  			pricing.CacheReadInputTokenCostPriority = *entry.CacheReadInputTokenCostPriority
  		}
 diff --git a/backend/internal/service/pricing_service_test.go b/backend/internal/service/pricing_service_test.go
-index 88553f0fb..3a92f7d24 100644
+index 48e5159ad..87a86ee20 100644
 --- a/backend/internal/service/pricing_service_test.go
 +++ b/backend/internal/service/pricing_service_test.go
 @@ -309,6 +309,32 @@ func TestParsePricingData_KeepsImageOnlyPricing(t *testing.T) {

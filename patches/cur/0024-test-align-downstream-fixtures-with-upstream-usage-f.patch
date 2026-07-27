@@ -48,10 +48,10 @@ index 582d1419e..9fdfdff77 100644
  		require.Equal(t, 1, fs.SwitchCount)
  		require.Contains(t, fs.FailedAccountIDs, int64(301))
 diff --git a/backend/internal/repository/usage_log_repo_request_type_test.go b/backend/internal/repository/usage_log_repo_request_type_test.go
-index ca17477ef..900159007 100644
+index 370e49810..e68158bd0 100644
 --- a/backend/internal/repository/usage_log_repo_request_type_test.go
 +++ b/backend/internal/repository/usage_log_repo_request_type_test.go
-@@ -704,7 +704,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -721,7 +721,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			sql.NullString{},
@@ -61,7 +61,7 @@ index ca17477ef..900159007 100644
  			sql.NullInt64{},
  			sql.NullString{},
  			sql.NullString{},
-@@ -782,7 +783,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -799,7 +800,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			sql.NullString{},
@@ -71,7 +71,7 @@ index ca17477ef..900159007 100644
  			sql.NullInt64{},   // channel_id
  			sql.NullString{},  // model_mapping_chain
  			sql.NullString{},  // billing_tier
-@@ -841,7 +843,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -858,7 +860,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			sql.NullString{},
@@ -81,7 +81,7 @@ index ca17477ef..900159007 100644
  			sql.NullInt64{},   // channel_id
  			sql.NullString{},  // model_mapping_chain
  			sql.NullString{},  // billing_tier
-@@ -900,7 +903,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -917,7 +920,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			sql.NullString{},

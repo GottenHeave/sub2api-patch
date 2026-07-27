@@ -84,7 +84,7 @@ index d5ba4e9db..496e25859 100644
  	CacheCreation5mTokens int `json:"cache_creation_5m_tokens"`
  	CacheCreation1hTokens int `json:"cache_creation_1h_tokens"`
 diff --git a/backend/internal/pkg/usagestats/usage_log_types.go b/backend/internal/pkg/usagestats/usage_log_types.go
-index 29af4d2d5..9c479a69a 100644
+index da9e748b1..9023d50d0 100644
 --- a/backend/internal/pkg/usagestats/usage_log_types.go
 +++ b/backend/internal/pkg/usagestats/usage_log_types.go
 @@ -50,26 +50,34 @@ type DashboardStats struct {
@@ -246,7 +246,7 @@ index 29af4d2d5..9c479a69a 100644
  
  	// 性能统计
  	AverageDurationMs float64 `json:"average_duration_ms"`
-@@ -285,20 +309,24 @@ type UsageLogFilters struct {
+@@ -286,20 +310,24 @@ type UsageLogFilters struct {
  
  // UsageStats represents usage statistics
  type UsageStats struct {

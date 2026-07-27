@@ -920,7 +920,7 @@ index 809b0652b..102609dec 100644
  			log.CacheCreation1hTokens,
  			log.ImageOutputTokens,
 diff --git a/backend/internal/repository/usage_log_repo_query.go b/backend/internal/repository/usage_log_repo_query.go
-index 88b7eeaf3..47864dae3 100644
+index 084b79ad9..d71ac6f75 100644
 --- a/backend/internal/repository/usage_log_repo_query.go
 +++ b/backend/internal/repository/usage_log_repo_query.go
 @@ -19,7 +19,7 @@ import (
@@ -932,7 +932,7 @@ index 88b7eeaf3..47864dae3 100644
  
  func (r *usageLogRepository) GetByID(ctx context.Context, id int64) (log *service.UsageLog, err error) {
  	query := "SELECT " + usageLogSelectColumns + " FROM usage_logs WHERE id = $1"
-@@ -439,6 +439,10 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
+@@ -443,6 +443,10 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
  		outputTokens              int
  		cacheCreationTokens       int
  		cacheReadTokens           int
@@ -943,7 +943,7 @@ index 88b7eeaf3..47864dae3 100644
  		cacheCreation5m           int
  		cacheCreation1h           int
  		imageOutputTokens         int
-@@ -500,6 +504,10 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
+@@ -504,6 +508,10 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
  		&outputTokens,
  		&cacheCreationTokens,
  		&cacheReadTokens,
@@ -954,7 +954,7 @@ index 88b7eeaf3..47864dae3 100644
  		&cacheCreation5m,
  		&cacheCreation1h,
  		&imageOutputTokens,
-@@ -559,6 +567,10 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
+@@ -563,6 +571,10 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
  		OutputTokens:              outputTokens,
  		CacheCreationTokens:       cacheCreationTokens,
  		CacheReadTokens:           cacheReadTokens,
@@ -1450,7 +1450,7 @@ index aeccd49b3..d3d61364a 100644
  			COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as actual_cost,
  			COALESCE(SUM(actual_cost), 0) as user_cost
 diff --git a/backend/internal/repository/usage_log_repo_trend.go b/backend/internal/repository/usage_log_repo_trend.go
-index f2e0045ff..2f6e7c636 100644
+index ae431c706..840d9d82a 100644
 --- a/backend/internal/repository/usage_log_repo_trend.go
 +++ b/backend/internal/repository/usage_log_repo_trend.go
 @@ -36,7 +36,7 @@ func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime,

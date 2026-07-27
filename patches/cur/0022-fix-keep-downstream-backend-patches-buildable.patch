@@ -243,7 +243,7 @@ index 46ebf43bc..8bea46ede 100644
  	); err != nil {
  		return nil, err
 diff --git a/backend/internal/repository/usage_log_repo_request_type_test.go b/backend/internal/repository/usage_log_repo_request_type_test.go
-index aff472b0c..ca17477ef 100644
+index 9c59b38e5..370e49810 100644
 --- a/backend/internal/repository/usage_log_repo_request_type_test.go
 +++ b/backend/internal/repository/usage_log_repo_request_type_test.go
 @@ -40,65 +40,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
@@ -428,7 +428,7 @@ index aff472b0c..ca17477ef 100644
  func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {
  	db, mock := newSQLMock(t)
  	repo := &usageLogRepository{sql: db}
-@@ -486,18 +394,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
+@@ -503,18 +411,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
  
  	mock.ExpectQuery("FROM usage_logs\\s+WHERE COALESCE\\(NULLIF\\(TRIM\\(requested_model\\), ''\\), model\\) = \\$1").
  		WithArgs("gpt-5").
@@ -448,7 +448,7 @@ index aff472b0c..ca17477ef 100644
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(inbound_endpoint\\), ''\\), 'unknown'\\) AS endpoint").
  		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "gpt-5").
  		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
-@@ -527,18 +424,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T)
+@@ -544,18 +441,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T)
  
  	mock.ExpectQuery("FROM usage_logs\\s+WHERE \\(request_type = \\$1 OR \\(request_type = 0 AND stream = FALSE AND openai_ws_mode = FALSE\\)\\)").
  		WithArgs(requestType).
@@ -468,7 +468,7 @@ index aff472b0c..ca17477ef 100644
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(inbound_endpoint\\), ''\\), 'unknown'\\) AS endpoint").
  		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), requestType).
  		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
-@@ -669,12 +555,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testin
+@@ -686,12 +572,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testin
  	filters := usagestats.UsageLogFilters{}
  
  	mock.ExpectQuery("FROM usage_logs").
@@ -482,7 +482,7 @@ index aff472b0c..ca17477ef 100644
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(inbound_endpoint\\)").
  		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
  	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(upstream_endpoint\\)").
-@@ -794,7 +675,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -811,7 +692,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullInt64{},
  			sql.NullInt64{},
@@ -493,7 +493,7 @@ index aff472b0c..ca17477ef 100644
  			0, 0.0, // image_output_tokens, image_output_cost
  			0, 0.0, // image_input_tokens, image_input_cost
  			0.0, 0.0, 0.0, 0.0, 0.8, 0.8,
-@@ -822,7 +705,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -839,7 +722,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			false,
@@ -501,7 +501,7 @@ index aff472b0c..ca17477ef 100644
  			sql.NullInt64{},
  			sql.NullString{},
  			sql.NullString{},
-@@ -861,6 +743,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -878,6 +760,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			2,                 // output_tokens
  			3,                 // cache_creation_tokens
  			4,                 // cache_read_tokens
@@ -512,7 +512,7 @@ index aff472b0c..ca17477ef 100644
  			5,                 // cache_creation_5m_tokens
  			6,                 // cache_creation_1h_tokens
  			0,                 // image_output_tokens
-@@ -897,7 +783,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -914,7 +800,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			false,
@@ -520,7 +520,7 @@ index aff472b0c..ca17477ef 100644
  			sql.NullInt64{},   // channel_id
  			sql.NullString{},  // model_mapping_chain
  			sql.NullString{},  // billing_tier
-@@ -927,7 +812,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -944,7 +829,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullInt64{},
  			sql.NullInt64{},
@@ -531,7 +531,7 @@ index aff472b0c..ca17477ef 100644
  			0, 0.0, // image_output_tokens, image_output_cost
  			0, 0.0, // image_input_tokens, image_input_cost
  			0.1, 0.2, 0.3, 0.4, 1.0, 0.9,
-@@ -955,7 +842,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -972,7 +859,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			false,
@@ -539,7 +539,7 @@ index aff472b0c..ca17477ef 100644
  			sql.NullInt64{},   // channel_id
  			sql.NullString{},  // model_mapping_chain
  			sql.NullString{},  // billing_tier
-@@ -985,7 +871,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -1002,7 +888,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullInt64{},
  			sql.NullInt64{},
@@ -550,7 +550,7 @@ index aff472b0c..ca17477ef 100644
  			0, 0.0, // image_output_tokens, image_output_cost
  			0, 0.0, // image_input_tokens, image_input_cost
  			0.1, 0.2, 0.3, 0.4, 1.0, 0.9,
-@@ -1013,7 +901,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -1030,7 +918,6 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			false,
@@ -892,7 +892,7 @@ index 543733d39..c82ba0776 100644
  	t.Helper()
  	mediaType, params, err := mime.ParseMediaType(contentType)
 diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
-index 14520958f..12185faff 100644
+index fdd401911..927b82bd6 100644
 --- a/backend/internal/service/openai_gateway_request_body.go
 +++ b/backend/internal/service/openai_gateway_request_body.go
 @@ -45,6 +45,10 @@ func buildOpenAIResponsesURL(base string) string {
@@ -5883,7 +5883,7 @@ index 166e192ea..1f40cc705 100644
 -	}
 -}
 diff --git a/backend/internal/service/openai_gateway_usage.go b/backend/internal/service/openai_gateway_usage.go
-index 16429f740..5cfa9eac3 100644
+index 124469833..5cfa9eac3 100644
 --- a/backend/internal/service/openai_gateway_usage.go
 +++ b/backend/internal/service/openai_gateway_usage.go
 @@ -140,15 +140,23 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
@@ -5926,7 +5926,7 @@ index 16429f740..5cfa9eac3 100644
 -		RequestID:           requestID,
 -		Model:               result.Model,
 -		RequestedModel:      requestedModel,
--		UpstreamModel:       optionalNonEqualStringPtr(result.UpstreamModel, result.Model),
+-		UpstreamModel:       optionalTrimmedStringPtr(result.UpstreamModel),
 -		ServiceTier:         result.ServiceTier,
 -		ReasoningEffort:     result.ReasoningEffort,
 -		InboundEndpoint:     optionalTrimmedStringPtr(input.InboundEndpoint),
@@ -5987,10 +5987,10 @@ index 34b96c41b..86ee35621 100644
  				StatusCode:             resp.StatusCode,
  				ResponseBody:           respBody,
 diff --git a/backend/internal/service/openai_ws_forwarder.go b/backend/internal/service/openai_ws_forwarder.go
-index 771c5dabb..d22bec21d 100644
+index ace47df79..9c0869fbe 100644
 --- a/backend/internal/service/openai_ws_forwarder.go
 +++ b/backend/internal/service/openai_ws_forwarder.go
-@@ -389,3601 +389,3 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
+@@ -393,3601 +393,3 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
  	}
  	return dial + 2*time.Second
  }
@@ -9593,7 +9593,7 @@ index 771c5dabb..d22bec21d 100644
 -	s.openaiWSFallbackUntil.Delete(accountID)
 -}
 diff --git a/backend/internal/service/openai_ws_forwarder_ingress.go b/backend/internal/service/openai_ws_forwarder_ingress.go
-index c896ec794..a69436fbd 100644
+index 3664ae8b2..83694347c 100644
 --- a/backend/internal/service/openai_ws_forwarder_ingress.go
 +++ b/backend/internal/service/openai_ws_forwarder_ingress.go
 @@ -86,6 +86,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
@@ -9605,7 +9605,7 @@ index c896ec794..a69436fbd 100644
  			)
  		case OpenAIWSIngressModeHTTPBridge:
  			forceHTTPBridge = true
-@@ -1650,3 +1652,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
+@@ -1669,3 +1671,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
  		turn++
  	}
  }

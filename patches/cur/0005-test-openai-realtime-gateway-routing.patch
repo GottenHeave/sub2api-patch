@@ -5,7 +5,7 @@ Subject: [PATCH] test: cover OpenAI realtime gateway routing
 
 
 diff --git a/backend/internal/handler/endpoint_test.go b/backend/internal/handler/endpoint_test.go
-index c8ae566ad..c6ea89e82 100644
+index 3f7b99470..924bd837d 100644
 --- a/backend/internal/handler/endpoint_test.go
 +++ b/backend/internal/handler/endpoint_test.go
 @@ -29,6 +29,19 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
@@ -163,10 +163,10 @@ index 0dacd74dc..b99a398cd 100644
  
  	for _, tt := range tests {
 diff --git a/backend/internal/handler/openai_gateway_handler_test.go b/backend/internal/handler/openai_gateway_handler_test.go
-index eace1c7c9..2861997fd 100644
+index abf81b79e..f314bc7ff 100644
 --- a/backend/internal/handler/openai_gateway_handler_test.go
 +++ b/backend/internal/handler/openai_gateway_handler_test.go
-@@ -171,6 +171,40 @@ func TestOpenAIResponsesRequiredCapability(t *testing.T) {
+@@ -172,6 +172,40 @@ func TestOpenAIResponsesRequiredCapability(t *testing.T) {
  	}
  }
  
@@ -934,7 +934,7 @@ index 6036be745..7ee5db02d 100644
  	t.Parallel()
  
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay_test.go b/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
-index a5d77fe0f..f1fe81fae 100644
+index c083943bc..8b6dcd98a 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
 @@ -218,6 +218,32 @@ func TestRelay_BasicRelayAndUsage(t *testing.T) {

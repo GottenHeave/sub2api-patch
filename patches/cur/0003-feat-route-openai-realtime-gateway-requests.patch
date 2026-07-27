@@ -5,7 +5,7 @@ Subject: [PATCH] feat: route OpenAI realtime gateway requests
 
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
-index 0e0d28bb8..752089bdb 100644
+index df8776981..986a4eabe 100644
 --- a/backend/internal/handler/endpoint.go
 +++ b/backend/internal/handler/endpoint.go
 @@ -15,20 +15,25 @@ import (
@@ -47,8 +47,8 @@ index 0e0d28bb8..752089bdb 100644
 +	EndpointGeminiModels        = "/v1beta/models"
  )
  
- // gin.Context keys used by the middleware and helpers below.
-@@ -99,10 +104,18 @@ func NormalizeInboundEndpoint(path string) string {
+ const EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
+@@ -102,10 +107,18 @@ func NormalizeInboundEndpoint(path string) string {
  		return EndpointVideosExtensions
  	case strings.Contains(path, EndpointVideos) || strings.Contains(path, "/videos/"):
  		return EndpointVideos
@@ -67,7 +67,7 @@ index 0e0d28bb8..752089bdb 100644
  	case strings.Contains(path, EndpointGeminiModels):
  		return EndpointGeminiModels
  	default:
-@@ -185,6 +198,15 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
+@@ -188,6 +201,15 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
  		if inbound == EndpointEmbeddings || inbound == EndpointAlphaSearch || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits || inbound == EndpointVideosGenerations || inbound == EndpointVideosEdits || inbound == EndpointVideosExtensions || inbound == EndpointVideos {
  			return inbound
  		}
@@ -83,7 +83,7 @@ index 0e0d28bb8..752089bdb 100644
  		// OpenAI forwards everything to the Responses API.
  		// Preserve subresource suffix (e.g. /v1/responses/compact,
  		// /v1/responses/compact/detail) as derived from the raw path.
-@@ -239,6 +261,41 @@ func responsesSubpathSuffix(rawPath string) string {
+@@ -242,6 +264,41 @@ func responsesSubpathSuffix(rawPath string) string {
  	return suffix
  }
  
@@ -126,10 +126,10 @@ index 0e0d28bb8..752089bdb 100644
  // Middleware
  // ──────────────────────────────────────────────────────────
 diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
-index 761f291e9..e43e6a8c0 100644
+index 773a87a86..30f49ec74 100644
 --- a/backend/internal/handler/openai_gateway_handler.go
 +++ b/backend/internal/handler/openai_gateway_handler.go
-@@ -1385,9 +1385,30 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
+@@ -1434,9 +1434,30 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
  	return wrapReleaseOnDone(ctx, accountReleaseFunc), true
  }
  
@@ -160,7 +160,7 @@ index 761f291e9..e43e6a8c0 100644
  	if !isOpenAIWSUpgradeRequest(c.Request) {
  		h.errorResponse(c, http.StatusUpgradeRequired, "invalid_request_error", "WebSocket upgrade required (Upgrade: websocket)")
  		return
-@@ -1407,11 +1428,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1456,11 +1477,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
  	reqLog := requestLogger(
  		c,
@@ -174,7 +174,7 @@ index 761f291e9..e43e6a8c0 100644
  	)
  	if !h.ensureResponsesDependencies(c, reqLog) {
  		return
-@@ -1462,42 +1484,52 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1511,42 +1533,52 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  	}()
  	wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
  
@@ -257,7 +257,7 @@ index 761f291e9..e43e6a8c0 100644
  		return
  	}
  	ensureCompositeTargetPlatform(c, apiKey, reqModel)
-@@ -1533,7 +1565,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1582,7 +1614,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  	}
  
  	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
@@ -266,7 +266,7 @@ index 761f291e9..e43e6a8c0 100644
  		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
  		return
  	}
-@@ -1673,10 +1705,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1722,10 +1754,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  			return
  		}
  		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
@@ -279,7 +279,7 @@ index 761f291e9..e43e6a8c0 100644
  			sessionHash,
  			reqModel,
  			failedAccountIDs,
-@@ -1916,9 +1948,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2012,9 +2044,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  		// WebSocket 首包可能很大，hash 必须在 hooks 外算成字符串，避免 AfterTurn 闭包保活请求体。
  		requestPayloadHash = service.HashUsageRequestPayload(wsFirstMessage)
  
@@ -301,7 +301,7 @@ index 761f291e9..e43e6a8c0 100644
  				if handleWSFailover(account, failoverErr) {
  					continue
  				}
-@@ -1928,14 +1970,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2024,14 +2066,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  			if errors.Is(context.Cause(ctx), service.ErrOpenAIWSIngressLeaseLost) {
  				reqLog.Warn("openai.websocket_ingress_lease_lost",
  					zap.Int64("account_id", account.ID),
@@ -318,10 +318,14 @@ index 761f291e9..e43e6a8c0 100644
  				reqLog.Info("openai.websocket_ingress_closed_normally",
  					zap.Int64("account_id", account.ID),
  					zap.String("reason", closeErr.Reason()),
-@@ -1945,10 +1987,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2040,13 +2082,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 				return
  			}
  
- 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
+-			if shouldReportOpenAIWSProxyAccountFailure(err) {
++			if shouldReportOpenAIWSProxyAccountFailure(proxyErr) {
+ 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
+ 			}
 -			closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
 +			closeStatus, closeReason := summarizeWSCloseErrorForLog(proxyErr)
  			proxyFailedFields := []zap.Field{
@@ -331,7 +335,7 @@ index 761f291e9..e43e6a8c0 100644
  				zap.String("close_status", closeStatus),
  				zap.String("close_reason", closeReason),
  			}
-@@ -1963,7 +2005,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2061,7 +2103,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  				proxyFailedFields = append(proxyFailedFields, zap.Int64p("proxy_id", account.ProxyID))
  			}
  			reqLog.Warn("openai.websocket_proxy_failed", proxyFailedFields...)
@@ -340,7 +344,7 @@ index 761f291e9..e43e6a8c0 100644
  				closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
  				return
  			}
-@@ -1976,6 +2018,62 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2074,6 +2116,62 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
  }
  

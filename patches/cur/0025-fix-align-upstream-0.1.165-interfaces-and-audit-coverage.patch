@@ -135,7 +135,7 @@ index 1d8da7afb..097e90e74 100644
  	)
  
 diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-index 1620a1831..a5373b287 100644
+index e4591ab4f..369da807d 100644
 --- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
 +++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
 @@ -28,23 +28,34 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
@@ -246,16 +246,3 @@ index a233620c7..207d5ddec 100644
  	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
  
  	terminalRecorder := httptest.NewRecorder()
-diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-index 7dcf69196..96d04a677 100644
---- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-+++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-@@ -200,7 +200,7 @@ func openAIWSPassthroughRequestModelFromSessionFrame(payload []byte) string {
- 
- const openaiWSV2PassthroughModeFields = "ws_mode=passthrough ws_router=v2"
- 
--	var errOpenAIWSPassthroughFirstOutputTimeout = errors.New("openai websocket passthrough first output timeout")
-+var errOpenAIWSPassthroughFirstOutputTimeout = errors.New("openai websocket passthrough first output timeout")
- var errOpenAIWSPassthroughActiveTurnTimeout = errors.New("openai websocket passthrough active turn read timeout")
- 
- type openAIWSPassthroughDeadlinePhase uint8
