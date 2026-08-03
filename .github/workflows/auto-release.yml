@@ -1,11 +1,6 @@
 name: Auto release
 
 on:
-  workflow_run:
-    workflows:
-      - Patch validation
-    types:
-      - completed
   workflow_dispatch:
     inputs:
       upstream_ref:
@@ -31,10 +26,7 @@ env:
 
 jobs:
   release:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'mirror/upstream-main')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout patchset
@@ -86,27 +78,8 @@ jobs:
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout validated mirror candidate
-        if: (github.event_name == 'workflow_run') && (github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true')
-        uses: actions/checkout@v7.0.0
-        with:
-          ref: mirror/upstream-main
-          path: worktree
-          fetch-depth: 0
-
-      - name: Verify validated mirror SHA
-        if: github.event_name == 'workflow_run'
-        run: |
-          set -euo pipefail
-          actual="$(git -C worktree rev-parse HEAD)"
-          expected="${{ github.event.workflow_run.head_sha }}"
-          if [ "$actual" != "$expected" ]; then
-            echo "mirror branch moved after validation: expected $expected, got $actual" >&2
-            exit 1
-          fi
-
       - name: Require manual upstream CI success
-        if: (github.event_name == 'workflow_dispatch') && (github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true')
+        if: steps.resolve_manual.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -243,7 +216,7 @@ jobs:
             org.opencontainers.image.revision=${{ env.RELEASE_REVISION }}
 
       - name: Merge validated sync request
-        if: github.event_name == 'workflow_run' || inputs.validated_mirror_sha != ''
+        if: inputs.validated_mirror_sha != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -259,9 +232,6 @@ jobs:
           fi
           read -r pr_number pr_head_sha <<< "$pr_data"
           expected="${{ inputs.validated_mirror_sha }}"
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            expected="${{ github.event.workflow_run.head_sha }}"
-          fi
           if [ "$pr_head_sha" != "$expected" ]; then
             echo "sync request moved after validation: expected $expected, got $pr_head_sha" >&2
             exit 1
