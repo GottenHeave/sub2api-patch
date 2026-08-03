@@ -1,11 +1,16 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From c9dd2814283f9ea43e8052a83fb675784f9bd21d Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Tue, 14 Jul 2026 10:46:46 +0000
-Subject: [PATCH] test: align downstream fixtures with upstream usage fields
+Subject: [PATCH 23/27] test: align downstream fixtures with upstream usage
+ fields
 
+---
+ backend/internal/handler/failover_loop_test.go       | 10 +++++-----
+ .../repository/usage_log_repo_request_type_test.go   | 12 ++++++++----
+ 2 files changed, 13 insertions(+), 9 deletions(-)
 
 diff --git a/backend/internal/handler/failover_loop_test.go b/backend/internal/handler/failover_loop_test.go
-index 582d1419e..9fdfdff77 100644
+index 582d1419e9bfb51fbd6f64eb7c83c9947369ada4..9fdfdff774e7b2b74b918bfc72ec9e80db3fb18e 100644
 --- a/backend/internal/handler/failover_loop_test.go
 +++ b/backend/internal/handler/failover_loop_test.go
 @@ -495,13 +495,13 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
@@ -48,7 +53,7 @@ index 582d1419e..9fdfdff77 100644
  		require.Equal(t, 1, fs.SwitchCount)
  		require.Contains(t, fs.FailedAccountIDs, int64(301))
 diff --git a/backend/internal/repository/usage_log_repo_request_type_test.go b/backend/internal/repository/usage_log_repo_request_type_test.go
-index 370e49810..e68158bd0 100644
+index 370e498100857650540ca3e439ed06f7e08dfba6..e68158bd01ad01ed004b2c583458b95ff883fd19 100644
 --- a/backend/internal/repository/usage_log_repo_request_type_test.go
 +++ b/backend/internal/repository/usage_log_repo_request_type_test.go
 @@ -721,7 +721,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {

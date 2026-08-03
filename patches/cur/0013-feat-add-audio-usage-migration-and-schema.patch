@@ -1,14 +1,20 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 3928fb9d59b6222cf81ed65c0dc84024d168f0e0 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:50 +0000
-Subject: [PATCH] feat: add audio usage migration and schema
+Subject: [PATCH 13/27] feat: add audio usage migration and schema
 
+---
+ backend/ent/migrate/schema.go                 | 32 +++++++++++--------
+ backend/ent/schema/usage_log.go               |  8 +++++
+ .../migrations/142_usage_log_audio_fields.sql | 19 +++++++++++
+ 3 files changed, 45 insertions(+), 14 deletions(-)
+ create mode 100644 backend/migrations/142_usage_log_audio_fields.sql
 
 diff --git a/backend/ent/migrate/schema.go b/backend/ent/migrate/schema.go
-index 5d78a7433..2b1fa2818 100644
+index 0475bca3bf5ce223677093bd9a2a4d61dbd6f1b2..6914679831abaa4f3ff7ed6ed065f90609a228a3 100644
 --- a/backend/ent/migrate/schema.go
 +++ b/backend/ent/migrate/schema.go
-@@ -1626,6 +1626,10 @@ var (
+@@ -1629,6 +1629,10 @@ var (
  		{Name: "output_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "cache_creation_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "cache_read_tokens", Type: field.TypeInt, Default: 0},
@@ -19,7 +25,7 @@ index 5d78a7433..2b1fa2818 100644
  		{Name: "cache_creation_5m_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "cache_creation_1h_tokens", Type: field.TypeInt, Default: 0},
  		{Name: "input_cost", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,10)"}},
-@@ -1668,31 +1672,31 @@ var (
+@@ -1671,31 +1675,31 @@ var (
  		ForeignKeys: []*schema.ForeignKey{
  			{
  				Symbol:     "usage_logs_api_keys_usage_logs",
@@ -56,7 +62,7 @@ index 5d78a7433..2b1fa2818 100644
  				RefColumns: []*schema.Column{UserSubscriptionsColumns[0]},
  				OnDelete:   schema.SetNull,
  			},
-@@ -1701,32 +1705,32 @@ var (
+@@ -1704,32 +1708,32 @@ var (
  			{
  				Name:    "usagelog_user_id",
  				Unique:  false,
@@ -95,7 +101,7 @@ index 5d78a7433..2b1fa2818 100644
  			},
  			{
  				Name:    "usagelog_model",
-@@ -1746,17 +1750,17 @@ var (
+@@ -1749,17 +1753,17 @@ var (
  			{
  				Name:    "usagelog_user_id_created_at",
  				Unique:  false,
@@ -117,7 +123,7 @@ index 5d78a7433..2b1fa2818 100644
  		},
  	}
 diff --git a/backend/ent/schema/usage_log.go b/backend/ent/schema/usage_log.go
-index 6d8c2d419..b817b0446 100644
+index 6d8c2d41915801880800a7b6aa1c3831ad19fc21..b817b0446ac12d2760dcf422758edecc1d13470b 100644
 --- a/backend/ent/schema/usage_log.go
 +++ b/backend/ent/schema/usage_log.go
 @@ -73,6 +73,14 @@ func (UsageLog) Fields() []ent.Field {
@@ -137,7 +143,7 @@ index 6d8c2d419..b817b0446 100644
  		field.Int("cache_creation_1h_tokens").
 diff --git a/backend/migrations/142_usage_log_audio_fields.sql b/backend/migrations/142_usage_log_audio_fields.sql
 new file mode 100644
-index 000000000..36473bf37
+index 0000000000000000000000000000000000000000..36473bf370b2162b38131fe10e34a5c7e24bc48d
 --- /dev/null
 +++ b/backend/migrations/142_usage_log_audio_fields.sql
 @@ -0,0 +1,19 @@

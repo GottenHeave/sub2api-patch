@@ -1,11 +1,16 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 26f501d70134e6e9a1084d3170d502d795c817eb Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:51 +0000
-Subject: [PATCH] feat: display audio usage accounting
+Subject: [PATCH 18/27] feat: display audio usage accounting
 
+---
+ .../src/components/admin/usage/UsageTable.vue | 64 +++++++-----
+ .../admin/usage/__tests__/UsageTable.spec.ts  | 98 +++++++++++++++++++
+ frontend/src/types/index.ts                   |  4 +
+ 3 files changed, 144 insertions(+), 22 deletions(-)
 
 diff --git a/frontend/src/components/admin/usage/UsageTable.vue b/frontend/src/components/admin/usage/UsageTable.vue
-index 032ecc0bd..a8819b25e 100644
+index 032ecc0bd2e0e96ac972d86b6e1c4f7e8178d054..a8819b25ec99ac0d63aa09dc8dd239ca6ab7dcf9 100644
 --- a/frontend/src/components/admin/usage/UsageTable.vue
 +++ b/frontend/src/components/admin/usage/UsageTable.vue
 @@ -125,21 +125,21 @@
@@ -135,7 +140,7 @@ index 032ecc0bd..a8819b25e 100644
  import EmptyState from '@/components/common/EmptyState.vue'
  import IpGeoCell from '@/components/common/IpGeoCell.vue'
 diff --git a/frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts b/frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts
-index 6f527f1d5..dcebd7e7e 100644
+index 6f527f1d5f5b9340f415e31eda9d977454ebf784..dcebd7e7e93a583b9dcd145d472be38daeccc19d 100644
 --- a/frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts
 +++ b/frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts
 @@ -48,6 +48,12 @@ const messages: Record<string, string> = {
@@ -258,10 +263,10 @@ index 6f527f1d5..dcebd7e7e 100644
      {
        name: 'defaulted row',
 diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
-index 98baf3c4e..b5503e6c1 100644
+index cb0a698fb907d6228fcef710831120558c23d438..f2a9cd7819ce7fdb27c3f08e0338190df3f37540 100644
 --- a/frontend/src/types/index.ts
 +++ b/frontend/src/types/index.ts
-@@ -1539,8 +1539,12 @@ export interface UsageLog {
+@@ -1563,8 +1563,12 @@ export interface UsageLog {
  
    input_tokens: number
    output_tokens: number

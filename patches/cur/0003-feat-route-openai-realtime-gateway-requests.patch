@@ -1,11 +1,17 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 02699e7a939068685a9e080be3475ad779dae6b3 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:49 +0000
-Subject: [PATCH] feat: route OpenAI realtime gateway requests
+Subject: [PATCH 03/27] feat: route OpenAI realtime gateway requests
 
+---
+ backend/internal/handler/endpoint.go          |   85 +-
+ .../handler/openai_gateway_handler.go         |  182 +-
+ backend/internal/server/routes/gateway.go     |   69 +
+ .../service/openai_gateway_service.go         | 4919 +++++++++++++++++
+ 4 files changed, 5199 insertions(+), 56 deletions(-)
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
-index df8776981..986a4eabe 100644
+index df8776981c82d7f0e502ce516d8319114984258e..986a4eabef09cb8523490bef949a1cacf7d16603 100644
 --- a/backend/internal/handler/endpoint.go
 +++ b/backend/internal/handler/endpoint.go
 @@ -15,20 +15,25 @@ import (
@@ -126,11 +132,11 @@ index df8776981..986a4eabe 100644
  // Middleware
  // ──────────────────────────────────────────────────────────
 diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
-index 773a87a86..30f49ec74 100644
+index a02f5efa4c801aabd79a1fc69c3486f4e4295294..647841d7c6ca7dc2744f4c96943d3bae8f1722e8 100644
 --- a/backend/internal/handler/openai_gateway_handler.go
 +++ b/backend/internal/handler/openai_gateway_handler.go
-@@ -1434,9 +1434,30 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
- 	return wrapReleaseOnDone(ctx, accountReleaseFunc), true
+@@ -1578,9 +1578,30 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
+ 	return wrapReleaseOnDone(ctx, accountReleaseFunc), openAISlotAcquireOK
  }
  
 +type openAIWebSocketEndpointOptions struct {
@@ -160,7 +166,7 @@ index 773a87a86..30f49ec74 100644
  	if !isOpenAIWSUpgradeRequest(c.Request) {
  		h.errorResponse(c, http.StatusUpgradeRequired, "invalid_request_error", "WebSocket upgrade required (Upgrade: websocket)")
  		return
-@@ -1456,11 +1477,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1600,11 +1621,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
  	reqLog := requestLogger(
  		c,
@@ -174,7 +180,7 @@ index 773a87a86..30f49ec74 100644
  	)
  	if !h.ensureResponsesDependencies(c, reqLog) {
  		return
-@@ -1511,42 +1533,52 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1655,42 +1677,52 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  	}()
  	wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
  
@@ -257,7 +263,7 @@ index 773a87a86..30f49ec74 100644
  		return
  	}
  	ensureCompositeTargetPlatform(c, apiKey, reqModel)
-@@ -1582,7 +1614,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1726,7 +1758,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  	}
  
  	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
@@ -266,7 +272,7 @@ index 773a87a86..30f49ec74 100644
  		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
  		return
  	}
-@@ -1722,10 +1754,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -1875,10 +1907,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  			return
  		}
  		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
@@ -279,7 +285,7 @@ index 773a87a86..30f49ec74 100644
  			sessionHash,
  			reqModel,
  			failedAccountIDs,
-@@ -2012,9 +2044,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2218,9 +2250,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  		// WebSocket 首包可能很大，hash 必须在 hooks 外算成字符串，避免 AfterTurn 闭包保活请求体。
  		requestPayloadHash = service.HashUsageRequestPayload(wsFirstMessage)
  
@@ -301,7 +307,7 @@ index 773a87a86..30f49ec74 100644
  				if handleWSFailover(account, failoverErr) {
  					continue
  				}
-@@ -2024,14 +2066,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2230,14 +2272,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  			if errors.Is(context.Cause(ctx), service.ErrOpenAIWSIngressLeaseLost) {
  				reqLog.Warn("openai.websocket_ingress_lease_lost",
  					zap.Int64("account_id", account.ID),
@@ -318,7 +324,7 @@ index 773a87a86..30f49ec74 100644
  				reqLog.Info("openai.websocket_ingress_closed_normally",
  					zap.Int64("account_id", account.ID),
  					zap.String("reason", closeErr.Reason()),
-@@ -2040,13 +2082,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2246,13 +2288,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  				return
  			}
  
@@ -335,7 +341,7 @@ index 773a87a86..30f49ec74 100644
  				zap.String("close_status", closeStatus),
  				zap.String("close_reason", closeReason),
  			}
-@@ -2061,7 +2103,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2267,7 +2309,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  				proxyFailedFields = append(proxyFailedFields, zap.Int64p("proxy_id", account.ProxyID))
  			}
  			reqLog.Warn("openai.websocket_proxy_failed", proxyFailedFields...)
@@ -344,7 +350,7 @@ index 773a87a86..30f49ec74 100644
  				closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
  				return
  			}
-@@ -2074,6 +2116,62 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2280,6 +2322,62 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
  }
  
@@ -408,10 +414,10 @@ index 773a87a86..30f49ec74 100644
  	recovered := recover()
  	if recovered == nil {
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index b059646fa..8915f9bc9 100644
+index 1ce1fd97882eee3f08e8d9b67966471945324b34..0d5159c9261c841147b5d2a132e5ef53424c15ea 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -200,6 +200,63 @@ func RegisterGatewayRoutes(
+@@ -219,6 +219,63 @@ func RegisterGatewayRoutes(
  		gateway.POST("/alpha/search", textBodyLimit, h.OpenAIGateway.AlphaSearch)
  		gateway.GET("/responses", func(c *gin.Context) {
  			h.OpenAIGateway.ResponsesWebSocket(c)
@@ -475,7 +481,7 @@ index b059646fa..8915f9bc9 100644
  		})
  		// OpenAI Chat Completions API: auto-route based on group platform
  		gateway.POST("/chat/completions", func(c *gin.Context) {
-@@ -320,6 +377,18 @@ func RegisterGatewayRoutes(
+@@ -339,6 +396,18 @@ func RegisterGatewayRoutes(
  	r.POST("/videos/extensions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, videoExtensionHandler)
  	r.GET("/videos/:request_id", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, videoStatusHandler)
  	r.GET("/videos/:request_id/content", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, videoContentHandler)
@@ -495,7 +501,7 @@ index b059646fa..8915f9bc9 100644
  	// Antigravity 模型列表
  	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)
 diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
-index c06a98990..166e192ea 100644
+index 8f7911f002a2a078944af329680a37c75d6ea17f..80200aec1cd1def2dce2d9c14b515c08edf912e2 100644
 --- a/backend/internal/service/openai_gateway_service.go
 +++ b/backend/internal/service/openai_gateway_service.go
 @@ -32,6 +32,7 @@ const (
@@ -517,7 +523,7 @@ index c06a98990..166e192ea 100644
  }
  
  // OpenAIForwardResult represents the result of forwarding
-@@ -1181,3 +1186,4917 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
+@@ -1187,3 +1192,4917 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
  		return "", "", fmt.Errorf("unsupported account type: %s", account.Type)
  	}
  }

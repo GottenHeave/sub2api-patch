@@ -1,11 +1,23 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From abe3ed65a188c6d2c1c1304399dcad92b56ed617 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sun, 26 Jul 2026 21:54:28 +0000
-Subject: [PATCH] fix: align upstream 0.1.165 interfaces and audit coverage
+Subject: [PATCH 24/27] fix: align upstream 0.1.165 interfaces and audit
+ coverage
 
+---
+ .../handler/openai_audio_transcriptions.go    | 13 ++++--
+ .../internal/handler/openai_realtime_calls.go | 13 +++---
+ backend/internal/server/routes/gateway.go     |  1 +
+ .../internal/server/routes/gateway_test.go    |  1 +
+ .../prompt_audit_route_coverage_test.go       | 45 ++++++++++++-------
+ .../internal/service/billing_service_test.go  |  4 +-
+ .../service/openai_account_scheduler_test.go  |  2 +-
+ .../openai_audio_transcriptions_test.go       |  4 ++
+ .../service/openai_gateway_service_test.go    |  2 +-
+ 9 files changed, 54 insertions(+), 31 deletions(-)
 
 diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
-index efd6c093b..e81fb6c3d 100644
+index efd6c093b25083122837ab002ed3992384eb255d..e81fb6c3d3ca20cfd1dd842f3eb65badee129b41 100644
 --- a/backend/internal/handler/openai_audio_transcriptions.go
 +++ b/backend/internal/handler/openai_audio_transcriptions.go
 @@ -69,6 +69,10 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
@@ -58,7 +70,7 @@ index efd6c093b..e81fb6c3d 100644
  
  		userAgent := c.GetHeader("User-Agent")
 diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
-index cf368f00b..d3f9f30f9 100644
+index cf368f00b0e3fdd06291666da2d861e6dc288ad5..d3f9f30f9bdaf94fa2740dd9f0fed64dbd29db1e 100644
 --- a/backend/internal/handler/openai_realtime_calls.go
 +++ b/backend/internal/handler/openai_realtime_calls.go
 @@ -71,8 +71,8 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
@@ -111,10 +123,10 @@ index cf368f00b..d3f9f30f9 100644
  		return
  	}
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index 8915f9bc9..df967215f 100644
+index 0d5159c9261c841147b5d2a132e5ef53424c15ea..850860035df1d2276cee6d1f5b4cea63a1f4a691 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -200,6 +200,7 @@ func RegisterGatewayRoutes(
+@@ -219,6 +219,7 @@ func RegisterGatewayRoutes(
  		gateway.POST("/alpha/search", textBodyLimit, h.OpenAIGateway.AlphaSearch)
  		gateway.GET("/responses", func(c *gin.Context) {
  			h.OpenAIGateway.ResponsesWebSocket(c)
@@ -123,7 +135,7 @@ index 8915f9bc9..df967215f 100644
  			if getGroupPlatform(c) != service.PlatformOpenAI {
  				c.JSON(http.StatusNotFound, gin.H{
 diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
-index 1d8da7afb..097e90e74 100644
+index 7febdb93854f74ee11ae3dd1d69e4a75352ea135..62b566a8b220c0819c2e818b2c1b353c99486d53 100644
 --- a/backend/internal/server/routes/gateway_test.go
 +++ b/backend/internal/server/routes/gateway_test.go
 @@ -80,6 +80,7 @@ func newGatewayRoutesTestRouterForPlatform(platform string) *gin.Engine {
@@ -135,7 +147,7 @@ index 1d8da7afb..097e90e74 100644
  	)
  
 diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-index e4591ab4f..369da807d 100644
+index e4591ab4f55a8a13da112b04f5ae26251742d487..369da807d225d0731f7d081bf97d14c06fc642bd 100644
 --- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
 +++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
 @@ -28,23 +28,34 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
@@ -191,10 +203,10 @@ index e4591ab4f..369da807d 100644
  	excluded := map[string]string{
  		"/messages/count_tokens":     "tokenization only; it does not execute a model request",
 diff --git a/backend/internal/service/billing_service_test.go b/backend/internal/service/billing_service_test.go
-index 855a95922..eef3d97e6 100644
+index 3ffb4cf2e5c69db6fb0768834a17b25ff545f957..b5786f4f57acb619bf60dc3b5c4e1d5962a98286 100644
 --- a/backend/internal/service/billing_service_test.go
 +++ b/backend/internal/service/billing_service_test.go
-@@ -869,8 +869,8 @@ func TestComputeTokenBreakdown_GptImage2ImageEditIssue4386(t *testing.T) {
+@@ -930,8 +930,8 @@ func TestComputeTokenBreakdown_GptImage2ImageEditIssue4386(t *testing.T) {
  
  	cost := svc.computeTokenBreakdown(pricing, tokens, 1.0, "", false)
  
@@ -206,10 +218,10 @@ index 855a95922..eef3d97e6 100644
  	require.InDelta(t, wantTextInput, cost.InputCost, 1e-15, "InputCost 仅含文本输入")
  	require.InDelta(t, wantImageInput, cost.ImageInputCost, 1e-15, "图片输入按 $8/1M 独立计费")
 diff --git a/backend/internal/service/openai_account_scheduler_test.go b/backend/internal/service/openai_account_scheduler_test.go
-index dd343f6ba..f352b0fdc 100644
+index e24b61c633280144f6439c2ad7aa8290d47e9638..afa7656260420fe978eb5de242aa00124450f4bb 100644
 --- a/backend/internal/service/openai_account_scheduler_test.go
 +++ b/backend/internal/service/openai_account_scheduler_test.go
-@@ -2667,7 +2667,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesAccountPriorityWith
+@@ -2705,7 +2705,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesAccountPriorityWith
  
  func TestOpenAIAccountScheduler_SkipsAccountBlockedForRequestedModel(t *testing.T) {
  	now := time.Now()
@@ -219,7 +231,7 @@ index dd343f6ba..f352b0fdc 100644
  	svc.openaiModelTransient.recordFailure(account.ID, "gpt-5.5", now)
  	svc.openaiModelTransient.recordFailure(account.ID, "gpt-5.5", now.Add(time.Millisecond))
 diff --git a/backend/internal/service/openai_audio_transcriptions_test.go b/backend/internal/service/openai_audio_transcriptions_test.go
-index c82ba0776..4a774add2 100644
+index c82ba07760aac9ddda3567f94057dd1e37c79137..4a774add25096e74173e3cb7ba42a94613bdc9dc 100644
 --- a/backend/internal/service/openai_audio_transcriptions_test.go
 +++ b/backend/internal/service/openai_audio_transcriptions_test.go
 @@ -196,6 +196,10 @@ func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulableUngroupedByP
@@ -234,10 +246,10 @@ index c82ba0776..4a774add2 100644
  	return nil
  }
 diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
-index a233620c7..207d5ddec 100644
+index b7add107fa1ad869dbc0de4ba3620d49c6ed4328..cb0f93e0ef7ebb9f93c9eb6fac583082393769bb 100644
 --- a/backend/internal/service/openai_gateway_service_test.go
 +++ b/backend/internal/service/openai_gateway_service_test.go
-@@ -1393,7 +1393,7 @@ func TestOpenAIStreamingPostOutputDisconnectQuarantinesSharedProxyWithoutSameStr
+@@ -1520,7 +1520,7 @@ func TestOpenAIStreamingPostOutputDisconnectQuarantinesSharedProxyWithoutSameStr
  func TestOpenAIStreamingTerminalAndClientCancellationDoNotQuarantineProxy(t *testing.T) {
  	gin.SetMode(gin.TestMode)
  	proxyID := int64(4699)

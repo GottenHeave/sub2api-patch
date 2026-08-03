@@ -1,11 +1,14 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 4b8cf6dccc560780707e58e6dcb6dfd2f7f4cb5d Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:49 +0000
-Subject: [PATCH] fix: improve proxy probing and transient network tests
+Subject: [PATCH 02/27] fix: improve proxy probing and transient network tests
 
+---
+ .../pkg/tlsfingerprint/dialer_integration_test.go      | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
 
 diff --git a/backend/internal/pkg/tlsfingerprint/dialer_integration_test.go b/backend/internal/pkg/tlsfingerprint/dialer_integration_test.go
-index 9912ddb3b..cef2e6ba5 100644
+index 9912ddb3bb1dd20118e24a0f5be806bbfdaf089c..cef2e6ba5333587c2cb5d1f82c6d5dc7e8a1f838 100644
 --- a/backend/internal/pkg/tlsfingerprint/dialer_integration_test.go
 +++ b/backend/internal/pkg/tlsfingerprint/dialer_integration_test.go
 @@ -11,6 +11,7 @@ package tlsfingerprint

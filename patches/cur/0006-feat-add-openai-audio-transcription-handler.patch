@@ -1,12 +1,16 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From fb096382d7c2feafea60e2c0a479b602a5096723 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:49 +0000
-Subject: [PATCH] feat: add OpenAI audio transcription handler
+Subject: [PATCH 06/27] feat: add OpenAI audio transcription handler
 
+---
+ .../handler/openai_audio_transcriptions.go    | 263 ++++++++++++++++++
+ 1 file changed, 263 insertions(+)
+ create mode 100644 backend/internal/handler/openai_audio_transcriptions.go
 
 diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
 new file mode 100644
-index 000000000..efd6c093b
+index 0000000000000000000000000000000000000000..efd6c093b25083122837ab002ed3992384eb255d
 --- /dev/null
 +++ b/backend/internal/handler/openai_audio_transcriptions.go
 @@ -0,0 +1,263 @@

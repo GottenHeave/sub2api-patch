@@ -1,12 +1,18 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 25c552bcfe859a8c8a37a317c5167c5865223e9d Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:50 +0000
-Subject: [PATCH] test: cover OpenAI realtime REST endpoints
+Subject: [PATCH 12/27] test: cover OpenAI realtime REST endpoints
 
+---
+ .../handler/openai_realtime_calls_test.go     | 283 ++++++++++++
+ .../service/openai_realtime_calls_test.go     | 413 ++++++++++++++++++
+ 2 files changed, 696 insertions(+)
+ create mode 100644 backend/internal/handler/openai_realtime_calls_test.go
+ create mode 100644 backend/internal/service/openai_realtime_calls_test.go
 
 diff --git a/backend/internal/handler/openai_realtime_calls_test.go b/backend/internal/handler/openai_realtime_calls_test.go
 new file mode 100644
-index 000000000..b9f1d3af7
+index 0000000000000000000000000000000000000000..b9f1d3af70677978eaf6ce7a3a16da2eab32af41
 --- /dev/null
 +++ b/backend/internal/handler/openai_realtime_calls_test.go
 @@ -0,0 +1,283 @@
@@ -295,7 +301,7 @@ index 000000000..b9f1d3af7
 +}
 diff --git a/backend/internal/service/openai_realtime_calls_test.go b/backend/internal/service/openai_realtime_calls_test.go
 new file mode 100644
-index 000000000..a29063514
+index 0000000000000000000000000000000000000000..a290635141464aa055e1ee1faa64050ee426656f
 --- /dev/null
 +++ b/backend/internal/service/openai_realtime_calls_test.go
 @@ -0,0 +1,413 @@

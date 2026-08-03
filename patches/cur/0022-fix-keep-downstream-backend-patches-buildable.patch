@@ -1,14 +1,33 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 100f10a2d86356ffda2ca17bba464930e1d1678f Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Thu, 9 Jul 2026 09:25:16 +0000
-Subject: [PATCH] fix: keep downstream backend patches buildable
+Subject: [PATCH 21/27] fix: keep downstream backend patches buildable
 
+---
+ backend/internal/handler/dto/mappers.go       |    1 -
+ .../openai_audio_transcriptions_test.go       |    2 +
+ .../handler/openai_realtime_calls_test.go     |    2 +
+ .../repository/usage_log_repo_dashboard.go    |  128 +-
+ .../usage_log_repo_request_type_test.go       |  207 +-
+ .../repository/usage_log_repo_stats.go        |  222 +-
+ .../service/openai_audio_transcriptions.go    |    2 +-
+ .../openai_audio_transcriptions_test.go       |   12 +
+ .../service/openai_gateway_request_body.go    |    4 +
+ .../openai_gateway_response_handling.go       |   36 +
+ .../service/openai_gateway_service.go         | 4914 -----------------
+ .../internal/service/openai_gateway_usage.go  |   70 +-
+ .../internal/service/openai_realtime_calls.go |    2 +-
+ .../internal/service/openai_ws_forwarder.go   | 3598 ------------
+ .../service/openai_ws_forwarder_ingress.go    |   43 +
+ .../service/openai_ws_forwarder_payload.go    |   60 +-
+ .../openai_ws_forwarder_success_test.go       |    6 +-
+ 17 files changed, 423 insertions(+), 8886 deletions(-)
 
 diff --git a/backend/internal/handler/dto/mappers.go b/backend/internal/handler/dto/mappers.go
-index d624f403c..1c46e01cf 100644
+index 59b56856a78d95bf107417b678c14693d437b9a2..6916952cedbc788c447ee383024c417499269102 100644
 --- a/backend/internal/handler/dto/mappers.go
 +++ b/backend/internal/handler/dto/mappers.go
-@@ -635,7 +635,6 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
+@@ -638,7 +638,6 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
  		ServiceTier:               l.ServiceTier,
  		ReasoningEffort:           l.ReasoningEffort,
  		InboundEndpoint:           l.InboundEndpoint,
@@ -17,7 +36,7 @@ index d624f403c..1c46e01cf 100644
  		SubscriptionID:            l.SubscriptionID,
  		InputTokens:               l.InputTokens,
 diff --git a/backend/internal/handler/openai_audio_transcriptions_test.go b/backend/internal/handler/openai_audio_transcriptions_test.go
-index bdf3bfb80..612bc90f3 100644
+index bdf3bfb80eebed6d4dd01461f4f4a1740fbcf77f..612bc90f3293398f2976585b08955d8bd178e322 100644
 --- a/backend/internal/handler/openai_audio_transcriptions_test.go
 +++ b/backend/internal/handler/openai_audio_transcriptions_test.go
 @@ -276,6 +276,7 @@ func newAudioTranscriptionHandlerForTest(t *testing.T, upstream service.HTTPUpst
@@ -37,7 +56,7 @@ index bdf3bfb80..612bc90f3 100644
  	)
  }
 diff --git a/backend/internal/handler/openai_realtime_calls_test.go b/backend/internal/handler/openai_realtime_calls_test.go
-index b9f1d3af7..7b4f45663 100644
+index b9f1d3af70677978eaf6ce7a3a16da2eab32af41..7b4f45663614313e9eacc71bc85b8428858a6d00 100644
 --- a/backend/internal/handler/openai_realtime_calls_test.go
 +++ b/backend/internal/handler/openai_realtime_calls_test.go
 @@ -223,6 +223,7 @@ func newRealtimeCallsHandlerForTest(t *testing.T, upstream service.HTTPUpstream,
@@ -57,7 +76,7 @@ index b9f1d3af7..7b4f45663 100644
  	)
  }
 diff --git a/backend/internal/repository/usage_log_repo_dashboard.go b/backend/internal/repository/usage_log_repo_dashboard.go
-index 46ebf43bc..8bea46ede 100644
+index 46ebf43bcdf8073b5b70b3463f487db43e98b498..8bea46eded9dd866aa97b819fe6795c98e62ad51 100644
 --- a/backend/internal/repository/usage_log_repo_dashboard.go
 +++ b/backend/internal/repository/usage_log_repo_dashboard.go
 @@ -219,14 +219,14 @@ func (r *usageLogRepository) fillDashboardUsageStatsAggregated(ctx context.Conte
@@ -243,7 +262,7 @@ index 46ebf43bc..8bea46ede 100644
  	); err != nil {
  		return nil, err
 diff --git a/backend/internal/repository/usage_log_repo_request_type_test.go b/backend/internal/repository/usage_log_repo_request_type_test.go
-index 9c59b38e5..370e49810 100644
+index 9c59b38e54eff28c3289cfb6ee49609b75bb7fde..370e498100857650540ca3e439ed06f7e08dfba6 100644
 --- a/backend/internal/repository/usage_log_repo_request_type_test.go
 +++ b/backend/internal/repository/usage_log_repo_request_type_test.go
 @@ -40,65 +40,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
@@ -559,7 +578,7 @@ index 9c59b38e5..370e49810 100644
  			sql.NullString{},  // model_mapping_chain
  			sql.NullString{},  // billing_tier
 diff --git a/backend/internal/repository/usage_log_repo_stats.go b/backend/internal/repository/usage_log_repo_stats.go
-index d3d61364a..cb3ed827e 100644
+index d3d61364a364c1161e54adb7e487dc4c4c27a473..cb3ed827e87a72b7a78c38c94eb7e2872226763f 100644
 --- a/backend/internal/repository/usage_log_repo_stats.go
 +++ b/backend/internal/repository/usage_log_repo_stats.go
 @@ -47,19 +47,19 @@ func (r *usageLogRepository) GetUserStatsAggregated(ctx context.Context, userID
@@ -842,7 +861,7 @@ index d3d61364a..cb3ed827e 100644
  		)
  	}
 diff --git a/backend/internal/service/openai_audio_transcriptions.go b/backend/internal/service/openai_audio_transcriptions.go
-index ae7497453..c410b86dc 100644
+index ae749745362e7165b7feba122f8613b702d0eb84..c410b86dc7c7a02288d90312b77ba818131d7cf0 100644
 --- a/backend/internal/service/openai_audio_transcriptions.go
 +++ b/backend/internal/service/openai_audio_transcriptions.go
 @@ -365,7 +365,7 @@ func (s *OpenAIGatewayService) handleOpenAIAudioTranscriptionFailoverSideEffects
@@ -855,7 +874,7 @@ index ae7497453..c410b86dc 100644
  
  func parseOpenAIAudioTranscriptionRetryAfterSeconds(body []byte) *int64 {
 diff --git a/backend/internal/service/openai_audio_transcriptions_test.go b/backend/internal/service/openai_audio_transcriptions_test.go
-index 543733d39..c82ba0776 100644
+index 543733d3989e8557f37977f92eb367f7bc4b7f45..c82ba07760aac9ddda3567f94057dd1e37c79137 100644
 --- a/backend/internal/service/openai_audio_transcriptions_test.go
 +++ b/backend/internal/service/openai_audio_transcriptions_test.go
 @@ -116,6 +116,10 @@ func (r *audioTranscriptionRateLimitAccountRepoStub) ListWithFilters(context.Con
@@ -892,7 +911,7 @@ index 543733d39..c82ba0776 100644
  	t.Helper()
  	mediaType, params, err := mime.ParseMediaType(contentType)
 diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
-index fdd401911..927b82bd6 100644
+index 2bb586ce52025c5e5d0dd8be8dde480e1b4b0e54..e718993ca99940aa455a243d512fb64240fc6fe1 100644
 --- a/backend/internal/service/openai_gateway_request_body.go
 +++ b/backend/internal/service/openai_gateway_request_body.go
 @@ -45,6 +45,10 @@ func buildOpenAIResponsesURL(base string) string {
@@ -907,7 +926,7 @@ index fdd401911..927b82bd6 100644
  	if len(reqBody) == 0 {
  		return false
 diff --git a/backend/internal/service/openai_gateway_response_handling.go b/backend/internal/service/openai_gateway_response_handling.go
-index 7c1072402..26d35a247 100644
+index 2a1993c463e399278753eb4c0f212d2471f0842c..f985ab589f45383a623efeddb0b8ccde0f21f012 100644
 --- a/backend/internal/service/openai_gateway_response_handling.go
 +++ b/backend/internal/service/openai_gateway_response_handling.go
 @@ -1065,6 +1065,32 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
@@ -961,10 +980,10 @@ index 7c1072402..26d35a247 100644
  	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
  	if err != nil {
 diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
-index 166e192ea..1f40cc705 100644
+index 80200aec1cd1def2dce2d9c14b515c08edf912e2..03057d337c4f2c2d9d922801e08a9d224d353e34 100644
 --- a/backend/internal/service/openai_gateway_service.go
 +++ b/backend/internal/service/openai_gateway_service.go
-@@ -1186,4917 +1186,3 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
+@@ -1192,4917 +1192,3 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
  		return "", "", fmt.Errorf("unsupported account type: %s", account.Type)
  	}
  }
@@ -5883,10 +5902,10 @@ index 166e192ea..1f40cc705 100644
 -	}
 -}
 diff --git a/backend/internal/service/openai_gateway_usage.go b/backend/internal/service/openai_gateway_usage.go
-index 124469833..5cfa9eac3 100644
+index 0725c34cf7010faec624e60ea237f12fcb62aabf..97690495947662707b6ad08a073886b91a6dfca8 100644
 --- a/backend/internal/service/openai_gateway_usage.go
 +++ b/backend/internal/service/openai_gateway_usage.go
-@@ -140,15 +140,23 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
+@@ -153,15 +153,23 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
  	if actualInputTokens < 0 {
  		actualInputTokens = 0
  	}
@@ -5916,7 +5935,7 @@ index 124469833..5cfa9eac3 100644
  	}
  
  	// Get rate multiplier
-@@ -250,29 +258,33 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
+@@ -265,29 +273,33 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
  	}
  
  	usageLog := &UsageLog{
@@ -5974,7 +5993,7 @@ index 124469833..5cfa9eac3 100644
  	isVideoUsage := isGrokVideoUsageResult(result, billingModels)
  	if isVideoUsage {
 diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
-index 34b96c41b..86ee35621 100644
+index 34b96c41bc808deb3a8d8a6e9e963b6a218e08e8..86ee3562153162ac2b2f2626756ec4063a385bbd 100644
 --- a/backend/internal/service/openai_realtime_calls.go
 +++ b/backend/internal/service/openai_realtime_calls.go
 @@ -246,7 +246,7 @@ func (s *OpenAIGatewayService) ForwardRealtimeREST(
@@ -5987,7 +6006,7 @@ index 34b96c41b..86ee35621 100644
  				StatusCode:             resp.StatusCode,
  				ResponseBody:           respBody,
 diff --git a/backend/internal/service/openai_ws_forwarder.go b/backend/internal/service/openai_ws_forwarder.go
-index ace47df79..9c0869fbe 100644
+index ace47df79219a9fb0e7957b7dbc9867ed7dc33f3..9c0869fbee2758c9fb10d70ea521e2e7278b6805 100644
 --- a/backend/internal/service/openai_ws_forwarder.go
 +++ b/backend/internal/service/openai_ws_forwarder.go
 @@ -393,3601 +393,3 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
@@ -9593,10 +9612,10 @@ index ace47df79..9c0869fbe 100644
 -	s.openaiWSFallbackUntil.Delete(accountID)
 -}
 diff --git a/backend/internal/service/openai_ws_forwarder_ingress.go b/backend/internal/service/openai_ws_forwarder_ingress.go
-index 3664ae8b2..83694347c 100644
+index 23582c2ceac725ab24c25185d366ede8b722255f..b429072bddf0bc0ca06768f1b482148fa6003ea5 100644
 --- a/backend/internal/service/openai_ws_forwarder_ingress.go
 +++ b/backend/internal/service/openai_ws_forwarder_ingress.go
-@@ -86,6 +86,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
+@@ -91,6 +91,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
  				firstClientMessage,
  				hooks,
  				wsDecision,
@@ -9605,7 +9624,7 @@ index 3664ae8b2..83694347c 100644
  			)
  		case OpenAIWSIngressModeHTTPBridge:
  			forceHTTPBridge = true
-@@ -1669,3 +1671,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
+@@ -1674,3 +1676,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
  		turn++
  	}
  }
@@ -9651,7 +9670,7 @@ index 3664ae8b2..83694347c 100644
 +	return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision, upstreamEndpoint, model)
 +}
 diff --git a/backend/internal/service/openai_ws_forwarder_payload.go b/backend/internal/service/openai_ws_forwarder_payload.go
-index b598813f1..802928d41 100644
+index b598813f18ffd5cc0029a1a983ff9b202f159554..802928d41da97253d713634232d245a83272a5e2 100644
 --- a/backend/internal/service/openai_ws_forwarder_payload.go
 +++ b/backend/internal/service/openai_ws_forwarder_payload.go
 @@ -26,26 +26,62 @@ func validateOpenAIWSBearerToken(account *Account, token string) error {
@@ -9755,7 +9774,7 @@ index b598813f1..802928d41 100644
  	customUA := ""
  	if account != nil {
 diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
-index 7c5209ca2..8742c6a74 100644
+index 4f0a717def795622bf3d11027fa43bca15f08f67..f9e054dfb24df302ef178660ae097103856f886e 100644
 --- a/backend/internal/service/openai_ws_forwarder_success_test.go
 +++ b/backend/internal/service/openai_ws_forwarder_success_test.go
 @@ -279,7 +279,8 @@ func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOmitsResponsesBeta(t *

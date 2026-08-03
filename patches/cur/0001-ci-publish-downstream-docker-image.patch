@@ -1,12 +1,16 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From ab26e89af078e78722ee0fead3dd336ecbb36b6e Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:49 +0000
-Subject: [PATCH] ci: publish downstream docker image
+Subject: [PATCH 01/27] ci: publish downstream docker image
 
+---
+ .github/workflows/docker-ghcr.yml | 49 +++++++++++++++++++++++++++++++
+ 1 file changed, 49 insertions(+)
+ create mode 100644 .github/workflows/docker-ghcr.yml
 
 diff --git a/.github/workflows/docker-ghcr.yml b/.github/workflows/docker-ghcr.yml
 new file mode 100644
-index 000000000..6af19c9e7
+index 0000000000000000000000000000000000000000..6af19c9e7efebef1939f02aa11b0ebcd3ca67b27
 --- /dev/null
 +++ b/.github/workflows/docker-ghcr.yml
 @@ -0,0 +1,49 @@

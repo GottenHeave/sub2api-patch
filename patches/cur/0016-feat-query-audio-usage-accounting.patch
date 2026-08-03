@@ -1,11 +1,25 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From d4f06598b1ce0bd23aeed76763b98135c95a8a48 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:51 +0000
-Subject: [PATCH] feat: query audio usage accounting
+Subject: [PATCH 16/27] feat: query audio usage accounting
 
+---
+ .../repository/dashboard_aggregation_repo.go  |  32 ++
+ .../internal/repository/ops_repo_dashboard.go |   4 +-
+ .../internal/repository/ops_repo_preagg.go    |   2 +-
+ .../repository/ops_repo_realtime_traffic.go   |   2 +-
+ .../internal/repository/ops_repo_trends.go    |   6 +-
+ backend/internal/repository/usage_log_repo.go |  49 +++
+ .../repository/usage_log_repo_dashboard.go    | 239 ++++++++-----
+ .../repository/usage_log_repo_insert.go       | 116 +++++--
+ .../repository/usage_log_repo_query.go        |  14 +-
+ .../repository/usage_log_repo_stats.go        | 316 +++++++++++-------
+ .../repository/usage_log_repo_trend.go        |  44 +--
+ .../internal/service/ops_metrics_collector.go |   2 +-
+ 12 files changed, 550 insertions(+), 276 deletions(-)
 
 diff --git a/backend/internal/repository/dashboard_aggregation_repo.go b/backend/internal/repository/dashboard_aggregation_repo.go
-index 5e09e75d4..bca2ae46c 100644
+index 5e09e75d406c021ad4a0c747dbf4200bd60dcf09..bca2ae46c9d62a672ff5f19e6dcf34fdc2e6c78c 100644
 --- a/backend/internal/repository/dashboard_aggregation_repo.go
 +++ b/backend/internal/repository/dashboard_aggregation_repo.go
 @@ -329,6 +329,10 @@ func (r *dashboardAggregationRepository) upsertHourlyAggregates(ctx context.Cont
@@ -97,7 +111,7 @@ index 5e09e75d4..bca2ae46c 100644
  			actual_cost = EXCLUDED.actual_cost,
  			account_cost = EXCLUDED.account_cost,
 diff --git a/backend/internal/repository/ops_repo_dashboard.go b/backend/internal/repository/ops_repo_dashboard.go
-index a22235a80..e79202f94 100644
+index a22235a805c6b12f52cc588bc716fcb102e97a84..e79202f94d1348348b1e9cfbac9aa7dee9a745c7 100644
 --- a/backend/internal/repository/ops_repo_dashboard.go
 +++ b/backend/internal/repository/ops_repo_dashboard.go
 @@ -794,7 +794,7 @@ func (r *opsRepository) queryUsageCounts(ctx context.Context, filter *service.Op
@@ -119,7 +133,7 @@ index a22235a80..e79202f94 100644
    ` + usageJoin + `
    ` + usageWhere + `
 diff --git a/backend/internal/repository/ops_repo_preagg.go b/backend/internal/repository/ops_repo_preagg.go
-index 40b99fe3a..800a3ebbc 100644
+index 40b99fe3a43cd8c8d916a55c6e7ae161638f70fb..800a3ebbc9ddcdc03bd133fc0bbae6216b58f809 100644
 --- a/backend/internal/repository/ops_repo_preagg.go
 +++ b/backend/internal/repository/ops_repo_preagg.go
 @@ -35,7 +35,7 @@ WITH usage_base AS (
@@ -132,7 +146,7 @@ index 40b99fe3a..800a3ebbc 100644
    JOIN groups g ON g.id = ul.group_id
    WHERE ul.created_at >= $1 AND ul.created_at < $2
 diff --git a/backend/internal/repository/ops_repo_realtime_traffic.go b/backend/internal/repository/ops_repo_realtime_traffic.go
-index a9b0b929a..a55a4eb33 100644
+index a9b0b929a11d9a85bb3a9fe26f6763552f291232..a55a4eb33ebd36f90dbcbe01f1906ab05604a801 100644
 --- a/backend/internal/repository/ops_repo_realtime_traffic.go
 +++ b/backend/internal/repository/ops_repo_realtime_traffic.go
 @@ -42,7 +42,7 @@ WITH usage_buckets AS (
@@ -145,7 +159,7 @@ index a9b0b929a..a55a4eb33 100644
    ` + usageJoin + `
    ` + usageWhere + `
 diff --git a/backend/internal/repository/ops_repo_trends.go b/backend/internal/repository/ops_repo_trends.go
-index 14394ed8e..e9cdb9e10 100644
+index 14394ed8ea6e2feca265c3c8ccb9534e46ca6383..e9cdb9e108595835f48dc6cf0ce21ac6c1379cf5 100644
 --- a/backend/internal/repository/ops_repo_trends.go
 +++ b/backend/internal/repository/ops_repo_trends.go
 @@ -42,7 +42,7 @@ func (r *opsRepository) GetThroughputTrend(ctx context.Context, filter *service.
@@ -176,7 +190,7 @@ index 14394ed8e..e9cdb9e10 100644
    JOIN groups g ON g.id = ul.group_id
    WHERE ul.created_at >= $1 AND ul.created_at < $2
 diff --git a/backend/internal/repository/usage_log_repo.go b/backend/internal/repository/usage_log_repo.go
-index 94b605693..fcce7a7cb 100644
+index 94b605693daf4bba0ce9980155bf7a8015e46d3b..fcce7a7cb76b817b67060bf5fbf0c37d68b5bb83 100644
 --- a/backend/internal/repository/usage_log_repo.go
 +++ b/backend/internal/repository/usage_log_repo.go
 @@ -8,6 +8,7 @@ import (
@@ -250,7 +264,7 @@ index 94b605693..fcce7a7cb 100644
  // compatibility with historical rows. Requested/upstream analytics must use
  // resolveModelDimensionExpression instead.
 diff --git a/backend/internal/repository/usage_log_repo_dashboard.go b/backend/internal/repository/usage_log_repo_dashboard.go
-index a56213357..46ebf43bc 100644
+index a56213357e4ff416db46b39928d9129733e6f6d3..46ebf43bcdf8073b5b70b3463f487db43e98b498 100644
 --- a/backend/internal/repository/usage_log_repo_dashboard.go
 +++ b/backend/internal/repository/usage_log_repo_dashboard.go
 @@ -4,6 +4,7 @@ import (
@@ -689,7 +703,7 @@ index a56213357..46ebf43bc 100644
  	// 性能指标：RPM 和 TPM（最近5分钟，按 API Key 过滤）
  	rpm, tpm, err := r.getPerformanceStatsByAPIKey(ctx, apiKeyID)
 diff --git a/backend/internal/repository/usage_log_repo_insert.go b/backend/internal/repository/usage_log_repo_insert.go
-index 809b0652b..102609dec 100644
+index 809b0652b5de23f6a2b43887de3f693faceb7558..102609dec1687db99823edda26b9950eaa88ada2 100644
 --- a/backend/internal/repository/usage_log_repo_insert.go
 +++ b/backend/internal/repository/usage_log_repo_insert.go
 @@ -37,6 +37,10 @@ var usageLogInsertArgTypes = [...]string{
@@ -920,7 +934,7 @@ index 809b0652b..102609dec 100644
  			log.CacheCreation1hTokens,
  			log.ImageOutputTokens,
 diff --git a/backend/internal/repository/usage_log_repo_query.go b/backend/internal/repository/usage_log_repo_query.go
-index 084b79ad9..d71ac6f75 100644
+index 084b79ad97d970ce9359c5358b862f025e0c39be..d71ac6f75317cb246c7656e2c116f5d2e27f05c8 100644
 --- a/backend/internal/repository/usage_log_repo_query.go
 +++ b/backend/internal/repository/usage_log_repo_query.go
 @@ -19,7 +19,7 @@ import (
@@ -966,7 +980,7 @@ index 084b79ad9..d71ac6f75 100644
  		CacheCreation1hTokens:     cacheCreation1h,
  		ImageOutputTokens:         imageOutputTokens,
 diff --git a/backend/internal/repository/usage_log_repo_stats.go b/backend/internal/repository/usage_log_repo_stats.go
-index aeccd49b3..d3d61364a 100644
+index aeccd49b307e7482d26e7de47217a193ea335213..d3d61364a364c1161e54adb7e487dc4c4c27a473 100644
 --- a/backend/internal/repository/usage_log_repo_stats.go
 +++ b/backend/internal/repository/usage_log_repo_stats.go
 @@ -24,12 +24,16 @@ func (r *usageLogRepository) GetUserStatsAggregated(ctx context.Context, userID
@@ -1450,7 +1464,7 @@ index aeccd49b3..d3d61364a 100644
  			COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as actual_cost,
  			COALESCE(SUM(actual_cost), 0) as user_cost
 diff --git a/backend/internal/repository/usage_log_repo_trend.go b/backend/internal/repository/usage_log_repo_trend.go
-index ae431c706..840d9d82a 100644
+index ae431c7061671562d26cbc91659d3bebe05673ba..840d9d82a384c8d323899480ab0363118e7f89e9 100644
 --- a/backend/internal/repository/usage_log_repo_trend.go
 +++ b/backend/internal/repository/usage_log_repo_trend.go
 @@ -36,7 +36,7 @@ func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime,
@@ -1582,7 +1596,7 @@ index ae431c706..840d9d82a 100644
  		LEFT JOIN users u ON u.id = ul.user_id
  		WHERE ul.created_at >= $1 AND ul.created_at < $2
 diff --git a/backend/internal/service/ops_metrics_collector.go b/backend/internal/service/ops_metrics_collector.go
-index d4f5c3292..70bb9798d 100644
+index d4f5c32929833b171047bde1ebb98f137e09530d..70bb9798d2b27600f4a203d6ab3956a2799ec80e 100644
 --- a/backend/internal/service/ops_metrics_collector.go
 +++ b/backend/internal/service/ops_metrics_collector.go
 @@ -447,7 +447,7 @@ func (c *OpsMetricsCollector) queryUsageCounts(ctx context.Context, start, end t

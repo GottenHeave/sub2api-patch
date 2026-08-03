@@ -1,14 +1,18 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 1758ec775b73eeb7b219ff0db942393d7fbeacde Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Mon, 27 Jul 2026 16:31:55 +0000
-Subject: [PATCH] fix: align realtime usage compatibility
+Subject: [PATCH 25/27] fix: align realtime usage compatibility
 
+---
+ backend/internal/service/openai_gateway_usage.go             | 2 +-
+ backend/internal/service/openai_ws_v2_passthrough_adapter.go | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/backend/internal/service/openai_gateway_usage.go b/backend/internal/service/openai_gateway_usage.go
-index 5cfa9eac3..38436ac1e 100644
+index 97690495947662707b6ad08a073886b91a6dfca8..5ba491c36d856274411e29af8188257b7d28e14c 100644
 --- a/backend/internal/service/openai_gateway_usage.go
 +++ b/backend/internal/service/openai_gateway_usage.go
-@@ -264,7 +264,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
+@@ -279,7 +279,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
  		RequestID:                requestID,
  		Model:                    result.Model,
  		RequestedModel:           requestedModel,
@@ -18,7 +22,7 @@ index 5cfa9eac3..38436ac1e 100644
  		ReasoningEffort:          result.ReasoningEffort,
  		InboundEndpoint:          optionalTrimmedStringPtr(input.InboundEndpoint),
 diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-index af74a7bad..935385050 100644
+index af74a7bad5e0171f8f190c5deb74471b5fd03d0d..93538505023f09c9475511b3c47e0e35e97f6eef 100644
 --- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 +++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 @@ -1026,7 +1026,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(

@@ -1,11 +1,15 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 9be226875c0d00809b2cb46376c3f16a2493a9f5 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:51 +0000
-Subject: [PATCH] ci: improve downstream Docker build cache and docs context
+Subject: [PATCH 20/27] ci: improve downstream Docker build cache and docs
+ context
 
+---
+ Dockerfile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/Dockerfile b/Dockerfile
-index b2dfd7034..b1f44e569 100644
+index b2dfd7034f769abd7e8640090282e6b05a2af4a1..b1f44e569677416ad23264a126b274d2a8e8483e 100644
 --- a/Dockerfile
 +++ b/Dockerfile
 @@ -41,7 +41,7 @@ RUN --mount=type=cache,id=sub2api-pnpm-store,target=/root/.local/share/pnpm/stor

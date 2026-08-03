@@ -1,12 +1,16 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From f701b1f88ed97edd8ffaa623f3700320b6025694 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:50 +0000
-Subject: [PATCH] feat: add OpenAI realtime REST handler
+Subject: [PATCH 10/27] feat: add OpenAI realtime REST handler
 
+---
+ .../internal/handler/openai_realtime_calls.go | 239 ++++++++++++++++++
+ 1 file changed, 239 insertions(+)
+ create mode 100644 backend/internal/handler/openai_realtime_calls.go
 
 diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
 new file mode 100644
-index 000000000..cf368f00b
+index 0000000000000000000000000000000000000000..cf368f00b0e3fdd06291666da2d861e6dc288ad5
 --- /dev/null
 +++ b/backend/internal/handler/openai_realtime_calls.go
 @@ -0,0 +1,239 @@

@@ -1,11 +1,24 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 509fe112acf93b77d1700f31e6557af93ee1c414 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:49 +0000
-Subject: [PATCH] test: cover OpenAI realtime gateway routing
+Subject: [PATCH 05/27] test: cover OpenAI realtime gateway routing
 
+---
+ backend/internal/handler/endpoint_test.go     |  33 ++
+ .../internal/handler/failover_loop_test.go    |  61 ++++
+ ...nai_gateway_endpoint_normalization_test.go |  10 +
+ .../handler/openai_gateway_handler_test.go    |  34 ++
+ .../internal/server/routes/gateway_test.go    | 152 +++++++++
+ .../service/openai_fast_policy_ws_test.go     |  20 ++
+ .../service/openai_gateway_service_test.go    |  14 +-
+ ..._ws_forwarder_hotpath_optimization_test.go |  12 +
+ .../openai_ws_forwarder_success_test.go       | 305 +++++++++++++++++-
+ .../passthrough_relay_internal_test.go        |  87 ++++-
+ .../openai_ws_v2/passthrough_relay_test.go    |  26 ++
+ 11 files changed, 750 insertions(+), 4 deletions(-)
 
 diff --git a/backend/internal/handler/endpoint_test.go b/backend/internal/handler/endpoint_test.go
-index 3f7b99470..924bd837d 100644
+index 3f7b994702075ac3da11de7366dcec92008db1d9..924bd837dcff8f53ff3fb2b492d981f7fbbfbfb9 100644
 --- a/backend/internal/handler/endpoint_test.go
 +++ b/backend/internal/handler/endpoint_test.go
 @@ -29,6 +29,19 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
@@ -63,7 +76,7 @@ index 3f7b99470..924bd837d 100644
  		{"openai alpha search", EndpointAlphaSearch, "/backend-api/codex/alpha/search", service.PlatformOpenAI, EndpointAlphaSearch},
  		{"openai image generations", EndpointImagesGenerations, "/v1/images/generations", service.PlatformOpenAI, EndpointImagesGenerations},
 diff --git a/backend/internal/handler/failover_loop_test.go b/backend/internal/handler/failover_loop_test.go
-index 34644711e..582d1419e 100644
+index 34644711eb54752a78a377829d591b3281c6f8da..582d1419e9bfb51fbd6f64eb7c83c9947369ada4 100644
 --- a/backend/internal/handler/failover_loop_test.go
 +++ b/backend/internal/handler/failover_loop_test.go
 @@ -2,6 +2,7 @@ package handler
@@ -142,7 +155,7 @@ index 34644711e..582d1419e 100644
  // HandleFailoverError — TempUnschedule 调用验证
  // ---------------------------------------------------------------------------
 diff --git a/backend/internal/handler/openai_gateway_endpoint_normalization_test.go b/backend/internal/handler/openai_gateway_endpoint_normalization_test.go
-index 0dacd74dc..b99a398cd 100644
+index 0dacd74dc1c3dff5f3add997c98dbdaa15d9260c..b99a398cd2728c38ff64fa5c6c3127731ac17beb 100644
 --- a/backend/internal/handler/openai_gateway_endpoint_normalization_test.go
 +++ b/backend/internal/handler/openai_gateway_endpoint_normalization_test.go
 @@ -41,6 +41,16 @@ func TestOpenAIUpstreamEndpoint_ViaGetUpstreamEndpoint(t *testing.T) {
@@ -163,7 +176,7 @@ index 0dacd74dc..b99a398cd 100644
  
  	for _, tt := range tests {
 diff --git a/backend/internal/handler/openai_gateway_handler_test.go b/backend/internal/handler/openai_gateway_handler_test.go
-index abf81b79e..f314bc7ff 100644
+index 543cda1e55dbb37e0ed72105ba8b395c7e0b3b3d..e5f34b53e4dc066e934faabba141bf7d4aee9c68 100644
 --- a/backend/internal/handler/openai_gateway_handler_test.go
 +++ b/backend/internal/handler/openai_gateway_handler_test.go
 @@ -172,6 +172,40 @@ func TestOpenAIResponsesRequiredCapability(t *testing.T) {
@@ -208,7 +221,7 @@ index abf81b79e..f314bc7ff 100644
  	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
  
 diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
-index 195351f9e..1d8da7afb 100644
+index ada931e3a5a6d98389a2b9438c9a5d952903fe42..7febdb93854f74ee11ae3dd1d69e4a75352ea135 100644
 --- a/backend/internal/server/routes/gateway_test.go
 +++ b/backend/internal/server/routes/gateway_test.go
 @@ -58,6 +58,34 @@ func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string
@@ -246,7 +259,7 @@ index 195351f9e..1d8da7afb 100644
  func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
  	router := newGatewayRoutesTestRouter()
  
-@@ -343,3 +371,127 @@ func TestGatewayRoutesOpenAICountTokensPathIsRegistered(t *testing.T) {
+@@ -370,3 +398,127 @@ func TestGatewayRoutesOpenAICountTokensPathIsRegistered(t *testing.T) {
  	router.ServeHTTP(w, req)
  	require.NotEqual(t, http.StatusNotFound, w.Code)
  }
@@ -375,7 +388,7 @@ index 195351f9e..1d8da7afb 100644
 +	}
 +}
 diff --git a/backend/internal/service/openai_fast_policy_ws_test.go b/backend/internal/service/openai_fast_policy_ws_test.go
-index f624a0080..47780acb0 100644
+index f624a0080b9ae5dd41ffa82847834119ffa60984..47780acb04672b53fb5cb84200d6ec79602ecebe 100644
 --- a/backend/internal/service/openai_fast_policy_ws_test.go
 +++ b/backend/internal/service/openai_fast_policy_ws_test.go
 @@ -51,6 +51,26 @@ func TestWSResponseCreate_DefaultPassesPriorityAndNormalizesFast(t *testing.T) {
@@ -406,10 +419,10 @@ index f624a0080..47780acb0 100644
  	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastFilterPriorityPolicy())
  	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
-index d8cfba73b..a233620c7 100644
+index d03d48e00f3262095b7d4e72a0cd0018072f3dc6..b7add107fa1ad869dbc0de4ba3620d49c6ed4328 100644
 --- a/backend/internal/service/openai_gateway_service_test.go
 +++ b/backend/internal/service/openai_gateway_service_test.go
-@@ -3062,12 +3062,24 @@ func TestExtractOpenAIUsageFromJSONBytes_AcceptsResponseAndChatUsageShapes(t *te
+@@ -3327,12 +3327,24 @@ func TestExtractOpenAIUsageFromJSONBytes_AcceptsResponseAndChatUsageShapes(t *te
  	require.Equal(t, 2, usage.CacheReadInputTokens)
  	require.Equal(t, 4, usage.CacheCreationInputTokens)
  
@@ -436,7 +449,7 @@ index d8cfba73b..a233620c7 100644
  	usage, ok = extractOpenAIUsageFromJSONBytes([]byte(`{"usage":{"input_tokens":11,"output_tokens":2,"cache_write_input_tokens":6}}`))
  	require.True(t, ok)
 diff --git a/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go b/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go
-index 2622f7f20..69ecf613f 100644
+index 2622f7f2010ad02b4783c2d94586bb4ee49d7ac0..69ecf613fc2093dbd434562cf7fd1c59a502f602 100644
 --- a/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go
 +++ b/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go
 @@ -37,6 +37,18 @@ func TestParseOpenAIWSResponseUsageFromCompletedEvent(t *testing.T) {
@@ -459,7 +472,7 @@ index 2622f7f20..69ecf613f 100644
  
  func TestOpenAIWSEventShouldParseUsageTerminalEvents(t *testing.T) {
 diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
-index c7cbbc0b2..7c5209ca2 100644
+index 41c3acc68a0fa321da4509ec242f729b05bdb2b2..4f0a717def795622bf3d11027fa43bca15f08f67 100644
 --- a/backend/internal/service/openai_ws_forwarder_success_test.go
 +++ b/backend/internal/service/openai_ws_forwarder_success_test.go
 @@ -77,6 +77,16 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
@@ -770,7 +783,7 @@ index c7cbbc0b2..7c5209ca2 100644
  func TestOpenAIGatewayService_Forward_WSv2_ImageGenerationCountsOutputs(t *testing.T) {
  	gin.SetMode(gin.TestMode)
  
-@@ -1641,6 +1919,7 @@ func TestOpenAIGatewayService_Forward_WSv2ReadTimeoutAppliesPerRead(t *testing.T
+@@ -1649,6 +1927,7 @@ func TestOpenAIGatewayService_Forward_WSv2ReadTimeoutAppliesPerRead(t *testing.T
  type openAIWSCaptureDialer struct {
  	mu          sync.Mutex
  	conn        *openAIWSCaptureConn
@@ -778,7 +791,7 @@ index c7cbbc0b2..7c5209ca2 100644
  	lastHeaders http.Header
  	handshake   http.Header
  	dialCount   int
-@@ -1653,9 +1932,9 @@ func (d *openAIWSCaptureDialer) Dial(
+@@ -1661,9 +1940,9 @@ func (d *openAIWSCaptureDialer) Dial(
  	proxyURL string,
  ) (openAIWSClientConn, int, http.Header, error) {
  	_ = ctx
@@ -789,7 +802,7 @@ index c7cbbc0b2..7c5209ca2 100644
  	d.lastHeaders = cloneHeader(headers)
  	d.dialCount++
  	respHeaders := cloneHeader(d.handshake)
-@@ -1663,6 +1942,18 @@ func (d *openAIWSCaptureDialer) Dial(
+@@ -1671,6 +1950,18 @@ func (d *openAIWSCaptureDialer) Dial(
  	return d.conn, 0, respHeaders, nil
  }
  
@@ -808,7 +821,7 @@ index c7cbbc0b2..7c5209ca2 100644
  func (d *openAIWSCaptureDialer) DialCount() int {
  	d.mu.Lock()
  	defer d.mu.Unlock()
-@@ -1762,6 +2053,16 @@ func (c *openAIWSCaptureConn) Close() error {
+@@ -1770,6 +2061,16 @@ func (c *openAIWSCaptureConn) Close() error {
  	return nil
  }
  
@@ -826,7 +839,7 @@ index c7cbbc0b2..7c5209ca2 100644
  	if src == nil {
  		return nil
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go b/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
-index 6036be745..7ee5db02d 100644
+index 6036be74519334a35a4d333f5569b802f148c297..7ee5db02d0271b15d9ffe8b822730affaed8c713 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
 @@ -313,17 +313,102 @@ func TestParseUsageAndEnrichCoverage(t *testing.T) {
@@ -934,7 +947,7 @@ index 6036be745..7ee5db02d 100644
  	t.Parallel()
  
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay_test.go b/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
-index c083943bc..8b6dcd98a 100644
+index c083943bcd5ddc1dc848182afde68b67dacdf74b..8b6dcd98aef158873af6feac5a816f8ec0807f86 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
 @@ -218,6 +218,32 @@ func TestRelay_BasicRelayAndUsage(t *testing.T) {

@@ -1,11 +1,16 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From e06d91ea1021a18107bfa85295d6a5b096f80a26 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:49 +0000
-Subject: [PATCH] feat: forward OpenAI realtime websocket streams
+Subject: [PATCH 04/27] feat: forward OpenAI realtime websocket streams
 
+---
+ .../internal/service/openai_ws_forwarder.go   | 3598 +++++++++++++++++
+ .../service/openai_ws_v2/passthrough_relay.go |   91 +-
+ .../openai_ws_v2_passthrough_adapter.go       |  125 +-
+ 3 files changed, 3763 insertions(+), 51 deletions(-)
 
 diff --git a/backend/internal/service/openai_ws_forwarder.go b/backend/internal/service/openai_ws_forwarder.go
-index 9c0869fbe..ace47df79 100644
+index 9c0869fbee2758c9fb10d70ea521e2e7278b6805..ace47df79219a9fb0e7957b7dbc9867ed7dc33f3 100644
 --- a/backend/internal/service/openai_ws_forwarder.go
 +++ b/backend/internal/service/openai_ws_forwarder.go
 @@ -393,3 +393,3601 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
@@ -3611,7 +3616,7 @@ index 9c0869fbe..ace47df79 100644
 +	s.openaiWSFallbackUntil.Delete(accountID)
 +}
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay.go b/backend/internal/service/openai_ws_v2/passthrough_relay.go
-index 8d98fc78a..000f02995 100644
+index b6936fe99419d55436520cd1a51379bd69b1f60b..b032fd43e18e156e3b6b3e609d750ef044bd7e7c 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay.go
 @@ -26,6 +26,10 @@ type Usage struct {
@@ -3643,7 +3648,7 @@ index 8d98fc78a..000f02995 100644
  	if clientConn == nil || upstreamConn == nil {
  		return result, &RelayExit{Stage: "relay_init", Err: errors.New("relay connection is nil")}
  	}
-@@ -194,7 +202,7 @@ func Relay(
+@@ -200,7 +208,7 @@ func Relay(
  			MessageType:  relayMessageTypeString(firstMessageType),
  			PayloadBytes: len(firstClientMessage),
  		})
@@ -3652,7 +3657,7 @@ index 8d98fc78a..000f02995 100644
  		if err := writeUpstream(firstMessageType, firstClientMessage); err != nil {
  			result.Duration = nowFn().Sub(startAt)
  			emitRelayTrace(onTrace, RelayTraceEvent{
-@@ -206,16 +214,15 @@ func Relay(
+@@ -212,16 +220,15 @@ func Relay(
  			})
  			return result, &RelayExit{Stage: "write_upstream", Err: err}
  		}
@@ -3671,7 +3676,7 @@ index 8d98fc78a..000f02995 100644
  	exitCh := make(chan relayExitSignal, 3)
  	dropDownstreamWrites := atomic.Bool{}
  	clientReaderStarted := atomic.Bool{}
-@@ -794,18 +801,15 @@ func parseUsageAndAccumulate(
+@@ -800,18 +807,15 @@ func parseUsageAndAccumulate(
  		return Usage{}
  	}
  
@@ -3699,7 +3704,7 @@ index 8d98fc78a..000f02995 100644
  	imageTokens := usageResult.Get("output_tokens_details.image_tokens").Int()
  	if imageTokens == 0 {
  		imageTokens = usageResult.Get("completion_tokens_details.image_tokens").Int()
-@@ -813,8 +817,9 @@ func parseUsageAndAccumulate(
+@@ -819,8 +823,9 @@ func parseUsageAndAccumulate(
  
  	inputTokens, inputOK := parseUsageIntField(inputResult, true)
  	outputTokens, outputOK := parseUsageIntField(outputResult, true)
@@ -3710,7 +3715,7 @@ index 8d98fc78a..000f02995 100644
  		recordUsageParseFailure()
  		if onParseFailure != nil {
  			onParseFailure(eventType, usageRaw)
-@@ -827,17 +832,67 @@ func parseUsageAndAccumulate(
+@@ -833,17 +838,67 @@ func parseUsageAndAccumulate(
  		OutputTokens:             outputTokens,
  		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
  		CacheReadInputTokens:     cachedTokens,
@@ -3780,7 +3785,7 @@ index 8d98fc78a..000f02995 100644
  	if !value.Exists() {
  		return 0, !required
 diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-index ae74027bc..af74a7bad 100644
+index ae74027bca1c99b6998c084228df712fd1e40982..af74a7bad5e0171f8f190c5deb74471b5fd03d0d 100644
 --- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 +++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 @@ -17,6 +17,7 @@ import (

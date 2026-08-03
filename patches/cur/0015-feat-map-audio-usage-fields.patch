@@ -1,14 +1,21 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 4ca27daf4716454169c4598ed9629d3412d5f03b Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:51 +0000
-Subject: [PATCH] feat: map audio usage fields
+Subject: [PATCH 15/27] feat: map audio usage fields
 
+---
+ backend/internal/handler/dto/mappers.go       |   5 +
+ .../handler/dto/mappers_usage_test.go         |  23 +++
+ backend/internal/handler/dto/types.go         |  12 +-
+ .../pkg/usagestats/usage_log_types.go         | 162 ++++++++++--------
+ backend/internal/server/api_contract_test.go  |   8 +
+ 5 files changed, 139 insertions(+), 71 deletions(-)
 
 diff --git a/backend/internal/handler/dto/mappers.go b/backend/internal/handler/dto/mappers.go
-index 04c811ced..d624f403c 100644
+index c6f6cf25e204f893341902bf820c13a3347b1064..59b56856a78d95bf107417b678c14693d437b9a2 100644
 --- a/backend/internal/handler/dto/mappers.go
 +++ b/backend/internal/handler/dto/mappers.go
-@@ -635,12 +635,17 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
+@@ -638,12 +638,17 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
  		ServiceTier:               l.ServiceTier,
  		ReasoningEffort:           l.ReasoningEffort,
  		InboundEndpoint:           l.InboundEndpoint,
@@ -27,7 +34,7 @@ index 04c811ced..d624f403c 100644
  		CacheCreation1hTokens:     l.CacheCreation1hTokens,
  		InputCost:                 l.InputCost,
 diff --git a/backend/internal/handler/dto/mappers_usage_test.go b/backend/internal/handler/dto/mappers_usage_test.go
-index 6cbcbada5..2834afb8d 100644
+index 6cbcbada56cc9b90ba93d2611e5b26e5f5bc4fd2..2834afb8d6ebb52dcdd49475f1d18c0922606a93 100644
 --- a/backend/internal/handler/dto/mappers_usage_test.go
 +++ b/backend/internal/handler/dto/mappers_usage_test.go
 @@ -28,6 +28,29 @@ func TestUsageLogFromService_IncludesOpenAIWSMode(t *testing.T) {
@@ -61,10 +68,10 @@ index 6cbcbada5..2834afb8d 100644
  	t.Parallel()
  
 diff --git a/backend/internal/handler/dto/types.go b/backend/internal/handler/dto/types.go
-index d5ba4e9db..496e25859 100644
+index 37927c2b48e246373d7cae5ff623959d6d046094..29f9824221d0c172d29945c121b17f72a15fa9e8 100644
 --- a/backend/internal/handler/dto/types.go
 +++ b/backend/internal/handler/dto/types.go
-@@ -482,10 +482,14 @@ type UsageLog struct {
+@@ -489,10 +489,14 @@ type UsageLog struct {
  	GroupID        *int64 `json:"group_id"`
  	SubscriptionID *int64 `json:"subscription_id"`
  
@@ -84,7 +91,7 @@ index d5ba4e9db..496e25859 100644
  	CacheCreation5mTokens int `json:"cache_creation_5m_tokens"`
  	CacheCreation1hTokens int `json:"cache_creation_1h_tokens"`
 diff --git a/backend/internal/pkg/usagestats/usage_log_types.go b/backend/internal/pkg/usagestats/usage_log_types.go
-index da9e748b1..9023d50d0 100644
+index da9e748b193a49232238d7bb9f61ae78fcc073dc..9023d50d0b810e1cee77eeb6d01c77bd433e300c 100644
 --- a/backend/internal/pkg/usagestats/usage_log_types.go
 +++ b/backend/internal/pkg/usagestats/usage_log_types.go
 @@ -50,26 +50,34 @@ type DashboardStats struct {
@@ -286,10 +293,10 @@ index da9e748b1..9023d50d0 100644
  
  // PlatformUsage 表示某用户/某 API key 在单个"有效平台"维度的用量明细。
 diff --git a/backend/internal/server/api_contract_test.go b/backend/internal/server/api_contract_test.go
-index 06c738cd3..0d0a7070f 100644
+index f0ad8dcdb3b15cef9ddc19775e5e95a53c212531..0e01c5371ed304739060291d2272344c573c0a00 100644
 --- a/backend/internal/server/api_contract_test.go
 +++ b/backend/internal/server/api_contract_test.go
-@@ -530,6 +530,10 @@ func TestAPIContracts(t *testing.T) {
+@@ -534,6 +534,10 @@ func TestAPIContracts(t *testing.T) {
  					"total_cache_tokens": 3,
  					"total_cache_creation_tokens": 1,
  					"total_cache_read_tokens": 2,
@@ -300,7 +307,7 @@ index 06c738cd3..0d0a7070f 100644
  					"total_tokens": 53,
  					"total_cost": 0.75,
  					"total_actual_cost": 0.75,
-@@ -590,6 +594,10 @@ func TestAPIContracts(t *testing.T) {
+@@ -594,6 +598,10 @@ func TestAPIContracts(t *testing.T) {
  							"cache_read_tokens": 2,
  							"cache_creation_5m_tokens": 0,
  							"cache_creation_1h_tokens": 0,
