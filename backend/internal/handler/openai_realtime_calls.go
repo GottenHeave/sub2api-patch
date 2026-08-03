@@ -165,7 +165,7 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
-		if !acquired {
+		if acquired != openAISlotAcquireOK {
 			return
 		}
 
