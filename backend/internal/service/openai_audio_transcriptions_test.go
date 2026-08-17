@@ -54,6 +54,7 @@ func newOpenAIAudioTranscriptionTestContext(method, path string, body []byte, co
 type audioTranscriptionRateLimitAccountRepoStub struct {
 	rateLimitCalls        int
 	modelRateLimitCalls   int
+	setErrorCalls         int
 	lastModelRateLimitID  int64
 	lastModelRateLimitKey string
 	lastModelRateLimitAt  time.Time
@@ -145,6 +146,7 @@ func (r *audioTranscriptionRateLimitAccountRepoStub) BatchUpdateLastUsed(context
 }
 
 func (r *audioTranscriptionRateLimitAccountRepoStub) SetError(context.Context, int64, string) error {
+	r.setErrorCalls++
 	return nil
 }
 
@@ -325,7 +327,7 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_APIKeyUsesMappedModelAnd
 		StatusCode: http.StatusOK,
 		Header: http.Header{
 			"Content-Type": []string{"application/json"},
-			"x-request-id": []string{"rid_audio"},
+			"X-Request-Id": []string{"rid_audio"},
 		},
 		Body: io.NopCloser(strings.NewReader(`{"text":"hello"}`)),
 	}}
@@ -591,7 +593,7 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthUsesChatGPTTranscri
 
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_oauth_audio"}},
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "X-Request-Id": []string{"rid_oauth_audio"}},
 		Body:       io.NopCloser(strings.NewReader(`{"text":"hello"}`)),
 	}}
 	svc := &OpenAIGatewayService{
@@ -690,20 +692,20 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthPreservesExplicitMa
 
 func TestOpenAIGatewayServiceForwardAudioTranscriptions_FailoverStatuses(t *testing.T) {
 	tests := []struct {
-		name                 string
-		status               int
-		poolMode             bool
-		retryableSameAccount bool
+		name     string
+		status   int
+		poolMode bool
 	}{
-		{name: "401 retries same pool account", status: http.StatusUnauthorized, poolMode: true, retryableSameAccount: true},
-		{name: "403 retries same pool account", status: http.StatusForbidden, poolMode: true, retryableSameAccount: true},
-		{name: "429 retries same pool account", status: http.StatusTooManyRequests, poolMode: true, retryableSameAccount: true},
-		{name: "500 switches account without same-account retry", status: http.StatusInternalServerError, poolMode: true},
-		{name: "503 switches account without same-account retry", status: http.StatusServiceUnavailable, poolMode: true},
-		{name: "401 non-pool switches account", status: http.StatusUnauthorized},
-		{name: "403 non-pool switches account", status: http.StatusForbidden},
-		{name: "429 non-pool switches account", status: http.StatusTooManyRequests},
-		{name: "500 non-pool switches account", status: http.StatusInternalServerError},
+		{name: "401 pool account", status: http.StatusUnauthorized, poolMode: true},
+		{name: "403 pool account", status: http.StatusForbidden, poolMode: true},
+		{name: "429 pool account", status: http.StatusTooManyRequests, poolMode: true},
+		{name: "500 pool account", status: http.StatusInternalServerError, poolMode: true},
+		{name: "503 pool account", status: http.StatusServiceUnavailable, poolMode: true},
+		{name: "401 non-pool account", status: http.StatusUnauthorized},
+		{name: "403 non-pool account", status: http.StatusForbidden},
+		{name: "429 non-pool account", status: http.StatusTooManyRequests},
+		{name: "500 non-pool account", status: http.StatusInternalServerError},
+		{name: "503 non-pool account", status: http.StatusServiceUnavailable},
 	}
 
 	for _, tt := range tests {
@@ -713,9 +715,13 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_FailoverStatuses(t *test
 			}, []byte("fake-audio"))
 			c, rec := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
 			upstream := &httpUpstreamRecorder{resp: newOpenAIAudioTranscriptionResponse(tt.status, `{"error":{"message":"temporary upstream failure"}}`)}
+			accountRepo := &audioTranscriptionRateLimitAccountRepoStub{}
+			rateLimitService := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
 			svc := &OpenAIGatewayService{
-				cfg:          &config.Config{},
-				httpUpstream: upstream,
+				accountRepo:      accountRepo,
+				cfg:              &config.Config{},
+				httpUpstream:     upstream,
+				rateLimitService: rateLimitService,
 			}
 			account := openAIAudioTranscriptionAPIKeyAccount(7)
 			if tt.poolMode {
@@ -730,25 +736,29 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_FailoverStatuses(t *test
 			var failoverErr *UpstreamFailoverError
 			require.ErrorAs(t, err, &failoverErr)
 			require.Equal(t, tt.status, failoverErr.StatusCode)
-			require.Equal(t, tt.retryableSameAccount, failoverErr.RetryableOnSameAccount)
+			require.True(t, failoverErr.RetryableOnSameAccount)
+			require.Equal(t, "rid_audio", failoverErr.ResponseHeaders.Get("X-Request-Id"))
 			require.False(t, rec.Result().Header.Get("Content-Type") == "application/json" && rec.Body.Len() > 0, "failover response should not be written before handler retry logic")
+			require.Zero(t, accountRepo.rateLimitCalls)
+			require.Zero(t, accountRepo.modelRateLimitCalls)
+			require.Zero(t, accountRepo.setErrorCalls)
 		})
 	}
 }
 
 func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthFailoverStatuses(t *testing.T) {
 	tests := []struct {
-		name                 string
-		status               int
-		responseBody         string
-		retryableSameAccount bool
-		wantModelRateLimit   bool
+		name               string
+		status             int
+		responseBody       string
+		wantModelRateLimit bool
+		wantSetError       bool
 	}{
-		{name: "401", status: http.StatusUnauthorized},
-		{name: "403", status: http.StatusForbidden},
+		{name: "401", status: http.StatusUnauthorized, wantSetError: true},
+		{name: "403", status: http.StatusForbidden, wantSetError: true},
 		{name: "429", status: http.StatusTooManyRequests, responseBody: `{"detail":"Transcription is temporarily unavailable. Please try again shortly.","retry_after_seconds":30}`, wantModelRateLimit: true},
-		{name: "500", status: http.StatusInternalServerError, retryableSameAccount: true},
-		{name: "503", status: http.StatusServiceUnavailable, retryableSameAccount: true},
+		{name: "500", status: http.StatusInternalServerError},
+		{name: "503", status: http.StatusServiceUnavailable},
 	}
 
 	for _, tt := range tests {
@@ -780,9 +790,16 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthFailoverStatuses(t 
 			var failoverErr *UpstreamFailoverError
 			require.ErrorAs(t, err, &failoverErr)
 			require.Equal(t, tt.status, failoverErr.StatusCode)
-			require.Equal(t, tt.retryableSameAccount, failoverErr.RetryableOnSameAccount)
+			require.True(t, failoverErr.RetryableOnSameAccount)
+			require.Equal(t, "rid_audio", failoverErr.ResponseHeaders.Get("X-Request-Id"))
 			require.Equal(t, chatgptTranscribeURL, upstream.lastReq.URL.String())
 			require.Empty(t, rec.Body.String(), "failover response should not be written before handler retry logic")
+			require.Zero(t, accountRepo.rateLimitCalls)
+			require.Zero(t, accountRepo.modelRateLimitCalls)
+			require.Zero(t, accountRepo.setErrorCalls)
+
+			svc.FinalizeOpenAIAudioTranscriptionFailover(context.Background(), account, OpenAIAudioTranscriptionsDefaultModel, failoverErr)
+
 			if tt.wantModelRateLimit {
 				require.Zero(t, accountRepo.rateLimitCalls)
 				require.Equal(t, 1, accountRepo.modelRateLimitCalls)
@@ -792,6 +809,57 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthFailoverStatuses(t 
 			} else {
 				require.Zero(t, accountRepo.modelRateLimitCalls)
 			}
+			if tt.wantSetError {
+				require.Equal(t, 1, accountRepo.setErrorCalls)
+			} else {
+				require.Zero(t, accountRepo.setErrorCalls)
+			}
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceFinalizeAudioTranscriptionFailover_CanceledContextSkipsSideEffects(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       int
+		responseBody string
+	}{
+		{
+			name:         "oauth 429 does not set model rate limit",
+			status:       http.StatusTooManyRequests,
+			responseBody: `{"detail":"Transcription is temporarily unavailable.","retry_after_seconds":30}`,
+		},
+		{
+			name:         "oauth 401 does not set account error",
+			status:       http.StatusUnauthorized,
+			responseBody: `{"error":{"message":"expired token"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			accountRepo := &audioTranscriptionRateLimitAccountRepoStub{}
+			rateLimitService := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+			svc := &OpenAIGatewayService{
+				accountRepo:      accountRepo,
+				cfg:              &config.Config{},
+				rateLimitService: rateLimitService,
+			}
+			account := openAIAudioTranscriptionOAuthAccount(8)
+			failoverErr := &UpstreamFailoverError{
+				StatusCode:             tt.status,
+				ResponseBody:           []byte(tt.responseBody),
+				ResponseHeaders:        http.Header{"X-Request-Id": []string{"rid_audio"}},
+				RetryableOnSameAccount: true,
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			svc.FinalizeOpenAIAudioTranscriptionFailover(ctx, account, OpenAIAudioTranscriptionsDefaultModel, failoverErr)
+
+			require.Zero(t, accountRepo.modelRateLimitCalls)
+			require.Zero(t, accountRepo.setErrorCalls)
+			require.Zero(t, accountRepo.rateLimitCalls)
 		})
 	}
 }
@@ -854,7 +922,7 @@ func newOpenAIAudioTranscriptionResponse(status int, body string) *http.Response
 		StatusCode: status,
 		Header: http.Header{
 			"Content-Type": []string{"application/json"},
-			"x-request-id": []string{"rid_audio"},
+			"X-Request-Id": []string{"rid_audio"},
 		},
 		Body: io.NopCloser(strings.NewReader(body)),
 	}
