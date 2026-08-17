@@ -106,36 +106,59 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 		service.OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(channelMapping.MappedModel),
 		service.OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(parsed.Model),
 	)
+	requestModel := channelMapping.MappedModel
+	if requestModel == "" {
+		requestModel = parsed.Model
+	}
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var selection *service.AccountSelectionResult
+	var scheduleDecision service.OpenAIAccountScheduleDecision
+	var selectionModel string
+	var retryAccountReleaseFunc func()
 
 	for {
-		selection, scheduleDecision, selectionModel, err := h.gatewayService.SelectAccountWithSchedulerForAudioTranscriptions(
-			routingCtx,
-			apiKey.GroupID,
-			sessionHash,
-			parsed.Model,
-			failedAccountIDs,
-		)
-		if err != nil {
-			reqLog.Warn("openai.audio_transcriptions.account_select_failed",
-				zap.Error(err),
-				zap.Int("excluded_account_count", len(failedAccountIDs)),
+		if failoverClientGone(c) {
+			if retryAccountReleaseFunc != nil {
+				retryAccountReleaseFunc()
+				retryAccountReleaseFunc = nil
+			}
+			reqLog.Info("openai.audio_transcriptions.failover_aborted_client_disconnected")
+			return
+		}
+		if selection == nil {
+			var selectionErr error
+			selection, scheduleDecision, selectionModel, selectionErr = h.gatewayService.SelectAccountWithSchedulerForAudioTranscriptions(
+				routingCtx,
+				apiKey.GroupID,
+				sessionHash,
+				parsed.Model,
+				failedAccountIDs,
 			)
-			if len(failedAccountIDs) == 0 {
-				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
+			if selectionErr != nil {
+				if failoverClientGone(c) {
+					reqLog.Info("openai.audio_transcriptions.account_select_aborted_client_disconnected", zap.Error(selectionErr))
+					return
+				}
+				reqLog.Warn("openai.audio_transcriptions.account_select_failed",
+					zap.Error(selectionErr),
+					zap.Int("excluded_account_count", len(failedAccountIDs)),
+				)
+				if len(failedAccountIDs) == 0 {
+					markOpsRoutingCapacityLimitedIfNoAvailable(c, selectionErr)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
+					return
+				}
+				if lastFailoverErr != nil {
+					h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
+				} else {
+					h.handleFailoverExhaustedSimple(c, 502, streamStarted)
+				}
 				return
 			}
-			if lastFailoverErr != nil {
-				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
-			} else {
-				h.handleFailoverExhaustedSimple(c, 502, streamStarted)
-			}
-			return
 		}
 		if selection == nil || selection.Account == nil {
 			markOpsRoutingCapacityLimited(c)
@@ -157,18 +180,20 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
-		if acquired != openAISlotAcquireOK {
-			return
+		accountReleaseFunc := retryAccountReleaseFunc
+		retryAccountReleaseFunc = nil
+		if accountReleaseFunc == nil {
+			var acquired openAISlotAcquireResult
+			accountReleaseFunc, acquired = h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
+			if acquired != openAISlotAcquireOK {
+				return
+			}
 		}
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
 		result, err := h.gatewayService.ForwardAudioTranscriptions(routingCtx, c, account, parsed, channelMapping.MappedModel)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
-		if accountReleaseFunc != nil {
-			accountReleaseFunc()
-		}
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
 		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {
@@ -179,7 +204,16 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
+				if failoverClientGone(c) {
+					if accountReleaseFunc != nil {
+						accountReleaseFunc()
+					}
+					reqLog.Info("openai.audio_transcriptions.failover_aborted_client_disconnected",
+						zap.Int64("account_id", account.ID),
+						zap.Int("upstream_status", failoverErr.StatusCode),
+					)
+					return
+				}
 				if failoverErr.RetryableOnSameAccount {
 					retryLimit := account.GetPoolModeRetryCount()
 					if sameAccountRetryCount[account.ID] < retryLimit {
@@ -190,23 +224,57 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 							zap.Int("retry_limit", retryLimit),
 							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
 						)
+						retryAccountReleaseFunc = accountReleaseFunc
 						select {
 						case <-c.Request.Context().Done():
+							if retryAccountReleaseFunc != nil {
+								retryAccountReleaseFunc()
+								retryAccountReleaseFunc = nil
+							}
 							return
 						case <-time.After(sameAccountRetryDelay):
 						}
 						continue
 					}
 				}
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				if failoverClientGone(c) {
+					reqLog.Info("openai.audio_transcriptions.failover_aborted_client_disconnected",
+						zap.Int64("account_id", account.ID),
+						zap.Int("upstream_status", failoverErr.StatusCode),
+					)
+					return
+				}
+				h.gatewayService.FinalizeOpenAIAudioTranscriptionFailover(routingCtx, account, requestModel, failoverErr)
+				if failoverClientGone(c) {
+					reqLog.Info("openai.audio_transcriptions.failover_aborted_client_disconnected",
+						zap.Int64("account_id", account.ID),
+						zap.Int("upstream_status", failoverErr.StatusCode),
+					)
+					return
+				}
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
+				selection = nil
 				if switchCount >= maxAccountSwitches {
 					h.handleFailoverExhausted(c, failoverErr, streamStarted)
 					return
 				}
 				switchCount++
 				continue
+			}
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			if failoverClientGone(c) {
+				reqLog.Info("openai.audio_transcriptions.forward_aborted_client_disconnected",
+					zap.Int64("account_id", account.ID),
+				)
+				return
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
 			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
@@ -221,6 +289,9 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 			}
 			reqLog.Error("openai.audio_transcriptions.forward_failed", fields...)
 			return
+		}
+		if accountReleaseFunc != nil {
+			accountReleaseFunc()
 		}
 
 		if result != nil {
