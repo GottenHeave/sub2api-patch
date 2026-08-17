@@ -308,12 +308,10 @@ func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
 				Kind:               "failover",
 				Message:            upstreamMsg,
 			})
-			if s.rateLimitService != nil {
-				s.handleOpenAIAudioTranscriptionFailoverSideEffects(ctx, resp, account, requestModel, respBody)
-			}
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
+				ResponseHeaders:        resp.Header.Clone(),
 				RetryableOnSameAccount: isOpenAIAudioTranscriptionSameAccountRetryable(account, resp.StatusCode),
 			}
 		}
@@ -347,6 +345,27 @@ func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
 	}, nil
 }
 
+// FinalizeOpenAIAudioTranscriptionFailover applies the account and model state
+// changes for a transcription failover after the request-local retry budget
+// has been exhausted.
+func (s *OpenAIGatewayService) FinalizeOpenAIAudioTranscriptionFailover(ctx context.Context, account *Account, requestModel string, failoverErr *UpstreamFailoverError) {
+	if s == nil || account == nil || failoverErr == nil {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
+	if s.rateLimitService == nil {
+		return
+	}
+	resp := &http.Response{
+		StatusCode: failoverErr.StatusCode,
+		Header:     failoverErr.ResponseHeaders,
+		Body:       io.NopCloser(bytes.NewReader(failoverErr.ResponseBody)),
+	}
+	s.handleOpenAIAudioTranscriptionFailoverSideEffects(ctx, resp, account, requestModel, failoverErr.ResponseBody)
+}
+
 func (s *OpenAIGatewayService) handleOpenAIAudioTranscriptionFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account, requestModel string, respBody []byte) {
 	if s == nil || s.rateLimitService == nil || resp == nil || account == nil {
 		return
@@ -372,14 +391,11 @@ func parseOpenAIAudioTranscriptionRetryAfterSeconds(body []byte) *int64 {
 	return parseOpenAIRetryAfterSecondsFromBody(body)
 }
 
-func isOpenAIAudioTranscriptionSameAccountRetryable(account *Account, statusCode int) bool {
+func isOpenAIAudioTranscriptionSameAccountRetryable(account *Account, _ int) bool {
 	if account == nil {
 		return false
 	}
-	if account.Type == AccountTypeOAuth && statusCode >= 500 {
-		return true
-	}
-	return account.IsPoolMode() && isPoolModeRetryableStatus(statusCode)
+	return true
 }
 
 func estimateOpenAIAudioTranscriptionUsage(parsed *OpenAIAudioTranscriptionsRequest, responseBody []byte) OpenAIUsage {
