@@ -1,16 +1,12 @@
-From d3e8d19ca2db01eef36da9f4615adc54543f6af5 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:50 +0000
-Subject: [PATCH 11/27] feat: add OpenAI realtime REST service
+Subject: [PATCH] feat: add OpenAI realtime REST service
 
----
- .../internal/service/openai_realtime_calls.go | 425 ++++++++++++++++++
- 1 file changed, 425 insertions(+)
- create mode 100644 backend/internal/service/openai_realtime_calls.go
 
 diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..34b96c41bc808deb3a8d8a6e9e963b6a218e08e8
+index 000000000..34b96c41b
 --- /dev/null
 +++ b/backend/internal/service/openai_realtime_calls.go
 @@ -0,0 +1,425 @@

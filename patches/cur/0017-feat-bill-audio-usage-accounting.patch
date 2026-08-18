@@ -1,27 +1,14 @@
-From d145cf94934dbdce0baf24d2f2a9a94e97c101cd Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:51 +0000
-Subject: [PATCH 17/27] feat: bill audio usage accounting
+Subject: [PATCH] feat: bill audio usage accounting
 
----
- .../internal/service/account_stats_pricing.go |  35 ++-
- .../service/account_stats_pricing_test.go     |  71 ++++++
- backend/internal/service/billing_service.go   | 134 ++++++++---
- .../internal/service/billing_service_test.go  | 154 +++++++++++++
- .../service/billing_service_unified_test.go   | 134 +++++++++++
- .../service/model_pricing_resolver.go         |   5 +
- .../openai_gateway_record_usage_test.go       |  60 ++++-
- backend/internal/service/pricing_service.go   |  39 +++-
- .../internal/service/pricing_service_test.go  |  26 +++
- backend/internal/service/usage_log.go         |   8 +-
- backend/internal/service/usage_service.go     | 208 ++++++++++--------
- 11 files changed, 741 insertions(+), 133 deletions(-)
 
 diff --git a/backend/internal/service/account_stats_pricing.go b/backend/internal/service/account_stats_pricing.go
-index 1098fff9e502f5eea103fa7530010f41737b9f8e..9c59923b02fa297887270b9f90d8371f5b253be9 100644
+index df9e8e05a..9b67270f6 100644
 --- a/backend/internal/service/account_stats_pricing.go
 +++ b/backend/internal/service/account_stats_pricing.go
-@@ -72,10 +72,14 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
+@@ -76,10 +76,14 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
  		}
  		return &breakdown.TotalCost
  	}
@@ -40,7 +27,7 @@ index 1098fff9e502f5eea103fa7530010f41737b9f8e..9c59923b02fa297887270b9f90d8371f
  		float64(tokens.ImageOutputTokens)*pricing.ImageOutputPricePerToken
  	if cost <= 0 {
  		return nil
-@@ -83,6 +87,13 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
+@@ -87,6 +91,13 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
  	return &cost
  }
  
@@ -54,7 +41,7 @@ index 1098fff9e502f5eea103fa7530010f41737b9f8e..9c59923b02fa297887270b9f90d8371f
  // tryCustomRules 遍历自定义规则，按数组顺序先命中为准。
  func tryCustomRules(
  	channel *Channel, accountID, groupID int64,
-@@ -210,10 +221,18 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
+@@ -214,10 +225,18 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
  		}
  		return *ptr
  	}
@@ -78,7 +65,7 @@ index 1098fff9e502f5eea103fa7530010f41737b9f8e..9c59923b02fa297887270b9f90d8371f
  	if cost <= 0 {
  		return nil
 diff --git a/backend/internal/service/account_stats_pricing_test.go b/backend/internal/service/account_stats_pricing_test.go
-index a934a5621c6f59a4c06143b4e0d8e2e1f867f996..6d878d45be4cdc02ec85d75e11395a64ddc5821d 100644
+index 48336a583..574fe5666 100644
 --- a/backend/internal/service/account_stats_pricing_test.go
 +++ b/backend/internal/service/account_stats_pricing_test.go
 @@ -228,6 +228,56 @@ func TestCalculateStatsCost_TokenBilling_WithCache(t *testing.T) {
@@ -138,7 +125,7 @@ index a934a5621c6f59a4c06143b4e0d8e2e1f867f996..6d878d45be4cdc02ec85d75e11395a64
  func TestCalculateStatsCost_TokenBilling_WithImageOutput(t *testing.T) {
  	pricing := &ChannelModelPricing{
  		BillingMode:      BillingModeToken,
-@@ -551,6 +601,27 @@ func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
+@@ -620,6 +670,27 @@ func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
  	require.InDelta(t, 0.95, *result, 1e-12)
  }
  
@@ -167,10 +154,10 @@ index a934a5621c6f59a4c06143b4e0d8e2e1f867f996..6d878d45be4cdc02ec85d75e11395a64
  // resolveAccountStatsCost — integration tests covering the 4-level priority chain
  // ---------------------------------------------------------------------------
 diff --git a/backend/internal/service/billing_service.go b/backend/internal/service/billing_service.go
-index a43f26a8ada62694e53ef8c289516d1aa3e2b797..9c06d603225223ce37def649fc7f27a77bd403d6 100644
+index 6ead8da02..2ec1bdbbe 100644
 --- a/backend/internal/service/billing_service.go
 +++ b/backend/internal/service/billing_service.go
-@@ -102,6 +102,11 @@ type ModelPricing struct {
+@@ -103,6 +103,11 @@ type ModelPricing struct {
  	CacheReadPricePerTokenPriority     float64 // priority service tier 下缓存读取每token价格 (USD)
  	CacheCreation5mPrice               float64 // 5分钟缓存创建每token价格 (USD)
  	CacheCreation1hPrice               float64 // 1小时缓存创建每token价格 (USD)
@@ -181,8 +168,8 @@ index a43f26a8ada62694e53ef8c289516d1aa3e2b797..9c06d603225223ce37def649fc7f27a7
 +	AudioCacheReadPricePerToken        float64 // 音频缓存读取 token 价格 (USD)
  	SupportsCacheBreakdown             bool    // 是否支持详细的缓存分类
  	LongContextInputThreshold          int     // 超过阈值后按整次会话提升输入价格
- 	LongContextInputMultiplier         float64 // 长上下文整次会话输入倍率
-@@ -125,7 +130,8 @@ func usePriorityServiceTierPricing(serviceTier string, pricing *ModelPricing) bo
+ 	LongContextThresholdInclusive      bool    // 达到阈值即应用（xAI）；默认保持严格大于以兼容既有模型
+@@ -127,7 +132,8 @@ func usePriorityServiceTierPricing(serviceTier string, pricing *ModelPricing) bo
  		return false
  	}
  	return pricing.InputPricePerTokenPriority > 0 || pricing.OutputPricePerTokenPriority > 0 ||
@@ -192,7 +179,7 @@ index a43f26a8ada62694e53ef8c289516d1aa3e2b797..9c06d603225223ce37def649fc7f27a7
  }
  
  func serviceTierCostMultiplier(serviceTier string) float64 {
-@@ -141,14 +147,18 @@ func serviceTierCostMultiplier(serviceTier string) float64 {
+@@ -143,14 +149,18 @@ func serviceTierCostMultiplier(serviceTier string) float64 {
  
  // UsageTokens 使用的token数量
  type UsageTokens struct {
@@ -219,7 +206,7 @@ index a43f26a8ada62694e53ef8c289516d1aa3e2b797..9c06d603225223ce37def649fc7f27a7
  }
  
  // CostBreakdown 费用明细
-@@ -853,6 +863,11 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
+@@ -972,6 +982,11 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
  				CacheReadPricePerTokenPriority:     litellmPricing.CacheReadInputTokenCostPriority,
  				CacheCreation5mPrice:               price5m,
  				CacheCreation1hPrice:               price1h,
@@ -231,7 +218,7 @@ index a43f26a8ada62694e53ef8c289516d1aa3e2b797..9c06d603225223ce37def649fc7f27a7
  				SupportsCacheBreakdown:             enableBreakdown,
  				LongContextInputThreshold:          litellmPricing.LongContextInputTokenThreshold,
  				LongContextInputMultiplier:         litellmPricing.LongContextInputCostMultiplier,
-@@ -893,10 +908,13 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
+@@ -1012,10 +1027,13 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
  	if channelPricing.InputPrice != nil {
  		pricing.InputPricePerToken = *channelPricing.InputPrice
  		pricing.InputPricePerTokenPriority = *channelPricing.InputPrice
@@ -245,7 +232,7 @@ index a43f26a8ada62694e53ef8c289516d1aa3e2b797..9c06d603225223ce37def649fc7f27a7
  	}
  	if channelPricing.CacheWritePrice != nil {
  		pricing.CacheCreationPricePerToken = *channelPricing.CacheWritePrice
-@@ -904,10 +922,12 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
+@@ -1023,10 +1041,12 @@ func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing
  		pricing.CacheCreationPriceExplicit = true
  		pricing.CacheCreation5mPrice = *channelPricing.CacheWritePrice
  		pricing.CacheCreation1hPrice = *channelPricing.CacheWritePrice
@@ -258,7 +245,7 @@ index a43f26a8ada62694e53ef8c289516d1aa3e2b797..9c06d603225223ce37def649fc7f27a7
  	}
  	if channelPricing.ImageOutputPrice != nil {
  		pricing.ImageOutputPricePerToken = *channelPricing.ImageOutputPrice
-@@ -1061,30 +1081,44 @@ func (s *BillingService) computeTokenBreakdown(
+@@ -1186,30 +1206,44 @@ func (s *BillingService) computeTokenBreakdown(
  	// 分离图片输入 token 与文本输入 token（多模态 embedding、图片编辑等图文不同价场景）。
  	// InputCost 仅计文本输入，图片输入费用单独记入 ImageInputCost，便于对账；总额不变。
  	// ImageInputTokens 为 0 时（绝大多数 chat/vision 流量）走原始单价路径，行为不变。
@@ -315,7 +302,7 @@ index a43f26a8ada62694e53ef8c289516d1aa3e2b797..9c06d603225223ce37def649fc7f27a7
  
  	// 图片输出 token 费用（独立费率）
  	if tokens.ImageOutputTokens > 0 {
-@@ -1097,8 +1131,23 @@ func (s *BillingService) computeTokenBreakdown(
+@@ -1222,8 +1256,23 @@ func (s *BillingService) computeTokenBreakdown(
  
  	// 缓存创建费用
  	bd.CacheCreationCost = s.computeCacheCreationCost(pricing, tokens, cacheCreationPrice, cacheCreationMultiplier)
@@ -340,7 +327,7 @@ index a43f26a8ada62694e53ef8c289516d1aa3e2b797..9c06d603225223ce37def649fc7f27a7
  
  	if tierMultiplier != 1.0 {
  		bd.InputCost *= tierMultiplier
-@@ -1120,15 +1169,46 @@ func (s *BillingService) computeTokenBreakdown(
+@@ -1245,15 +1294,46 @@ func (s *BillingService) computeTokenBreakdown(
  // computeCacheCreationCost 计算缓存创建费用（支持 5m/1h 分类或标准计费）。
  // multiplier 用于长上下文等场景下的整体价格缩放（普通调用传 1.0 即可）。
  func (s *BillingService) computeCacheCreationCost(pricing *ModelPricing, tokens UsageTokens, price, multiplier float64) float64 {
@@ -393,7 +380,7 @@ index a43f26a8ada62694e53ef8c289516d1aa3e2b797..9c06d603225223ce37def649fc7f27a7
  
  // calculatePerRequestCost 按次/图片计费
 diff --git a/backend/internal/service/billing_service_test.go b/backend/internal/service/billing_service_test.go
-index 8f322b54e998d731c7fc9258c008b5d30b3f4fe1..3ffb4cf2e5c69db6fb0768834a17b25ff545f957 100644
+index 80d07af44..c4dc4f8e1 100644
 --- a/backend/internal/service/billing_service_test.go
 +++ b/backend/internal/service/billing_service_test.go
 @@ -74,6 +74,65 @@ func TestCalculateCost_WithCacheTokens(t *testing.T) {
@@ -462,7 +449,7 @@ index 8f322b54e998d731c7fc9258c008b5d30b3f4fe1..3ffb4cf2e5c69db6fb0768834a17b25f
  func TestCalculateCost_RateMultiplier(t *testing.T) {
  	svc := newTestBillingService()
  
-@@ -1456,6 +1515,8 @@ func TestGetModelPricing_MapsDynamicPriorityFieldsIntoBillingPricing(t *testing.
+@@ -1538,6 +1597,8 @@ func TestGetModelPricing_MapsDynamicPriorityFieldsIntoBillingPricing(t *testing.
  				InputCostPerTokenPriority:           2e-6,
  				OutputCostPerToken:                  3e-6,
  				OutputCostPerTokenPriority:          6e-6,
@@ -471,7 +458,7 @@ index 8f322b54e998d731c7fc9258c008b5d30b3f4fe1..3ffb4cf2e5c69db6fb0768834a17b25f
  				CacheCreationInputTokenCost:         4e-6,
  				CacheCreationInputTokenCostAbove1hr: 5e-6,
  				CacheReadInputTokenCost:             7e-7,
-@@ -1473,6 +1534,8 @@ func TestGetModelPricing_MapsDynamicPriorityFieldsIntoBillingPricing(t *testing.
+@@ -1555,6 +1616,8 @@ func TestGetModelPricing_MapsDynamicPriorityFieldsIntoBillingPricing(t *testing.
  	require.InDelta(t, 2e-6, pricing.InputPricePerTokenPriority, 1e-12)
  	require.InDelta(t, 3e-6, pricing.OutputPricePerToken, 1e-12)
  	require.InDelta(t, 6e-6, pricing.OutputPricePerTokenPriority, 1e-12)
@@ -480,7 +467,7 @@ index 8f322b54e998d731c7fc9258c008b5d30b3f4fe1..3ffb4cf2e5c69db6fb0768834a17b25f
  	require.InDelta(t, 4e-6, pricing.CacheCreation5mPrice, 1e-12)
  	require.InDelta(t, 5e-6, pricing.CacheCreation1hPrice, 1e-12)
  	require.True(t, pricing.SupportsCacheBreakdown)
-@@ -1483,6 +1546,65 @@ func TestGetModelPricing_MapsDynamicPriorityFieldsIntoBillingPricing(t *testing.
+@@ -1565,6 +1628,65 @@ func TestGetModelPricing_MapsDynamicPriorityFieldsIntoBillingPricing(t *testing.
  	require.InDelta(t, 1.25, pricing.LongContextOutputMultiplier, 1e-12)
  }
  
@@ -546,7 +533,7 @@ index 8f322b54e998d731c7fc9258c008b5d30b3f4fe1..3ffb4cf2e5c69db6fb0768834a17b25f
  // ---------------------------------------------------------------------------
  // GetModelPricingWithChannel
  // ---------------------------------------------------------------------------
-@@ -1562,6 +1684,38 @@ func TestGetModelPricingWithChannel_OverrideAllFields(t *testing.T) {
+@@ -1644,6 +1766,38 @@ func TestGetModelPricingWithChannel_OverrideAllFields(t *testing.T) {
  	require.InDelta(t, 50e-6, pricing.ImageOutputPricePerToken, 1e-12)
  }
  
@@ -586,10 +573,10 @@ index 8f322b54e998d731c7fc9258c008b5d30b3f4fe1..3ffb4cf2e5c69db6fb0768834a17b25f
  	svc := newTestBillingService()
  
 diff --git a/backend/internal/service/billing_service_unified_test.go b/backend/internal/service/billing_service_unified_test.go
-index eabbab3dfc7e6b60044cc9807bdc0fa5a5329a21..b4a71ac719e52d6c4b5d390a82a1cf343f7d6f5f 100644
+index e61a89955..3872b0a9b 100644
 --- a/backend/internal/service/billing_service_unified_test.go
 +++ b/backend/internal/service/billing_service_unified_test.go
-@@ -224,6 +224,127 @@ func TestCalculateCostUnified_BillingModeFieldFilled(t *testing.T) {
+@@ -372,6 +372,127 @@ func TestCalculateCostUnified_BillingModeFieldFilled(t *testing.T) {
  	require.Equal(t, "token", cost.BillingMode)
  }
  
@@ -717,7 +704,7 @@ index eabbab3dfc7e6b60044cc9807bdc0fa5a5329a21..b4a71ac719e52d6c4b5d390a82a1cf34
  func TestCalculateCostUnified_UsesPreResolvedPricing(t *testing.T) {
  	bs := newTestBillingService()
  	resolver := NewModelPricingResolver(nil, bs)
-@@ -255,6 +376,19 @@ func TestCalculateCostUnified_UsesPreResolvedPricing(t *testing.T) {
+@@ -403,6 +524,19 @@ func TestCalculateCostUnified_UsesPreResolvedPricing(t *testing.T) {
  // helpers
  // ---------------------------------------------------------------------------
  
@@ -738,10 +725,10 @@ index eabbab3dfc7e6b60044cc9807bdc0fa5a5329a21..b4a71ac719e52d6c4b5d390a82a1cf34
  // cache snapshot, bypassing the repository layer entirely.
  func newTestChannelServiceWithCache(t *testing.T, cache *channelCache) *ChannelService {
 diff --git a/backend/internal/service/model_pricing_resolver.go b/backend/internal/service/model_pricing_resolver.go
-index ea5f4a29d1190532b59fc591f00863b8d3bf4db8..8ffe6aa93cbb235705b8187ec7c2d7f84de628b7 100644
+index 52c6b930c..37e9e2570 100644
 --- a/backend/internal/service/model_pricing_resolver.go
 +++ b/backend/internal/service/model_pricing_resolver.go
-@@ -177,10 +177,13 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
+@@ -257,10 +257,13 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
  	if chPricing.InputPrice != nil {
  		resolved.BasePricing.InputPricePerToken = *chPricing.InputPrice
  		resolved.BasePricing.InputPricePerTokenPriority = *chPricing.InputPrice
@@ -755,7 +742,7 @@ index ea5f4a29d1190532b59fc591f00863b8d3bf4db8..8ffe6aa93cbb235705b8187ec7c2d7f8
  	}
  	if chPricing.CacheWritePrice != nil {
  		resolved.BasePricing.CacheCreationPricePerToken = *chPricing.CacheWritePrice
-@@ -188,10 +191,12 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
+@@ -268,10 +271,12 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
  		resolved.BasePricing.CacheCreationPriceExplicit = true
  		resolved.BasePricing.CacheCreation5mPrice = *chPricing.CacheWritePrice
  		resolved.BasePricing.CacheCreation1hPrice = *chPricing.CacheWritePrice
@@ -769,10 +756,10 @@ index ea5f4a29d1190532b59fc591f00863b8d3bf4db8..8ffe6aa93cbb235705b8187ec7c2d7f8
  	// 渠道定价覆盖一切：显式配置则用配置值，未配置则归零（不回退到 LiteLLM）
  	if chPricing.ImageOutputPrice != nil {
 diff --git a/backend/internal/service/openai_gateway_record_usage_test.go b/backend/internal/service/openai_gateway_record_usage_test.go
-index beb674474ee0f2d0870f93d79ed4498f21c67771..412b8b0ceb9740386a1db9983b3e904b5ec38af4 100644
+index 21e5cd409..8aaf771a2 100644
 --- a/backend/internal/service/openai_gateway_record_usage_test.go
 +++ b/backend/internal/service/openai_gateway_record_usage_test.go
-@@ -266,10 +266,15 @@ func expectedOpenAICost(t *testing.T, svc *OpenAIGatewayService, model string, u
+@@ -277,10 +277,15 @@ func expectedOpenAICost(t *testing.T, svc *OpenAIGatewayService, model string, u
  	t.Helper()
  
  	cost, err := svc.billingService.CalculateCost(model, UsageTokens{
@@ -792,7 +779,7 @@ index beb674474ee0f2d0870f93d79ed4498f21c67771..412b8b0ceb9740386a1db9983b3e904b
  	}, multiplier)
  	require.NoError(t, err)
  	return cost
-@@ -1072,6 +1077,53 @@ func TestOpenAIGatewayServiceRecordUsage_GPT56SeparatesCacheWriteForBillingAndSt
+@@ -1148,6 +1153,53 @@ func TestOpenAIGatewayServiceRecordUsage_GPT56SeparatesCacheWriteForBillingAndSt
  	require.InDelta(t, usageRepo.lastLog.TotalCost*1.1, usageRepo.lastLog.ActualCost, 1e-12)
  }
  
@@ -847,7 +834,7 @@ index beb674474ee0f2d0870f93d79ed4498f21c67771..412b8b0ceb9740386a1db9983b3e904b
  	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
  	userRepo := &openAIRecordUsageUserRepoStub{}
 diff --git a/backend/internal/service/pricing_service.go b/backend/internal/service/pricing_service.go
-index d0dce84f4c363899025827fefd73b61d5ab9b5c9..2d030037a34c086f036b878272886e9867bde00b 100644
+index f7733ae00..5beac0ce2 100644
 --- a/backend/internal/service/pricing_service.go
 +++ b/backend/internal/service/pricing_service.go
 @@ -111,10 +111,15 @@ type LiteLLMModelPricing struct {
@@ -951,7 +938,7 @@ index d0dce84f4c363899025827fefd73b61d5ab9b5c9..2d030037a34c086f036b878272886e98
  			pricing.CacheReadInputTokenCostPriority = *entry.CacheReadInputTokenCostPriority
  		}
 diff --git a/backend/internal/service/pricing_service_test.go b/backend/internal/service/pricing_service_test.go
-index 1a933aec107d696fe352bf6f33c20b890811f91a..939cceec8128ef53653e5e665abd2aeee6fa3419 100644
+index 1a933aec1..939cceec8 100644
 --- a/backend/internal/service/pricing_service_test.go
 +++ b/backend/internal/service/pricing_service_test.go
 @@ -309,6 +309,32 @@ func TestParsePricingData_KeepsImageOnlyPricing(t *testing.T) {
@@ -988,10 +975,10 @@ index 1a933aec107d696fe352bf6f33c20b890811f91a..939cceec8128ef53653e5e665abd2aee
  	pricingSvc := &PricingService{}
  	data, err := pricingSvc.parsePricingData([]byte(`{
 diff --git a/backend/internal/service/usage_log.go b/backend/internal/service/usage_log.go
-index b35d149ea8eb61952f6551f376e49a52851878df..4937488174e963623fc8c8b2f88a865b25d295de 100644
+index 7a41555ec..b6e553f94 100644
 --- a/backend/internal/service/usage_log.go
 +++ b/backend/internal/service/usage_log.go
-@@ -141,6 +141,11 @@ type UsageLog struct {
+@@ -147,6 +147,11 @@ type UsageLog struct {
  	CacheCreationTokens int
  	CacheReadTokens     int
  
@@ -1003,7 +990,7 @@ index b35d149ea8eb61952f6551f376e49a52851878df..4937488174e963623fc8c8b2f88a865b
  	CacheCreation5mTokens int `gorm:"column:cache_creation_5m_tokens"`
  	CacheCreation1hTokens int `gorm:"column:cache_creation_1h_tokens"`
  
-@@ -202,7 +207,8 @@ type UsageLog struct {
+@@ -208,7 +213,8 @@ type UsageLog struct {
  }
  
  func (u *UsageLog) TotalTokens() int {
@@ -1014,7 +1001,7 @@ index b35d149ea8eb61952f6551f376e49a52851878df..4937488174e963623fc8c8b2f88a865b
  
  func (u *UsageLog) EffectiveRequestType() RequestType {
 diff --git a/backend/internal/service/usage_service.go b/backend/internal/service/usage_service.go
-index a085a7137194849d0e1c2325d2866db153e33fbd..df4051b3976a699e2d475eda4100e352b853e2c7 100644
+index a085a7137..df4051b39 100644
 --- a/backend/internal/service/usage_service.go
 +++ b/backend/internal/service/usage_service.go
 @@ -18,40 +18,48 @@ var (

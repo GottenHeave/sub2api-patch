@@ -1,0 +1,19 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: audit <audit@example.invalid>
+Date: Tue, 18 Aug 2026 19:32:38 +0000
+Subject: [PATCH] test: align Grok account fixture with v0.1.178
+
+
+diff --git a/frontend/src/components/account/__tests__/CreateAccountModal.grok.spec.ts b/frontend/src/components/account/__tests__/CreateAccountModal.grok.spec.ts
+index c0273e194..82b3a87b2 100644
+--- a/frontend/src/components/account/__tests__/CreateAccountModal.grok.spec.ts
++++ b/frontend/src/components/account/__tests__/CreateAccountModal.grok.spec.ts
+@@ -14,7 +14,7 @@ describe('CreateAccountModal Grok account types', () => {
+     expect(source).toContain("newPlatform === 'grok'")
+     expect(source).toContain("? 'https://api.x.ai/v1'")
+     expect(source).toContain("form.platform === 'grok'")
+-    expect(source).toContain("? 'xai-...'")
++    expect(source).toContain("return 'xai-...'")
+   })
+ 
+   it('exposes custom upstream URL and header override for the OAuth create flow', () => {

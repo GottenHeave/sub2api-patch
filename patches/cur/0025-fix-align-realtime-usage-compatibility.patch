@@ -1,0 +1,19 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Mon, 27 Jul 2026 16:31:55 +0000
+Subject: [PATCH] fix: align realtime usage compatibility
+
+
+diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
+index a342fe875..deebab84f 100644
+--- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
++++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
+@@ -1041,7 +1041,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 			if requestModelForThisFrame == "" {
+ 				requestModelForThisFrame = capturedSessionModel
+ 			}
+-			if isResponseCreate && hooks != nil && hooks.BeforeRequest != nil {
++			if hooks != nil && hooks.BeforeRequest != nil {
+ 				if err := hooks.BeforeRequest(turnNo, payload, requestModelForThisFrame); err != nil {
+ 					return payload, nil, err
+ 				}

@@ -1,17 +1,14 @@
-From bc80ef96e50f688f88a7f1d56608d63d7994f489 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Fri, 10 Jul 2026 15:55:14 +0000
-Subject: [PATCH 22/27] fix: parse singular OpenAI cache token details
+Subject: [PATCH] fix: parse singular OpenAI cache token details
 
----
- backend/internal/service/openai_gateway_response_handling.go | 1 +
- 1 file changed, 1 insertion(+)
 
 diff --git a/backend/internal/service/openai_gateway_response_handling.go b/backend/internal/service/openai_gateway_response_handling.go
-index f985ab589f45383a623efeddb0b8ccde0f21f012..66dbccea820b90b2d3fc23a76f5addac5f2ad114 100644
+index 98c63ed92..1ca279a14 100644
 --- a/backend/internal/service/openai_gateway_response_handling.go
 +++ b/backend/internal/service/openai_gateway_response_handling.go
-@@ -1096,6 +1096,7 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+@@ -1202,6 +1202,7 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
  
  func openAICacheReadTokensFromUsage(value gjson.Result) int {
  	for _, nested := range []gjson.Result{

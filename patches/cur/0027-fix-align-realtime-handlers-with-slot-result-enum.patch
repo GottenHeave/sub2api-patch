@@ -1,15 +1,11 @@
-From 78e6ff442ddd1ee7a234311099314b55acd583cd Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Mon, 3 Aug 2026 10:44:53 +0000
-Subject: [PATCH 27/27] fix: align realtime handlers with slot result enum
+Subject: [PATCH] fix: align realtime handlers with slot result enum
 
----
- backend/internal/handler/openai_audio_transcriptions.go | 2 +-
- backend/internal/handler/openai_realtime_calls.go       | 2 +-
- 2 files changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
-index e81fb6c3d3ca20cfd1dd842f3eb65badee129b41..96173a003a16dc8787fcc9a9cc3f1d0bd5b5d72d 100644
+index e81fb6c3d..96173a003 100644
 --- a/backend/internal/handler/openai_audio_transcriptions.go
 +++ b/backend/internal/handler/openai_audio_transcriptions.go
 @@ -158,7 +158,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
@@ -22,7 +18,7 @@ index e81fb6c3d3ca20cfd1dd842f3eb65badee129b41..96173a003a16dc8787fcc9a9cc3f1d0b
  		}
  
 diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
-index d3f9f30f9bdaf94fa2740dd9f0fed64dbd29db1e..5e1796036b128d36b0e513f2a289f078487bb547 100644
+index d3f9f30f9..5e1796036 100644
 --- a/backend/internal/handler/openai_realtime_calls.go
 +++ b/backend/internal/handler/openai_realtime_calls.go
 @@ -165,7 +165,7 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {

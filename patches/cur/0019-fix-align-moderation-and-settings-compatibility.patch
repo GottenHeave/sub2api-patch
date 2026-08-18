@@ -1,17 +1,11 @@
-From fcb7a134cd19ae5569471d308aa09e63259fb938 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:51 +0000
-Subject: [PATCH 19/27] fix: align moderation and settings compatibility
+Subject: [PATCH] fix: align moderation and settings compatibility
 
----
- .../pkg/openai/instructions_gpt5_2.txt        |  2 +-
- .../internal/service/content_moderation.go    |  9 +++
- .../service/content_moderation_input.go       | 64 +++++++++++++++++++
- .../service/content_moderation_test.go        | 51 +++++++++++++++
- 4 files changed, 125 insertions(+), 1 deletion(-)
 
 diff --git a/backend/internal/pkg/openai/instructions_gpt5_2.txt b/backend/internal/pkg/openai/instructions_gpt5_2.txt
-index 7dd684bf061e2c0709fea6354e768c6b3d64251f..1dd679819ae9249ed406d70aec3cfc979b29bfcb 100644
+index 7dd684bf0..1dd679819 100644
 --- a/backend/internal/pkg/openai/instructions_gpt5_2.txt
 +++ b/backend/internal/pkg/openai/instructions_gpt5_2.txt
 @@ -157,7 +157,7 @@ If you're operating in an existing codebase, you should make sure you do exactly
@@ -24,7 +18,7 @@ index 7dd684bf061e2c0709fea6354e768c6b3d64251f..1dd679819ae9249ed406d70aec3cfc97
  Your final message should read naturally, like an update from a concise teammate. For casual conversation, brainstorming tasks, or quick questions from the user, respond in a friendly, conversational tone. You should ask questions, suggest ideas, and adapt to the user’s style. If you've finished a large amount of work, when describing what you've done to the user, you should follow the final answer formatting guidelines to communicate substantive changes. You don't need to add structured formatting for one-word answers, greetings, or purely conversational exchanges.
  
 diff --git a/backend/internal/service/content_moderation.go b/backend/internal/service/content_moderation.go
-index acf38bf49bf99d1e6d66c14cff459cf9250be72c..e5aa5b08cf8f1d209fd748b8535fc2ec13bb68bc 100644
+index b25f5ec4d..e8015ba40 100644
 --- a/backend/internal/service/content_moderation.go
 +++ b/backend/internal/service/content_moderation.go
 @@ -53,6 +53,7 @@ const (
@@ -58,7 +52,7 @@ index acf38bf49bf99d1e6d66c14cff459cf9250be72c..e5aa5b08cf8f1d209fd748b8535fc2ec
  	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
  	trackPreBlock := queueDelay == nil && allowBlock && cfg != nil && cfg.Mode == ContentModerationModePreBlock
 diff --git a/backend/internal/service/content_moderation_input.go b/backend/internal/service/content_moderation_input.go
-index 73d5b6973a2df79ae0b25d735d5d39340f04a518..1e9dff174d40bb9de7185ae3946e8dba366643d6 100644
+index 73d5b6973..1e9dff174 100644
 --- a/backend/internal/service/content_moderation_input.go
 +++ b/backend/internal/service/content_moderation_input.go
 @@ -26,6 +26,8 @@ func ExtractContentModerationInput(protocol string, body []byte) ContentModerati
@@ -140,7 +134,7 @@ index 73d5b6973a2df79ae0b25d735d5d39340f04a518..1e9dff174d40bb9de7185ae3946e8dba
  	if !contents.IsArray() {
  		return
 diff --git a/backend/internal/service/content_moderation_test.go b/backend/internal/service/content_moderation_test.go
-index 1cacc67477aed829f530c5541a0a1e46644a764b..e0ee4340c4a893300149289f97f636f5d8a832a2 100644
+index 1cacc6747..e0ee4340c 100644
 --- a/backend/internal/service/content_moderation_test.go
 +++ b/backend/internal/service/content_moderation_test.go
 @@ -1010,6 +1010,57 @@ func TestExtractContentModerationInput_OpenAIResponsesCodexPayloadUsesLastUserMe

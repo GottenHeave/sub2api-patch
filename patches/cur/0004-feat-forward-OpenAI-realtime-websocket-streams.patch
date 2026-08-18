@@ -1,19 +1,14 @@
-From e06d91ea1021a18107bfa85295d6a5b096f80a26 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:49 +0000
-Subject: [PATCH 04/27] feat: forward OpenAI realtime websocket streams
+Subject: [PATCH] feat: forward OpenAI realtime websocket streams
 
----
- .../internal/service/openai_ws_forwarder.go   | 3598 +++++++++++++++++
- .../service/openai_ws_v2/passthrough_relay.go |   91 +-
- .../openai_ws_v2_passthrough_adapter.go       |  125 +-
- 3 files changed, 3763 insertions(+), 51 deletions(-)
 
 diff --git a/backend/internal/service/openai_ws_forwarder.go b/backend/internal/service/openai_ws_forwarder.go
-index 9c0869fbee2758c9fb10d70ea521e2e7278b6805..ace47df79219a9fb0e7957b7dbc9867ed7dc33f3 100644
+index 1928c1d6e..e1ad27194 100644
 --- a/backend/internal/service/openai_ws_forwarder.go
 +++ b/backend/internal/service/openai_ws_forwarder.go
-@@ -393,3 +393,3601 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
+@@ -400,3 +400,3601 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
  	}
  	return dial + 2*time.Second
  }
@@ -3616,7 +3611,7 @@ index 9c0869fbee2758c9fb10d70ea521e2e7278b6805..ace47df79219a9fb0e7957b7dbc9867e
 +	s.openaiWSFallbackUntil.Delete(accountID)
 +}
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay.go b/backend/internal/service/openai_ws_v2/passthrough_relay.go
-index b6936fe99419d55436520cd1a51379bd69b1f60b..b032fd43e18e156e3b6b3e609d750ef044bd7e7c 100644
+index abc94e8f1..c19e4a893 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay.go
 @@ -26,6 +26,10 @@ type Usage struct {
@@ -3630,15 +3625,15 @@ index b6936fe99419d55436520cd1a51379bd69b1f60b..b032fd43e18e156e3b6b3e609d750ef0
  	ImageOutputTokens        int
  }
  
-@@ -62,6 +66,7 @@ type RelayOptions struct {
- 	IdleTimeout                     time.Duration
- 	UpstreamDrainTimeout            time.Duration
+@@ -69,6 +73,7 @@ type RelayOptions struct {
+ 	FirstTurnStartedAt              time.Time
+ 	TakeNextTurnStartedAt           func() time.Time
  	FirstMessageType                coderws.MessageType
 +	InitialRequestModel             string
  	FirstMessageSent                bool
  	StartClientAfterFirstDownstream bool
  	OnUsageParseFailure             func(eventType string, usageRaw string)
-@@ -125,6 +130,9 @@ func Relay(
+@@ -141,6 +146,9 @@ func Relay(
  	options RelayOptions,
  ) (RelayResult, *RelayExit) {
  	result := RelayResult{RequestModel: strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())}
@@ -3648,7 +3643,7 @@ index b6936fe99419d55436520cd1a51379bd69b1f60b..b032fd43e18e156e3b6b3e609d750ef0
  	if clientConn == nil || upstreamConn == nil {
  		return result, &RelayExit{Stage: "relay_init", Err: errors.New("relay connection is nil")}
  	}
-@@ -200,7 +208,7 @@ func Relay(
+@@ -231,7 +239,7 @@ func Relay(
  			MessageType:  relayMessageTypeString(firstMessageType),
  			PayloadBytes: len(firstClientMessage),
  		})
@@ -3657,7 +3652,7 @@ index b6936fe99419d55436520cd1a51379bd69b1f60b..b032fd43e18e156e3b6b3e609d750ef0
  		if err := writeUpstream(firstMessageType, firstClientMessage); err != nil {
  			result.Duration = nowFn().Sub(startAt)
  			emitRelayTrace(onTrace, RelayTraceEvent{
-@@ -212,16 +220,15 @@ func Relay(
+@@ -243,16 +251,15 @@ func Relay(
  			})
  			return result, &RelayExit{Stage: "write_upstream", Err: err}
  		}
@@ -3676,7 +3671,7 @@ index b6936fe99419d55436520cd1a51379bd69b1f60b..b032fd43e18e156e3b6b3e609d750ef0
  	exitCh := make(chan relayExitSignal, 3)
  	dropDownstreamWrites := atomic.Bool{}
  	clientReaderStarted := atomic.Bool{}
-@@ -800,18 +807,15 @@ func parseUsageAndAccumulate(
+@@ -920,18 +927,15 @@ func parseUsageAndAccumulate(
  		return Usage{}
  	}
  
@@ -3704,7 +3699,7 @@ index b6936fe99419d55436520cd1a51379bd69b1f60b..b032fd43e18e156e3b6b3e609d750ef0
  	imageTokens := usageResult.Get("output_tokens_details.image_tokens").Int()
  	if imageTokens == 0 {
  		imageTokens = usageResult.Get("completion_tokens_details.image_tokens").Int()
-@@ -819,8 +823,9 @@ func parseUsageAndAccumulate(
+@@ -939,8 +943,9 @@ func parseUsageAndAccumulate(
  
  	inputTokens, inputOK := parseUsageIntField(inputResult, true)
  	outputTokens, outputOK := parseUsageIntField(outputResult, true)
@@ -3715,7 +3710,7 @@ index b6936fe99419d55436520cd1a51379bd69b1f60b..b032fd43e18e156e3b6b3e609d750ef0
  		recordUsageParseFailure()
  		if onParseFailure != nil {
  			onParseFailure(eventType, usageRaw)
-@@ -833,17 +838,67 @@ func parseUsageAndAccumulate(
+@@ -953,17 +958,67 @@ func parseUsageAndAccumulate(
  		OutputTokens:             outputTokens,
  		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
  		CacheReadInputTokens:     cachedTokens,
@@ -3785,7 +3780,7 @@ index b6936fe99419d55436520cd1a51379bd69b1f60b..b032fd43e18e156e3b6b3e609d750ef0
  	if !value.Exists() {
  		return 0, !required
 diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-index ae74027bca1c99b6998c084228df712fd1e40982..af74a7bad5e0171f8f190c5deb74471b5fd03d0d 100644
+index df094a336..a342fe875 100644
 --- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 +++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 @@ -17,6 +17,7 @@ import (
@@ -3886,7 +3881,7 @@ index ae74027bca1c99b6998c084228df712fd1e40982..af74a7bad5e0171f8f190c5deb74471b
  	if err != nil {
  		return fmt.Errorf("build ws url: %w", err)
  	}
-@@ -955,45 +1001,45 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -970,45 +1016,45 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  					}
  				}
  			}
@@ -3963,7 +3958,7 @@ index ae74027bca1c99b6998c084228df712fd1e40982..af74a7bad5e0171f8f190c5deb74471b
  			// Per-frame model first; if the client omits "model" on a
  			// follow-up frame (legal in Realtime), fall back to the
  			// session-level model captured from the first frame so the
-@@ -1053,6 +1099,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1070,6 +1116,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  		)
  	}
  	upstreamFirstMessageSent = true
@@ -3974,7 +3969,7 @@ index ae74027bca1c99b6998c084228df712fd1e40982..af74a7bad5e0171f8f190c5deb74471b
  
  	readNextClientFrame := func(readCtx context.Context, conn openaiwsv2.FrameConn) (coderws.MessageType, []byte, error) {
  		for {
-@@ -1081,8 +1131,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1110,8 +1160,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			// terminate a healthy active upstream turn.
  			IdleTimeout:                     0,
  			FirstMessageType:                coderws.MessageText,
@@ -3985,7 +3980,7 @@ index ae74027bca1c99b6998c084228df712fd1e40982..af74a7bad5e0171f8f190c5deb74471b
  			ReadClientFrame:                 readNextClientFrame,
  			OnUsageParseFailure: func(eventType string, usageRaw string) {
  				logOpenAIWSV2Passthrough(
-@@ -1101,6 +1152,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1133,6 +1184,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  						OutputTokens:             turn.Usage.OutputTokens,
  						CacheCreationInputTokens: turn.Usage.CacheCreationInputTokens,
  						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
@@ -3995,8 +3990,8 @@ index ae74027bca1c99b6998c084228df712fd1e40982..af74a7bad5e0171f8f190c5deb74471b
 +						CacheReadAudioTokens:     turn.Usage.CacheReadAudioTokens,
  						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
  					},
- 					Model:                 turnRequestModel,
-@@ -1220,6 +1275,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 					Model:                         turnRequestModel,
+@@ -1254,6 +1309,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			OutputTokens:             relayResult.Usage.OutputTokens,
  			CacheCreationInputTokens: relayResult.Usage.CacheCreationInputTokens,
  			CacheReadInputTokens:     relayResult.Usage.CacheReadInputTokens,
@@ -4006,4 +4001,4 @@ index ae74027bca1c99b6998c084228df712fd1e40982..af74a7bad5e0171f8f190c5deb74471b
 +			CacheReadAudioTokens:     relayResult.Usage.CacheReadAudioTokens,
  			ImageOutputTokens:        relayResult.Usage.ImageOutputTokens,
  		},
- 		Model:                 resultRequestModel,
+ 		Model:                         resultRequestModel,

@@ -1,19 +1,14 @@
-From c9dd2814283f9ea43e8052a83fb675784f9bd21d Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Tue, 14 Jul 2026 10:46:46 +0000
-Subject: [PATCH 23/27] test: align downstream fixtures with upstream usage
- fields
+Subject: [PATCH] test: align downstream fixtures with upstream usage fields
 
----
- backend/internal/handler/failover_loop_test.go       | 10 +++++-----
- .../repository/usage_log_repo_request_type_test.go   | 12 ++++++++----
- 2 files changed, 13 insertions(+), 9 deletions(-)
 
 diff --git a/backend/internal/handler/failover_loop_test.go b/backend/internal/handler/failover_loop_test.go
-index 582d1419e9bfb51fbd6f64eb7c83c9947369ada4..9fdfdff774e7b2b74b918bfc72ec9e80db3fb18e 100644
+index cb94bcfdc..712fe7af0 100644
 --- a/backend/internal/handler/failover_loop_test.go
 +++ b/backend/internal/handler/failover_loop_test.go
-@@ -495,13 +495,13 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
+@@ -524,13 +524,13 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
  				err := newTestFailoverErr(statusCode, true, false)
  
  				for i := 1; i <= maxSameAccountRetries; i++ {
@@ -29,7 +24,7 @@ index 582d1419e9bfb51fbd6f64eb7c83c9947369ada4..9fdfdff774e7b2b74b918bfc72ec9e80
  				require.Equal(t, FailoverContinue, action)
  				require.Equal(t, 1, fs.SwitchCount)
  				require.Contains(t, fs.FailedAccountIDs, int64(101))
-@@ -519,7 +519,7 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
+@@ -548,7 +548,7 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
  				fs := NewFailoverState(2, false)
  				err := newTestFailoverErr(statusCode, false, false)
  
@@ -38,7 +33,7 @@ index 582d1419e9bfb51fbd6f64eb7c83c9947369ada4..9fdfdff774e7b2b74b918bfc72ec9e80
  
  				require.Equal(t, FailoverContinue, action)
  				require.Equal(t, 1, fs.SwitchCount)
-@@ -534,11 +534,11 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
+@@ -563,11 +563,11 @@ func TestHandleFailoverError_AudioTranscriptionFailoverIntendedFlow(t *testing.T
  		mock := &mockTempUnscheduler{}
  		fs := NewFailoverState(1, false)
  
@@ -53,10 +48,10 @@ index 582d1419e9bfb51fbd6f64eb7c83c9947369ada4..9fdfdff774e7b2b74b918bfc72ec9e80
  		require.Equal(t, 1, fs.SwitchCount)
  		require.Contains(t, fs.FailedAccountIDs, int64(301))
 diff --git a/backend/internal/repository/usage_log_repo_request_type_test.go b/backend/internal/repository/usage_log_repo_request_type_test.go
-index 370e498100857650540ca3e439ed06f7e08dfba6..e68158bd01ad01ed004b2c583458b95ff883fd19 100644
+index 8e1cadede..6a5673d7c 100644
 --- a/backend/internal/repository/usage_log_repo_request_type_test.go
 +++ b/backend/internal/repository/usage_log_repo_request_type_test.go
-@@ -721,7 +721,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -723,7 +723,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			sql.NullString{},
@@ -66,7 +61,7 @@ index 370e498100857650540ca3e439ed06f7e08dfba6..e68158bd01ad01ed004b2c583458b95f
  			sql.NullInt64{},
  			sql.NullString{},
  			sql.NullString{},
-@@ -799,7 +800,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -803,7 +804,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			sql.NullString{},
@@ -76,7 +71,7 @@ index 370e498100857650540ca3e439ed06f7e08dfba6..e68158bd01ad01ed004b2c583458b95f
  			sql.NullInt64{},   // channel_id
  			sql.NullString{},  // model_mapping_chain
  			sql.NullString{},  // billing_tier
-@@ -858,7 +860,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -864,7 +866,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			sql.NullString{},
@@ -86,7 +81,7 @@ index 370e498100857650540ca3e439ed06f7e08dfba6..e68158bd01ad01ed004b2c583458b95f
  			sql.NullInt64{},   // channel_id
  			sql.NullString{},  // model_mapping_chain
  			sql.NullString{},  // billing_tier
-@@ -917,7 +920,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+@@ -925,7 +928,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
  			sql.NullString{},
  			sql.NullString{},
  			sql.NullString{},

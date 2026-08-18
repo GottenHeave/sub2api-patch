@@ -1,17 +1,14 @@
-From 76073ccc18d2564f58a7a0f28786cfd344b65a04 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Mon, 3 Aug 2026 10:41:48 +0000
-Subject: [PATCH 26/27] fix: preserve scheduler account type compatibility
+Subject: [PATCH] fix: preserve scheduler account type compatibility
 
----
- backend/internal/service/openai_account_scheduler.go | 5 +++--
- 1 file changed, 3 insertions(+), 2 deletions(-)
 
 diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
-index 77022b3ad725b6b7bd4a842c1df3243c28dcb9c1..4c2643175a4394a866eb04c81868b01e3664f069 100644
+index 3cd94ef7a..598cbebab 100644
 --- a/backend/internal/service/openai_account_scheduler.go
 +++ b/backend/internal/service/openai_account_scheduler.go
-@@ -2169,7 +2169,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
+@@ -2223,7 +2223,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
  	previousResponseCanMove bool,
  	useUpstreamTokenCost bool,
  ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
@@ -20,7 +17,7 @@ index 77022b3ad725b6b7bd4a842c1df3243c28dcb9c1..4c2643175a4394a866eb04c81868b01e
  	if err == nil || openAIProxyStreamQuarantineBypassed(ctx) {
  		return selection, decision, err
  	}
-@@ -2185,7 +2185,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
+@@ -2239,7 +2239,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
  		return selection, decision, err
  	}
  	s.logOpenAIProxyStreamQuarantineFailOpen(requestedModel, blocked)
@@ -29,7 +26,7 @@ index 77022b3ad725b6b7bd4a842c1df3243c28dcb9c1..4c2643175a4394a866eb04c81868b01e
  }
  
  func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
-@@ -2198,6 +2198,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
+@@ -2252,6 +2252,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
  	requiredTransport OpenAIUpstreamTransport,
  	requiredCapability OpenAIEndpointCapability,
  	requiredImageCapability OpenAIImagesCapability,

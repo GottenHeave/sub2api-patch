@@ -1,21 +1,12 @@
-From 5bb59558b9b783e31d9e3179c37d718a22f15d1d Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 13 Jun 2026 18:23:50 +0000
-Subject: [PATCH 09/27] test: cover OpenAI audio transcriptions
+Subject: [PATCH] test: cover OpenAI audio transcriptions
 
----
- .../openai_audio_transcriptions_test.go       | 371 ++++++++
- .../internal/service/model_rate_limit_test.go |  23 +
- .../service/openai_account_scheduler_test.go  | 254 +++++
- .../openai_audio_transcriptions_test.go       | 875 ++++++++++++++++++
- .../service/rate_limit_429_cooldown_test.go   |  43 +-
- 5 files changed, 1562 insertions(+), 4 deletions(-)
- create mode 100644 backend/internal/handler/openai_audio_transcriptions_test.go
- create mode 100644 backend/internal/service/openai_audio_transcriptions_test.go
 
 diff --git a/backend/internal/handler/openai_audio_transcriptions_test.go b/backend/internal/handler/openai_audio_transcriptions_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..bdf3bfb80eebed6d4dd01461f4f4a1740fbcf77f
+index 000000000..bdf3bfb80
 --- /dev/null
 +++ b/backend/internal/handler/openai_audio_transcriptions_test.go
 @@ -0,0 +1,371 @@
@@ -391,7 +382,7 @@ index 0000000000000000000000000000000000000000..bdf3bfb80eebed6d4dd01461f4f4a174
 +	}
 +}
 diff --git a/backend/internal/service/model_rate_limit_test.go b/backend/internal/service/model_rate_limit_test.go
-index 430d91baf67e05557d47eebe2ebf2423e5c2fa46..87e8e72a0fb6d2a0ea8895be79235f1b8159221f 100644
+index 430d91baf..87e8e72a0 100644
 --- a/backend/internal/service/model_rate_limit_test.go
 +++ b/backend/internal/service/model_rate_limit_test.go
 @@ -276,6 +276,29 @@ func TestIsModelRateLimited_Antigravity_ThinkingAffectsModelKey(t *testing.T) {
@@ -425,10 +416,10 @@ index 430d91baf67e05557d47eebe2ebf2423e5c2fa46..87e8e72a0fb6d2a0ea8895be79235f1b
  	now := time.Now()
  	future10m := now.Add(10 * time.Minute).Format(time.RFC3339)
 diff --git a/backend/internal/service/openai_account_scheduler_test.go b/backend/internal/service/openai_account_scheduler_test.go
-index 03f30c5b319090d9fc573c0e8bdedf0c709742e9..e24b61c633280144f6439c2ad7aa8290d47e9638 100644
+index 3b3a64856..5b3226833 100644
 --- a/backend/internal/service/openai_account_scheduler_test.go
 +++ b/backend/internal/service/openai_account_scheduler_test.go
-@@ -539,6 +539,62 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Require
+@@ -553,6 +553,62 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Require
  	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
  }
  
@@ -491,7 +482,7 @@ index 03f30c5b319090d9fc573c0e8bdedf0c709742e9..e24b61c633280144f6439c2ad7aa8290
  func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_EmbeddingsSkipsChatOnlyAccount(t *testing.T) {
  	resetOpenAIAdvancedSchedulerSettingCacheForTest()
  
-@@ -2935,6 +2991,204 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
+@@ -2949,6 +3005,204 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
  	require.Equal(t, 0, decision.CandidateCount)
  }
  
@@ -698,7 +689,7 @@ index 03f30c5b319090d9fc573c0e8bdedf0c709742e9..e24b61c633280144f6439c2ad7aa8290
  	groupID := int64(11)
 diff --git a/backend/internal/service/openai_audio_transcriptions_test.go b/backend/internal/service/openai_audio_transcriptions_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..543733d3989e8557f37977f92eb367f7bc4b7f45
+index 000000000..543733d39
 --- /dev/null
 +++ b/backend/internal/service/openai_audio_transcriptions_test.go
 @@ -0,0 +1,875 @@
@@ -1578,7 +1569,7 @@ index 0000000000000000000000000000000000000000..543733d3989e8557f37977f92eb367f7
 +	}
 +}
 diff --git a/backend/internal/service/rate_limit_429_cooldown_test.go b/backend/internal/service/rate_limit_429_cooldown_test.go
-index 96fc199096750a2d34c849b728ae0f3b9a032e66..f7e2b0570eb638b71921ddce71e62cffc3bcbb0d 100644
+index 96fc19909..f7e2b0570 100644
 --- a/backend/internal/service/rate_limit_429_cooldown_test.go
 +++ b/backend/internal/service/rate_limit_429_cooldown_test.go
 @@ -14,10 +14,14 @@ import (
