@@ -280,7 +280,7 @@ func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOmitsResponsesBeta(t *
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
-	headers, _, err := svc.buildOpenAIWSHeaders(context.Background(), c, account, "sk-test", OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2}, false, "", "", "")
+	headers, _, err := svc.buildOpenAIWSHeaders(context.Background(), c, account, "sk-test", OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2}, false, "", "", "", "", "")
 	require.NoError(t, err)
 
 	require.Equal(t, "Bearer sk-test", headers.Get("Authorization"))
@@ -303,7 +303,7 @@ func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOAuthUsesCodexHeaders(
 			"chatgpt_account_id": "chatgpt-account",
 		},
 	}
-	headers, _, err := svc.buildOpenAIWSHeaders(context.Background(), c, account, "oauth-token", OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2}, false, "", "", "")
+	headers, _, err := svc.buildOpenAIWSHeaders(context.Background(), c, account, "oauth-token", OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2}, false, "", "", "", "", "")
 	require.NoError(t, err)
 
 	require.Equal(t, "Bearer oauth-token", headers.Get("Authorization"))
