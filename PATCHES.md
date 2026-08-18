@@ -2,6 +2,9 @@
 
 The current downstream delta is stored as replayable topic patches under `patches/cur`.
 
+The current patchset is based on upstream `v0.1.178` at commit
+`e0c48a19ed794a565e3858662520afe0a1f9f0ba`.
+
 Patch topics:
 
 1. downstream Docker image publishing
