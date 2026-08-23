@@ -5,10 +5,10 @@ Subject: [PATCH] feat: forward OpenAI realtime websocket streams
 
 
 diff --git a/backend/internal/service/openai_ws_forwarder.go b/backend/internal/service/openai_ws_forwarder.go
-index 1928c1d6e..e1ad27194 100644
+index 099444662..794042c7f 100644
 --- a/backend/internal/service/openai_ws_forwarder.go
 +++ b/backend/internal/service/openai_ws_forwarder.go
-@@ -400,3 +400,3601 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
+@@ -436,3 +436,3601 @@ func (s *OpenAIGatewayService) openAIWSAcquireTimeout() time.Duration {
  	}
  	return dial + 2*time.Second
  }

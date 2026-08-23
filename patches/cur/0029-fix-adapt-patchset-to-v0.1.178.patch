@@ -5,10 +5,10 @@ Subject: [PATCH] fix: adapt patchset to v0.1.178
 
 
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index f3c2d003b..603d4158f 100644
+index d815ed200..dc5477aa4 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -223,7 +223,13 @@ func RegisterGatewayRoutes(
+@@ -227,7 +227,13 @@ func RegisterGatewayRoutes(
  			h.OpenAIGateway.ResponsesWebSocket(c)
  		})
  		gateway.GET("/realtime", func(c *gin.Context) {
@@ -23,7 +23,7 @@ index f3c2d003b..603d4158f 100644
  				c.JSON(http.StatusNotFound, gin.H{
  					"error": gin.H{
  						"type":    "not_found_error",
-@@ -359,14 +365,6 @@ func RegisterGatewayRoutes(
+@@ -363,14 +369,6 @@ func RegisterGatewayRoutes(
  		gateway.GET("/custom-voices/:voice_id", customVoicePathHandler)
  		gateway.PATCH("/custom-voices/:voice_id", customVoicePathHandler)
  		gateway.DELETE("/custom-voices/:voice_id", customVoicePathHandler)

@@ -92,7 +92,7 @@ index e2399d089..faaf04cc4 100644
  		ClaudeOAuthSystemPromptBlocks:                          updatedSettings.ClaudeOAuthSystemPromptBlocks,
  		EnableAnthropicCacheTTL1hInjection:                     updatedSettings.EnableAnthropicCacheTTL1hInjection,
 diff --git a/backend/internal/handler/dto/settings.go b/backend/internal/handler/dto/settings.go
-index f0284eb55..5d42acd80 100644
+index 798de2fed..2de38451f 100644
 --- a/backend/internal/handler/dto/settings.go
 +++ b/backend/internal/handler/dto/settings.go
 @@ -205,6 +205,7 @@ type SystemSettings struct {
@@ -143,10 +143,10 @@ index 5fea5547a..d2f7ff4b7 100644
  	client *http.Client
  }
 diff --git a/backend/internal/service/domain_constants.go b/backend/internal/service/domain_constants.go
-index ba35301be..dbc92f808 100644
+index 860276b75..431765a0a 100644
 --- a/backend/internal/service/domain_constants.go
 +++ b/backend/internal/service/domain_constants.go
-@@ -621,6 +621,8 @@ const (
+@@ -622,6 +622,8 @@ const (
  	SettingKeyEnableCCHSigning = "enable_cch_signing"
  	// SettingKeyEnableClaudeOAuthSystemPromptInjection 是否对 Claude OAuth mimic 路径注入 Claude Code system blocks（默认 true）
  	SettingKeyEnableClaudeOAuthSystemPromptInjection = "enable_claude_oauth_system_prompt_injection"
@@ -288,10 +288,10 @@ index c89fd038d..cf471d29e 100644
  // 处理以下情况：字段不存在、nil、空字符串、纯空白字符串
  func isInstructionsEmpty(reqBody map[string]any) bool {
 diff --git a/backend/internal/service/openai_gateway_chat_completions.go b/backend/internal/service/openai_gateway_chat_completions.go
-index fed651bd7..0f56df410 100644
+index 9c413f0bc..38425ceb4 100644
 --- a/backend/internal/service/openai_gateway_chat_completions.go
 +++ b/backend/internal/service/openai_gateway_chat_completions.go
-@@ -208,7 +208,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
+@@ -240,7 +240,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
  		}
  		isJSONObjectFormat := strings.EqualFold(strings.TrimSpace(gjson.GetBytes(responsesBody, "text.format.type").String()), "json_object")
  		codexResult := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
@@ -303,19 +303,19 @@ index fed651bd7..0f56df410 100644
  		})
  		if !isResponsesShape {
 diff --git a/backend/internal/service/openai_gateway_forward.go b/backend/internal/service/openai_gateway_forward.go
-index 47c02d866..506926398 100644
+index ec5fafdb7..c58b9989f 100644
 --- a/backend/internal/service/openai_gateway_forward.go
 +++ b/backend/internal/service/openai_gateway_forward.go
-@@ -286,7 +286,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
+@@ -288,7 +288,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
  
  	instructions := gjson.GetBytes(body, "instructions")
  	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
--	if instructionsEmpty && !compatMessagesBridge {
-+	if instructionsEmpty && !compatMessagesBridge && s.isOpenAICodexPromptInjectionEnabled(ctx) && !hasOpenAICodexExplicitSystemPromptBody(body) {
+-	if instructionsEmpty && !compatMessagesBridge && !nativeDeepSeekResponses {
++	if instructionsEmpty && !compatMessagesBridge && !nativeDeepSeekResponses && s.isOpenAICodexPromptInjectionEnabled(ctx) && !hasOpenAICodexExplicitSystemPromptBody(body) {
  		markPatchSet("instructions", defaultCodexSynthInstructions(reqModel))
  	}
  
-@@ -413,7 +413,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
+@@ -415,7 +415,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
  			ensureCodexOAuthInstructionsField(decoded)
  			markDecodedModified()
  		} else {
@@ -329,7 +329,7 @@ index 47c02d866..506926398 100644
  		if codexResult.Modified {
  			markDecodedModified()
 diff --git a/backend/internal/service/openai_gateway_passthrough.go b/backend/internal/service/openai_gateway_passthrough.go
-index f23a656f1..44609c112 100644
+index c15a78ef4..c93f55433 100644
 --- a/backend/internal/service/openai_gateway_passthrough.go
 +++ b/backend/internal/service/openai_gateway_passthrough.go
 @@ -142,7 +142,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
@@ -345,10 +345,10 @@ index f23a656f1..44609c112 100644
  			if setErr != nil {
  				return nil, fmt.Errorf("set passthrough codex instructions: %w", setErr)
 diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
-index 1610fede4..a3a52322f 100644
+index 9aca0182d..f060aa524 100644
 --- a/backend/internal/service/openai_gateway_request_body.go
 +++ b/backend/internal/service/openai_gateway_request_body.go
-@@ -835,6 +835,49 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
+@@ -842,6 +842,49 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
  	return ""
  }
  
@@ -399,10 +399,10 @@ index 1610fede4..a3a52322f 100644
  	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex")
  }
 diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
-index fd0395851..2716839f6 100644
+index 5191367bd..c7498b298 100644
 --- a/backend/internal/service/openai_gateway_service.go
 +++ b/backend/internal/service/openai_gateway_service.go
-@@ -719,6 +719,14 @@ func (s *OpenAIGatewayService) getOpenAIWSProtocolResolver() OpenAIWSProtocolRes
+@@ -720,6 +720,14 @@ func (s *OpenAIGatewayService) getOpenAIWSProtocolResolver() OpenAIWSProtocolRes
  	return NewOpenAIWSProtocolResolver(cfg)
  }
  
@@ -858,7 +858,7 @@ index f5f19918a..dba70eb75 100644
    claude_oauth_system_prompt_blocks?: string;
    enable_anthropic_cache_ttl_1h_injection?: boolean;
 diff --git a/frontend/src/i18n/locales/en/admin/settings.ts b/frontend/src/i18n/locales/en/admin/settings.ts
-index 424cca1de..ef88fadd9 100644
+index 2d6d34409..57fdff48c 100644
 --- a/frontend/src/i18n/locales/en/admin/settings.ts
 +++ b/frontend/src/i18n/locales/en/admin/settings.ts
 @@ -475,6 +475,8 @@ export default {
@@ -871,7 +871,7 @@ index 424cca1de..ef88fadd9 100644
          claudeOAuthSystemPromptPlaceholder: 'Leave empty to use the built-in Claude Code expansion prompt.',
          claudeOAuthSystemPromptHint: 'Legacy compatibility: controls only the third injected system block.',
 diff --git a/frontend/src/i18n/locales/zh/admin/settings.ts b/frontend/src/i18n/locales/zh/admin/settings.ts
-index 41d7b673d..c2c76e56f 100644
+index f31548066..ba78e55ba 100644
 --- a/frontend/src/i18n/locales/zh/admin/settings.ts
 +++ b/frontend/src/i18n/locales/zh/admin/settings.ts
 @@ -468,6 +468,8 @@ export default {

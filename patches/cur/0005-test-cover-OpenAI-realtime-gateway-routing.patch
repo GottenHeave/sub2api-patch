@@ -5,11 +5,11 @@ Subject: [PATCH] test: cover OpenAI realtime gateway routing
 
 
 diff --git a/backend/internal/handler/endpoint_test.go b/backend/internal/handler/endpoint_test.go
-index 3f7b99470..924bd837d 100644
+index 005c397d4..bf3d53c9c 100644
 --- a/backend/internal/handler/endpoint_test.go
 +++ b/backend/internal/handler/endpoint_test.go
-@@ -29,6 +29,19 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
- 		{"/v1/responses", EndpointResponses},
+@@ -30,6 +30,19 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
+ 		{"/v1/responses/input_tokens", EndpointResponsesInputTokens},
  		{"/v1/responses/compact", EndpointResponsesCompact},
  		{"/v1/responses/compact/detail", EndpointResponsesCompact},
 +		{"/v1/realtime", EndpointRealtime},
@@ -28,7 +28,7 @@ index 3f7b99470..924bd837d 100644
  		{"/v1/images/generations", EndpointImagesGenerations},
  		{"/v1/images/edits", EndpointImagesEdits},
  		{"/v1/images/tasks/imgtask_123", EndpointImageTasks},
-@@ -39,6 +52,10 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
+@@ -40,6 +53,10 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
  		// Prefixed paths (antigravity, openai) — root Responses.
  		{"/antigravity/v1/messages", EndpointMessages},
  		{"/openai/v1/responses", EndpointResponses},
@@ -39,7 +39,7 @@ index 3f7b99470..924bd837d 100644
  		{"/openai/v1/images/generations", EndpointImagesGenerations},
  		{"/openai/v1/images/edits", EndpointImagesEdits},
  		{"/antigravity/v1beta/models/gemini:generateContent", EndpointGeminiModels},
-@@ -123,6 +140,22 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
+@@ -127,6 +144,22 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
  
  		{"openai from messages", EndpointMessages, "/v1/messages", service.PlatformOpenAI, EndpointResponses},
  		{"openai from completions", EndpointChatCompletions, "/v1/chat/completions", service.PlatformOpenAI, EndpointResponses},
@@ -163,7 +163,7 @@ index 0dacd74dc..b99a398cd 100644
  
  	for _, tt := range tests {
 diff --git a/backend/internal/handler/openai_gateway_handler_test.go b/backend/internal/handler/openai_gateway_handler_test.go
-index 6e8a687d7..b6c040a0f 100644
+index 898449cc2..a862691cc 100644
 --- a/backend/internal/handler/openai_gateway_handler_test.go
 +++ b/backend/internal/handler/openai_gateway_handler_test.go
 @@ -173,6 +173,40 @@ func TestOpenAIResponsesRequiredCapability(t *testing.T) {
@@ -208,7 +208,7 @@ index 6e8a687d7..b6c040a0f 100644
  	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
  
 diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
-index ded7bd298..d38da280b 100644
+index 362054a7d..d0ef2528d 100644
 --- a/backend/internal/server/routes/gateway_test.go
 +++ b/backend/internal/server/routes/gateway_test.go
 @@ -58,6 +58,34 @@ func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string
@@ -406,10 +406,10 @@ index f624a0080..47780acb0 100644
  	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastFilterPriorityPolicy())
  	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
-index 617c07c06..2da1a6c9c 100644
+index 1d18d3d70..1d24e3f6b 100644
 --- a/backend/internal/service/openai_gateway_service_test.go
 +++ b/backend/internal/service/openai_gateway_service_test.go
-@@ -3420,12 +3420,24 @@ func TestExtractOpenAIUsageFromJSONBytes_AcceptsResponseAndChatUsageShapes(t *te
+@@ -3429,12 +3429,24 @@ func TestExtractOpenAIUsageFromJSONBytes_AcceptsResponseAndChatUsageShapes(t *te
  	require.Equal(t, 2, usage.CacheReadInputTokens)
  	require.Equal(t, 4, usage.CacheCreationInputTokens)
  

@@ -5,10 +5,10 @@ Subject: [PATCH] feat: schedule audio transcription account selection
 
 
 diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
-index 01e738567..0b9537ffd 100644
+index a2f1cf7f9..a10aed2fd 100644
 --- a/backend/internal/handler/openai_gateway_handler.go
 +++ b/backend/internal/handler/openai_gateway_handler.go
-@@ -1967,6 +1967,7 @@ func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSoc
+@@ -2000,6 +2000,7 @@ func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSoc
  			failedAccountIDs,
  			requiredTransport,
  			requiredCapability,

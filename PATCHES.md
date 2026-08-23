@@ -2,8 +2,8 @@
 
 The current downstream delta is stored as replayable topic patches under `patches/cur`.
 
-The current patchset is based on upstream `v0.1.178` at commit
-`e0c48a19ed794a565e3858662520afe0a1f9f0ba`.
+The current patchset is based on upstream `v0.1.179` at commit
+`75f88be5f75c27771836b586f7de1503afa0e3bc`.
 
 Patch topics:
 
@@ -17,6 +17,7 @@ Patch topics:
 8. remaining proxy repository alignment
 9. OpenAI audio transcription retry failure isolation
 10. Codex instruction injection control
+11. v0.1.179 compatibility alignment
 
 These patches are synthetic topic patches rebuilt from the final downstream tree, not a raw replay of the original downstream commit history. This is intentional: some original commits predate the latest upstream sync and do not replay cleanly one by one, while the final downstream tree is valid.
 
@@ -29,6 +30,10 @@ The Codex instruction topic makes base-prompt injection opt-in through
 enabled, caller-provided system instructions in Responses, Chat Completions,
 or OAuth passthrough suppress the default Codex prompt so supplied prompts are
 not duplicated and can retain their provider cache prefix.
+
+The v0.1.179 compatibility topic keeps the downstream tree aligned with the
+release's long-context pricing gate, where enabling the group applies the
+long-context multipliers, and with the release's gofmt layout in touched files.
 
 Future downstream work should be added as new logical patches after applying and validating the current patchset.
 
