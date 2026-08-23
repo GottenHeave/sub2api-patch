@@ -464,6 +464,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.EnableClaudeOAuthSystemPromptInjection != after.EnableClaudeOAuthSystemPromptInjection {
 		changed = append(changed, "enable_claude_oauth_system_prompt_injection")
 	}
+	if before.EnableOpenAICodexPromptInjection != after.EnableOpenAICodexPromptInjection {
+		changed = append(changed, "enable_codex_instructions_injection")
+	}
 	if before.ClaudeOAuthSystemPrompt != after.ClaudeOAuthSystemPrompt {
 		changed = append(changed, "claude_oauth_system_prompt")
 	}

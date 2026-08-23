@@ -248,6 +248,7 @@ type UpdateSettingsRequest struct {
 	EnableMetadataPassthrough              *bool   `json:"enable_metadata_passthrough"`
 	EnableCCHSigning                       *bool   `json:"enable_cch_signing"`
 	EnableClaudeOAuthSystemPromptInjection *bool   `json:"enable_claude_oauth_system_prompt_injection"`
+	EnableOpenAICodexPromptInjection       *bool   `json:"enable_codex_instructions_injection"`
 	ClaudeOAuthSystemPrompt                *string `json:"claude_oauth_system_prompt"`
 	ClaudeOAuthSystemPromptBlocks          *string `json:"claude_oauth_system_prompt_blocks"`
 	EnableAnthropicCacheTTL1hInjection     *bool   `json:"enable_anthropic_cache_ttl_1h_injection"`
@@ -1708,6 +1709,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.EnableClaudeOAuthSystemPromptInjection
 		}(),
+		EnableOpenAICodexPromptInjection: func() bool {
+			if req.EnableOpenAICodexPromptInjection != nil {
+				return *req.EnableOpenAICodexPromptInjection
+			}
+			return previousSettings.EnableOpenAICodexPromptInjection
+		}(),
 		ClaudeOAuthSystemPrompt: func() string {
 			if req.ClaudeOAuthSystemPrompt != nil {
 				return *req.ClaudeOAuthSystemPrompt
@@ -2284,6 +2291,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		EnableMetadataPassthrough:                              updatedSettings.EnableMetadataPassthrough,
 		EnableCCHSigning:                                       updatedSettings.EnableCCHSigning,
 		EnableClaudeOAuthSystemPromptInjection:                 updatedSettings.EnableClaudeOAuthSystemPromptInjection,
+		EnableOpenAICodexPromptInjection:                       updatedSettings.EnableOpenAICodexPromptInjection,
 		ClaudeOAuthSystemPrompt:                                updatedSettings.ClaudeOAuthSystemPrompt,
 		ClaudeOAuthSystemPromptBlocks:                          updatedSettings.ClaudeOAuthSystemPromptBlocks,
 		EnableAnthropicCacheTTL1hInjection:                     updatedSettings.EnableAnthropicCacheTTL1hInjection,

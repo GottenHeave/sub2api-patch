@@ -58,6 +58,7 @@ type cachedGatewayForwardingSettings struct {
 	metadataPassthrough              bool
 	cchSigning                       bool
 	claudeOAuthSystemPromptInjection bool
+	openAICodexPromptInjection       bool
 	claudeOAuthSystemPrompt          string
 	claudeOAuthSystemPromptBlocks    string
 	anthropicCacheTTL1hInjection     bool
@@ -737,10 +738,10 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 }
 
 type gatewayForwardingSettingsResult struct {
-	openAITTFTMode                                                                        string
-	fp, mp, cch, claudeOAuthSystemPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
-	clientDatelineNormalization                                                           bool
-	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                string
+	openAITTFTMode                                                                                                             string
+	fp, mp, cch, claudeOAuthSystemPromptInjection, openAICodexPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
+	clientDatelineNormalization                                                                                                bool
+	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                                                     string
 }
 
 func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context) gatewayForwardingSettingsResult {
@@ -752,6 +753,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				mp:                               cached.metadataPassthrough,
 				cch:                              cached.cchSigning,
 				claudeOAuthSystemPromptInjection: cached.claudeOAuthSystemPromptInjection,
+				openAICodexPromptInjection:       cached.openAICodexPromptInjection,
 				claudeOAuthSystemPrompt:          cached.claudeOAuthSystemPrompt,
 				claudeOAuthSystemPromptBlocks:    cached.claudeOAuthSystemPromptBlocks,
 				cacheTTL1h:                       cached.anthropicCacheTTL1hInjection,
@@ -769,6 +771,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 					mp:                               cached.metadataPassthrough,
 					cch:                              cached.cchSigning,
 					claudeOAuthSystemPromptInjection: cached.claudeOAuthSystemPromptInjection,
+					openAICodexPromptInjection:       cached.openAICodexPromptInjection,
 					claudeOAuthSystemPrompt:          cached.claudeOAuthSystemPrompt,
 					claudeOAuthSystemPromptBlocks:    cached.claudeOAuthSystemPromptBlocks,
 					cacheTTL1h:                       cached.anthropicCacheTTL1hInjection,
@@ -785,6 +788,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			SettingKeyEnableMetadataPassthrough,
 			SettingKeyEnableCCHSigning,
 			SettingKeyEnableClaudeOAuthSystemPromptInjection,
+			SettingKeyEnableOpenAICodexPromptInjection,
 			SettingKeyClaudeOAuthSystemPrompt,
 			SettingKeyClaudeOAuthSystemPromptBlocks,
 			SettingKeyEnableAnthropicCacheTTL1hInjection,
@@ -799,12 +803,13 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				metadataPassthrough:              false,
 				cchSigning:                       false,
 				claudeOAuthSystemPromptInjection: true,
+				openAICodexPromptInjection:       false,
 				anthropicCacheTTL1hInjection:     false,
 				rewriteMessageCacheControl:       s.defaultRewriteMessageCacheControl(),
 				clientDatelineNormalization:      true,
 				expiresAt:                        time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
 			})
-			return gatewayForwardingSettingsResult{openAITTFTMode: OpenAITTFTModeSemantic, fp: true, claudeOAuthSystemPromptInjection: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
+			return gatewayForwardingSettingsResult{openAITTFTMode: OpenAITTFTModeSemantic, fp: true, claudeOAuthSystemPromptInjection: true, openAICodexPromptInjection: false, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
 		}
 		ttftMode := normalizeOpenAITTFTMode(values[SettingKeyOpenAITTFTMode])
 		fp := true
@@ -817,6 +822,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if v, ok := values[SettingKeyEnableClaudeOAuthSystemPromptInjection]; ok && v != "" {
 			systemPromptInjection = v == "true"
 		}
+		openAICodexPromptInjection := values[SettingKeyEnableOpenAICodexPromptInjection] == "true"
 		systemPrompt := values[SettingKeyClaudeOAuthSystemPrompt]
 		systemPromptBlocks := values[SettingKeyClaudeOAuthSystemPromptBlocks]
 		cacheTTL1h := values[SettingKeyEnableAnthropicCacheTTL1hInjection] == "true"
@@ -834,6 +840,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			metadataPassthrough:              mp,
 			cchSigning:                       cch,
 			claudeOAuthSystemPromptInjection: systemPromptInjection,
+			openAICodexPromptInjection:       openAICodexPromptInjection,
 			claudeOAuthSystemPrompt:          systemPrompt,
 			claudeOAuthSystemPromptBlocks:    systemPromptBlocks,
 			anthropicCacheTTL1hInjection:     cacheTTL1h,
@@ -847,6 +854,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			mp:                               mp,
 			cch:                              cch,
 			claudeOAuthSystemPromptInjection: systemPromptInjection,
+			openAICodexPromptInjection:       openAICodexPromptInjection,
 			claudeOAuthSystemPrompt:          systemPrompt,
 			claudeOAuthSystemPromptBlocks:    systemPromptBlocks,
 			cacheTTL1h:                       cacheTTL1h,
@@ -857,7 +865,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
 		return r
 	}
-	return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, clientDatelineNormalization: true}
+	return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, openAICodexPromptInjection: false, clientDatelineNormalization: true}
 }
 
 // GetOpenAITTFTMode 返回 Responses first_token_ms 的统计口径。
@@ -895,6 +903,13 @@ func (s *SettingService) IsClientDatelineNormalizationEnabled(ctx context.Contex
 func (s *SettingService) GetClaudeOAuthSystemPromptInjectionSettings(ctx context.Context) (enabled bool, prompt string, blocks string) {
 	result := s.getGatewayForwardingSettingsCached(ctx)
 	return result.claudeOAuthSystemPromptInjection, result.claudeOAuthSystemPrompt, result.claudeOAuthSystemPromptBlocks
+}
+
+// IsOpenAICodexPromptInjectionEnabled reports whether the gateway may add its
+// Codex prompt when an OpenAI request does not carry one. The setting is
+// opt-in and fails closed when the setting store is unavailable.
+func (s *SettingService) IsOpenAICodexPromptInjectionEnabled(ctx context.Context) bool {
+	return s.getGatewayForwardingSettingsCached(ctx).openAICodexPromptInjection
 }
 
 // GetClaudeCodeVersionBounds 获取 Claude Code 版本号上下限要求

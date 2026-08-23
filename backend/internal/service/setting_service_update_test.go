@@ -647,6 +647,15 @@ func TestSettingService_ParseSettings_APIKeyACLTrustForwardedIPUsesStoredValue(t
 	require.False(t, got.APIKeyACLTrustForwardedIP)
 }
 
+func TestSettingService_ParseSettings_OpenAICodexPromptInjectionDefaultsToDisabled(t *testing.T) {
+	svc := NewSettingService(&settingUpdateRepoStub{}, &config.Config{})
+
+	require.False(t, svc.parseSettings(map[string]string{}).EnableOpenAICodexPromptInjection)
+	require.True(t, svc.parseSettings(map[string]string{
+		SettingKeyEnableOpenAICodexPromptInjection: "true",
+	}).EnableOpenAICodexPromptInjection)
+}
+
 func TestSettingService_ParseSettings_ForwardedClientIPHeaders(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.SetForwardedClientIPSettings(true, []string{"X-Config-IP"})
@@ -902,4 +911,15 @@ func TestSettingService_StalePasskeyTrueWithoutConfigReportsDisabled(t *testing.
 	settings, err := service.GetAllSettings(context.Background())
 	require.NoError(t, err)
 	require.False(t, settings.PasskeyEnabled)
+}
+
+func TestSettingService_UpdateSettingsPersistsOpenAICodexPromptInjection(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		EnableOpenAICodexPromptInjection: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "true", repo.updates[SettingKeyEnableOpenAICodexPromptInjection])
 }

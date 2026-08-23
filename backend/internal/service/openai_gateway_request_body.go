@@ -1326,6 +1326,49 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
 	return ""
 }
 
+// hasOpenAICodexExplicitSystemPromptBody is the raw-body counterpart of
+// hasOpenAICodexExplicitSystemPrompt. It keeps the /responses patch path from
+// adding a default before the OAuth transform can preserve client instructions.
+func hasOpenAICodexExplicitSystemPromptBody(body []byte) bool {
+	if openAIJSONValueHasText(gjson.GetBytes(body, "system_prompt")) {
+		return true
+	}
+	for _, item := range gjson.GetBytes(body, "input").Array() {
+		if !strings.EqualFold(strings.TrimSpace(item.Get("role").String()), "system") {
+			continue
+		}
+		if openAIJSONValueHasText(item.Get("content")) {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIJSONValueHasText(value gjson.Result) bool {
+	if !value.Exists() || value.Type == gjson.Null {
+		return false
+	}
+	switch value.Type {
+	case gjson.String:
+		return strings.TrimSpace(value.String()) != ""
+	case gjson.JSON:
+		if value.IsArray() {
+			for _, item := range value.Array() {
+				if openAIJSONValueHasText(item.Get("text")) || openAIJSONValueHasText(item) {
+					return true
+				}
+			}
+			return false
+		}
+		if value.IsObject() {
+			if openAIJSONValueHasText(value.Get("text")) || openAIJSONValueHasText(value.Get("content")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func isOpenAICodexModel(model string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex")
 }

@@ -249,7 +249,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 		isJSONObjectFormat := strings.EqualFold(strings.TrimSpace(gjson.GetBytes(responsesBody, "text.format.type").String()), "json_object")
 		codexResult := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
-			SkipDefaultInstructions:             !isResponsesShape,
+			// Responses-shaped Chat requests use the same input/instructions
+			// contract as /v1/responses and therefore follow the gateway switch.
+			SkipDefaultInstructions:             !isResponsesShape || !s.isOpenAICodexPromptInjectionEnabled(ctx),
 			OmitPromotedSystemMessagesFromInput: !isResponsesShape && !isJSONObjectFormat,
 		})
 		if codexResult.Error != nil {

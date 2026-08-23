@@ -1472,12 +1472,41 @@ func applyCodexClientMetadata(reqBody map[string]any, account *Account) bool {
 
 // applyInstructions 处理 instructions 字段：仅在 instructions 为空时填充默认值。
 func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
-	if !isInstructionsEmpty(reqBody) {
+	if !isInstructionsEmpty(reqBody) || hasOpenAICodexExplicitSystemPrompt(reqBody) {
 		return false
 	}
 	model, _ := reqBody["model"].(string)
 	reqBody["instructions"] = defaultCodexSynthInstructions(model)
 	return true
+}
+
+// hasOpenAICodexExplicitSystemPrompt recognizes prompt text supplied by the
+// client through the legacy top-level system_prompt field or a Responses input
+// item with role=system. Those instructions must remain client-owned and must
+// never be supplemented with the built-in Codex prompt.
+func hasOpenAICodexExplicitSystemPrompt(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	if strings.TrimSpace(extractTextFromContent(reqBody["system_prompt"])) != "" {
+		return true
+	}
+	input, ok := reqBody["input"].([]any)
+	if !ok {
+		return false
+	}
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := item["role"].(string)
+		if strings.EqualFold(strings.TrimSpace(role), "system") &&
+			strings.TrimSpace(extractTextFromContent(item["content"])) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // isInstructionsEmpty 检查 instructions 字段是否为空

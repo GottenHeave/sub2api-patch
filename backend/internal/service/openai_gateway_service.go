@@ -741,6 +741,14 @@ func (s *OpenAIGatewayService) getOpenAIWSProtocolResolver() OpenAIWSProtocolRes
 	return NewOpenAIWSProtocolResolver(cfg)
 }
 
+// isOpenAICodexPromptInjectionEnabled reports whether the gateway may add the
+// built-in Codex instructions when a request does not provide its own prompt.
+// A missing settings service is treated as disabled so tests and partially
+// wired services cannot silently re-enable prompt mutation.
+func (s *OpenAIGatewayService) isOpenAICodexPromptInjectionEnabled(ctx context.Context) bool {
+	return s != nil && s.settingService != nil && s.settingService.IsOpenAICodexPromptInjectionEnabled(ctx)
+}
+
 func classifyOpenAIWSReconnectReason(err error) (string, bool) {
 	if err == nil {
 		return "", false
