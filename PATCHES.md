@@ -16,12 +16,19 @@ Patch topics:
 7. moderation and settings compatibility
 8. remaining proxy repository alignment
 9. OpenAI audio transcription retry failure isolation
+10. Codex instruction injection control
 
 These patches are synthetic topic patches rebuilt from the final downstream tree, not a raw replay of the original downstream commit history. This is intentional: some original commits predate the latest upstream sync and do not replay cleanly one by one, while the final downstream tree is valid.
 
 The audio transcription topic defers account and model failure side effects until
 same-account failover retries are exhausted. A retry that succeeds does not
 pollute shared OpenAI account scheduling state.
+
+The Codex instruction topic makes base-prompt injection opt-in through
+`enable_codex_instructions_injection`, which defaults to disabled. When
+enabled, caller-provided system instructions in Responses, Chat Completions,
+or OAuth passthrough suppress the default Codex prompt so supplied prompts are
+not duplicated and can retain their provider cache prefix.
 
 Future downstream work should be added as new logical patches after applying and validating the current patchset.
 

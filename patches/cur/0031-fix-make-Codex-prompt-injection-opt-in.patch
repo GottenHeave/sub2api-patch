@@ -1,0 +1,972 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: audit <audit@example.invalid>
+Date: Sun, 23 Aug 2026 21:18:04 +0000
+Subject: [PATCH] fix: make Codex prompt injection opt-in
+
+
+diff --git a/backend/internal/handler/admin/setting_handler.go b/backend/internal/handler/admin/setting_handler.go
+index 01a066165..7c828c0bc 100644
+--- a/backend/internal/handler/admin/setting_handler.go
++++ b/backend/internal/handler/admin/setting_handler.go
+@@ -292,6 +292,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
+ 		EnableMetadataPassthrough:                              settings.EnableMetadataPassthrough,
+ 		EnableCCHSigning:                                       settings.EnableCCHSigning,
+ 		EnableClaudeOAuthSystemPromptInjection:                 settings.EnableClaudeOAuthSystemPromptInjection,
++		EnableOpenAICodexPromptInjection:                       settings.EnableOpenAICodexPromptInjection,
+ 		ClaudeOAuthSystemPrompt:                                settings.ClaudeOAuthSystemPrompt,
+ 		ClaudeOAuthSystemPromptBlocks:                          settings.ClaudeOAuthSystemPromptBlocks,
+ 		EnableAnthropicCacheTTL1hInjection:                     settings.EnableAnthropicCacheTTL1hInjection,
+diff --git a/backend/internal/handler/admin/setting_handler_audit.go b/backend/internal/handler/admin/setting_handler_audit.go
+index d6110f43d..29c91a94f 100644
+--- a/backend/internal/handler/admin/setting_handler_audit.go
++++ b/backend/internal/handler/admin/setting_handler_audit.go
+@@ -461,6 +461,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
+ 	if before.EnableClaudeOAuthSystemPromptInjection != after.EnableClaudeOAuthSystemPromptInjection {
+ 		changed = append(changed, "enable_claude_oauth_system_prompt_injection")
+ 	}
++	if before.EnableOpenAICodexPromptInjection != after.EnableOpenAICodexPromptInjection {
++		changed = append(changed, "enable_codex_instructions_injection")
++	}
+ 	if before.ClaudeOAuthSystemPrompt != after.ClaudeOAuthSystemPrompt {
+ 		changed = append(changed, "claude_oauth_system_prompt")
+ 	}
+diff --git a/backend/internal/handler/admin/setting_handler_partial_payload_test.go b/backend/internal/handler/admin/setting_handler_partial_payload_test.go
+index b4c94809b..36c64a7f3 100644
+--- a/backend/internal/handler/admin/setting_handler_partial_payload_test.go
++++ b/backend/internal/handler/admin/setting_handler_partial_payload_test.go
+@@ -78,6 +78,23 @@ func TestUpdateSettingsGrokDefaultBaseURLModeIsWritable(t *testing.T) {
+ 	require.Equal(t, service.GrokDefaultBaseURLModeEUWest1, repo.values[service.SettingKeyGrokDefaultBaseURLMode])
+ }
+ 
++func TestUpdateSettingsOpenAICodexPromptInjectionSwitchIsWritableAndPreserved(t *testing.T) {
++	h, repo := newStepUpSwitchTestHandler(t, map[string]string{
++		service.SettingKeyEnableOpenAICodexPromptInjection: "false",
++	})
++
++	rec := doUpdateSettings(t, h, map[string]any{
++		"enable_codex_instructions_injection": true,
++	}, nil)
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, "true", repo.values[service.SettingKeyEnableOpenAICodexPromptInjection])
++
++	rec = doUpdateSettings(t, h, map[string]any{"risk_control_enabled": true}, nil)
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, "true", repo.values[service.SettingKeyEnableOpenAICodexPromptInjection],
++		"omitting the pointer switch must keep its stored value")
++}
++
+ func TestUpdateSettingsRejectsTwoCaptchaProviders(t *testing.T) {
+ 	h, _ := newStepUpSwitchTestHandler(t, map[string]string{
+ 		service.SettingKeyTurnstileEnabled:   "true",
+diff --git a/backend/internal/handler/admin/setting_handler_update.go b/backend/internal/handler/admin/setting_handler_update.go
+index e2399d089..faaf04cc4 100644
+--- a/backend/internal/handler/admin/setting_handler_update.go
++++ b/backend/internal/handler/admin/setting_handler_update.go
+@@ -247,6 +247,7 @@ type UpdateSettingsRequest struct {
+ 	EnableMetadataPassthrough              *bool   `json:"enable_metadata_passthrough"`
+ 	EnableCCHSigning                       *bool   `json:"enable_cch_signing"`
+ 	EnableClaudeOAuthSystemPromptInjection *bool   `json:"enable_claude_oauth_system_prompt_injection"`
++	EnableOpenAICodexPromptInjection       *bool   `json:"enable_codex_instructions_injection"`
+ 	ClaudeOAuthSystemPrompt                *string `json:"claude_oauth_system_prompt"`
+ 	ClaudeOAuthSystemPromptBlocks          *string `json:"claude_oauth_system_prompt_blocks"`
+ 	EnableAnthropicCacheTTL1hInjection     *bool   `json:"enable_anthropic_cache_ttl_1h_injection"`
+@@ -1698,6 +1699,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
+ 			}
+ 			return previousSettings.EnableClaudeOAuthSystemPromptInjection
+ 		}(),
++		EnableOpenAICodexPromptInjection: func() bool {
++			if req.EnableOpenAICodexPromptInjection != nil {
++				return *req.EnableOpenAICodexPromptInjection
++			}
++			return previousSettings.EnableOpenAICodexPromptInjection
++		}(),
+ 		ClaudeOAuthSystemPrompt: func() string {
+ 			if req.ClaudeOAuthSystemPrompt != nil {
+ 				return *req.ClaudeOAuthSystemPrompt
+@@ -2268,6 +2275,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
+ 		EnableMetadataPassthrough:                              updatedSettings.EnableMetadataPassthrough,
+ 		EnableCCHSigning:                                       updatedSettings.EnableCCHSigning,
+ 		EnableClaudeOAuthSystemPromptInjection:                 updatedSettings.EnableClaudeOAuthSystemPromptInjection,
++		EnableOpenAICodexPromptInjection:                       updatedSettings.EnableOpenAICodexPromptInjection,
+ 		ClaudeOAuthSystemPrompt:                                updatedSettings.ClaudeOAuthSystemPrompt,
+ 		ClaudeOAuthSystemPromptBlocks:                          updatedSettings.ClaudeOAuthSystemPromptBlocks,
+ 		EnableAnthropicCacheTTL1hInjection:                     updatedSettings.EnableAnthropicCacheTTL1hInjection,
+diff --git a/backend/internal/handler/dto/settings.go b/backend/internal/handler/dto/settings.go
+index f0284eb55..5d42acd80 100644
+--- a/backend/internal/handler/dto/settings.go
++++ b/backend/internal/handler/dto/settings.go
+@@ -205,6 +205,7 @@ type SystemSettings struct {
+ 	EnableMetadataPassthrough              bool   `json:"enable_metadata_passthrough"`
+ 	EnableCCHSigning                       bool   `json:"enable_cch_signing"`
+ 	EnableClaudeOAuthSystemPromptInjection bool   `json:"enable_claude_oauth_system_prompt_injection"`
++	EnableOpenAICodexPromptInjection       bool   `json:"enable_codex_instructions_injection"`
+ 	ClaudeOAuthSystemPrompt                string `json:"claude_oauth_system_prompt"`
+ 	ClaudeOAuthSystemPromptBlocks          string `json:"claude_oauth_system_prompt_blocks"`
+ 	EnableAnthropicCacheTTL1hInjection     bool   `json:"enable_anthropic_cache_ttl_1h_injection"`
+diff --git a/backend/internal/server/api_contract_test.go b/backend/internal/server/api_contract_test.go
+index 578ea23b8..92cd4fb94 100644
+--- a/backend/internal/server/api_contract_test.go
++++ b/backend/internal/server/api_contract_test.go
+@@ -914,6 +914,7 @@ func TestAPIContracts(t *testing.T) {
+ 					"backend_mode_enabled": false,
+ 					"enable_cch_signing": false,
+ 					"enable_claude_oauth_system_prompt_injection": true,
++					"enable_codex_instructions_injection": false,
+ 					"claude_oauth_system_prompt": "",
+ 					"claude_oauth_system_prompt_blocks": "",
+ 					"enable_anthropic_cache_ttl_1h_injection": false,
+@@ -1222,6 +1223,7 @@ func TestAPIContracts(t *testing.T) {
+ 					"enable_metadata_passthrough": false,
+ 					"enable_cch_signing": false,
+ 					"enable_claude_oauth_system_prompt_injection": true,
++					"enable_codex_instructions_injection": false,
+ 					"claude_oauth_system_prompt": "",
+ 					"claude_oauth_system_prompt_blocks": "",
+ 					"enable_anthropic_cache_ttl_1h_injection": false,
+diff --git a/backend/internal/server/middleware/openai_fast_policy_forwarding_test.go b/backend/internal/server/middleware/openai_fast_policy_forwarding_test.go
+index 5fea5547a..d2f7ff4b7 100644
+--- a/backend/internal/server/middleware/openai_fast_policy_forwarding_test.go
++++ b/backend/internal/server/middleware/openai_fast_policy_forwarding_test.go
+@@ -176,6 +176,14 @@ func (r *openAIFastPolicyForwardingSettingRepo) GetValue(context.Context, string
+ 	return r.value, nil
+ }
+ 
++func (r *openAIFastPolicyForwardingSettingRepo) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
++	values := make(map[string]string, len(keys))
++	for _, key := range keys {
++		values[key] = r.value
++	}
++	return values, nil
++}
++
+ type openAIFastPolicyForwardingHTTPUpstream struct {
+ 	client *http.Client
+ }
+diff --git a/backend/internal/service/domain_constants.go b/backend/internal/service/domain_constants.go
+index ba35301be..dbc92f808 100644
+--- a/backend/internal/service/domain_constants.go
++++ b/backend/internal/service/domain_constants.go
+@@ -621,6 +621,8 @@ const (
+ 	SettingKeyEnableCCHSigning = "enable_cch_signing"
+ 	// SettingKeyEnableClaudeOAuthSystemPromptInjection 是否对 Claude OAuth mimic 路径注入 Claude Code system blocks（默认 true）
+ 	SettingKeyEnableClaudeOAuthSystemPromptInjection = "enable_claude_oauth_system_prompt_injection"
++	// SettingKeyEnableOpenAICodexPromptInjection 是否在 OpenAI Codex 请求缺少指令时注入 Codex 提示词（默认 false）
++	SettingKeyEnableOpenAICodexPromptInjection = "enable_codex_instructions_injection"
+ 	// SettingKeyClaudeOAuthSystemPrompt Claude OAuth mimic 路径注入的通用扩展 system prompt（空值使用内置默认）
+ 	SettingKeyClaudeOAuthSystemPrompt = "claude_oauth_system_prompt"
+ 	// SettingKeyClaudeOAuthSystemPromptBlocks Claude OAuth mimic 路径注入的 system blocks JSON 配置（空值使用内置默认）
+diff --git a/backend/internal/service/openai_codex_prompt_injection_test.go b/backend/internal/service/openai_codex_prompt_injection_test.go
+new file mode 100644
+index 000000000..8060d1391
+--- /dev/null
++++ b/backend/internal/service/openai_codex_prompt_injection_test.go
+@@ -0,0 +1,77 @@
++package service
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestHasOpenAICodexExplicitSystemPromptBody(t *testing.T) {
++	tests := []struct {
++		name string
++		body string
++		want bool
++	}{
++		{
++			name: "top-level system_prompt",
++			body: `{"model":"gpt-5.4","system_prompt":"Use the client's instructions.","input":"hello"}`,
++			want: true,
++		},
++		{
++			name: "responses system input",
++			body: `{"model":"gpt-5.4","input":[{"type":"message","role":"system","content":"Use the client's instructions."}]}`,
++			want: true,
++		},
++		{
++			name: "empty system_prompt",
++			body: `{"model":"gpt-5.4","system_prompt":"  ","input":"hello"}`,
++			want: false,
++		},
++		{
++			name: "no system prompt",
++			body: `{"model":"gpt-5.4","input":"hello"}`,
++			want: false,
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			require.Equal(t, tt.want, hasOpenAICodexExplicitSystemPromptBody([]byte(tt.body)))
++		})
++	}
++}
++
++func TestApplyInstructionsPreservesExplicitSystemPrompt(t *testing.T) {
++	const systemPrompt = "Use the client's instructions exactly once."
++	reqBody := map[string]any{
++		"model":         "gpt-5.4",
++		"system_prompt": systemPrompt,
++	}
++
++	modified := applyInstructions(reqBody, false)
++
++	require.False(t, modified)
++	require.Equal(t, systemPrompt, reqBody["system_prompt"])
++	_, hasInstructions := reqBody["instructions"]
++	require.False(t, hasInstructions)
++}
++
++func TestApplyInstructionsDoesNotAddDefaultForResponsesSystemInput(t *testing.T) {
++	const systemPrompt = "Use the client's instructions exactly once."
++	reqBody := map[string]any{
++		"model": "gpt-5.4",
++		"input": []any{
++			map[string]any{
++				"type":    "message",
++				"role":    "system",
++				"content": systemPrompt,
++			},
++		},
++	}
++
++	modified := applyInstructions(reqBody, false)
++
++	require.False(t, modified)
++	_, hasInstructions := reqBody["instructions"]
++	require.False(t, hasInstructions)
++}
+diff --git a/backend/internal/service/openai_codex_transform.go b/backend/internal/service/openai_codex_transform.go
+index c89fd038d..cf471d29e 100644
+--- a/backend/internal/service/openai_codex_transform.go
++++ b/backend/internal/service/openai_codex_transform.go
+@@ -1319,7 +1319,7 @@ func applyCodexClientMetadata(reqBody map[string]any, account *Account) bool {
+ 
+ // applyInstructions 处理 instructions 字段：仅在 instructions 为空时填充默认值。
+ func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
+-	if !isInstructionsEmpty(reqBody) {
++	if !isInstructionsEmpty(reqBody) || hasOpenAICodexExplicitSystemPrompt(reqBody) {
+ 		return false
+ 	}
+ 	model, _ := reqBody["model"].(string)
+@@ -1327,6 +1327,35 @@ func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
+ 	return true
+ }
+ 
++// hasOpenAICodexExplicitSystemPrompt recognizes prompt text supplied by the
++// client through the legacy top-level system_prompt field or a Responses input
++// item with role=system. Those instructions must remain client-owned and must
++// never be supplemented with the built-in Codex prompt.
++func hasOpenAICodexExplicitSystemPrompt(reqBody map[string]any) bool {
++	if reqBody == nil {
++		return false
++	}
++	if strings.TrimSpace(extractTextFromContent(reqBody["system_prompt"])) != "" {
++		return true
++	}
++	input, ok := reqBody["input"].([]any)
++	if !ok {
++		return false
++	}
++	for _, rawItem := range input {
++		item, ok := rawItem.(map[string]any)
++		if !ok {
++			continue
++		}
++		role, _ := item["role"].(string)
++		if strings.EqualFold(strings.TrimSpace(role), "system") &&
++			strings.TrimSpace(extractTextFromContent(item["content"])) != "" {
++			return true
++		}
++	}
++	return false
++}
++
+ // isInstructionsEmpty 检查 instructions 字段是否为空
+ // 处理以下情况：字段不存在、nil、空字符串、纯空白字符串
+ func isInstructionsEmpty(reqBody map[string]any) bool {
+diff --git a/backend/internal/service/openai_gateway_chat_completions.go b/backend/internal/service/openai_gateway_chat_completions.go
+index fed651bd7..0f56df410 100644
+--- a/backend/internal/service/openai_gateway_chat_completions.go
++++ b/backend/internal/service/openai_gateway_chat_completions.go
+@@ -208,7 +208,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
+ 		}
+ 		isJSONObjectFormat := strings.EqualFold(strings.TrimSpace(gjson.GetBytes(responsesBody, "text.format.type").String()), "json_object")
+ 		codexResult := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
+-			SkipDefaultInstructions:             !isResponsesShape,
++			// Responses-shaped Chat requests use the same input/instructions
++			// contract as /v1/responses and therefore follow the gateway switch.
++			SkipDefaultInstructions:             !isResponsesShape || !s.isOpenAICodexPromptInjectionEnabled(ctx),
+ 			OmitPromotedSystemMessagesFromInput: !isResponsesShape && !isJSONObjectFormat,
+ 		})
+ 		if !isResponsesShape {
+diff --git a/backend/internal/service/openai_gateway_forward.go b/backend/internal/service/openai_gateway_forward.go
+index 47c02d866..506926398 100644
+--- a/backend/internal/service/openai_gateway_forward.go
++++ b/backend/internal/service/openai_gateway_forward.go
+@@ -286,7 +286,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
+ 
+ 	instructions := gjson.GetBytes(body, "instructions")
+ 	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
+-	if instructionsEmpty && !compatMessagesBridge {
++	if instructionsEmpty && !compatMessagesBridge && s.isOpenAICodexPromptInjectionEnabled(ctx) && !hasOpenAICodexExplicitSystemPromptBody(body) {
+ 		markPatchSet("instructions", defaultCodexSynthInstructions(reqModel))
+ 	}
+ 
+@@ -413,7 +413,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
+ 			ensureCodexOAuthInstructionsField(decoded)
+ 			markDecodedModified()
+ 		} else {
+-			codexResult = applyCodexOAuthTransform(decoded, isCodexCLI, isCompactRequest)
++			codexResult = applyCodexOAuthTransformWithOptions(decoded, codexOAuthTransformOptions{
++				IsCodexCLI:              isCodexCLI,
++				IsCompact:               isCompactRequest,
++				SkipDefaultInstructions: !s.isOpenAICodexPromptInjectionEnabled(ctx),
++			})
+ 		}
+ 		if codexResult.Modified {
+ 			markDecodedModified()
+diff --git a/backend/internal/service/openai_gateway_passthrough.go b/backend/internal/service/openai_gateway_passthrough.go
+index f23a656f1..44609c112 100644
+--- a/backend/internal/service/openai_gateway_passthrough.go
++++ b/backend/internal/service/openai_gateway_passthrough.go
+@@ -142,7 +142,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
+ 			})
+ 			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
+ 		}
+-		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() {
++		if isOpenAICodexModel(reqModel) &&
++			!gjson.GetBytes(body, "instructions").Exists() &&
++			s.isOpenAICodexPromptInjectionEnabled(ctx) &&
++			!hasOpenAICodexExplicitSystemPromptBody(body) {
+ 			nextBody, setErr := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(reqModel))
+ 			if setErr != nil {
+ 				return nil, fmt.Errorf("set passthrough codex instructions: %w", setErr)
+diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
+index 1610fede4..a3a52322f 100644
+--- a/backend/internal/service/openai_gateway_request_body.go
++++ b/backend/internal/service/openai_gateway_request_body.go
+@@ -835,6 +835,49 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
+ 	return ""
+ }
+ 
++// hasOpenAICodexExplicitSystemPromptBody is the raw-body counterpart of
++// hasOpenAICodexExplicitSystemPrompt. It keeps the /responses patch path from
++// adding a default before the OAuth transform can preserve client instructions.
++func hasOpenAICodexExplicitSystemPromptBody(body []byte) bool {
++	if openAIJSONValueHasText(gjson.GetBytes(body, "system_prompt")) {
++		return true
++	}
++	for _, item := range gjson.GetBytes(body, "input").Array() {
++		if !strings.EqualFold(strings.TrimSpace(item.Get("role").String()), "system") {
++			continue
++		}
++		if openAIJSONValueHasText(item.Get("content")) {
++			return true
++		}
++	}
++	return false
++}
++
++func openAIJSONValueHasText(value gjson.Result) bool {
++	if !value.Exists() || value.Type == gjson.Null {
++		return false
++	}
++	switch value.Type {
++	case gjson.String:
++		return strings.TrimSpace(value.String()) != ""
++	case gjson.JSON:
++		if value.IsArray() {
++			for _, item := range value.Array() {
++				if openAIJSONValueHasText(item.Get("text")) || openAIJSONValueHasText(item) {
++					return true
++				}
++			}
++			return false
++		}
++		if value.IsObject() {
++			if openAIJSONValueHasText(value.Get("text")) || openAIJSONValueHasText(value.Get("content")) {
++				return true
++			}
++		}
++	}
++	return false
++}
++
+ func isOpenAICodexModel(model string) bool {
+ 	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex")
+ }
+diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
+index fd0395851..2716839f6 100644
+--- a/backend/internal/service/openai_gateway_service.go
++++ b/backend/internal/service/openai_gateway_service.go
+@@ -719,6 +719,14 @@ func (s *OpenAIGatewayService) getOpenAIWSProtocolResolver() OpenAIWSProtocolRes
+ 	return NewOpenAIWSProtocolResolver(cfg)
+ }
+ 
++// isOpenAICodexPromptInjectionEnabled reports whether the gateway may add the
++// built-in Codex instructions when a request does not provide its own prompt.
++// A missing settings service is treated as disabled so tests and partially
++// wired services cannot silently re-enable prompt mutation.
++func (s *OpenAIGatewayService) isOpenAICodexPromptInjectionEnabled(ctx context.Context) bool {
++	return s != nil && s.settingService != nil && s.settingService.IsOpenAICodexPromptInjectionEnabled(ctx)
++}
++
+ func classifyOpenAIWSReconnectReason(err error) (string, bool) {
+ 	if err == nil {
+ 		return "", false
+diff --git a/backend/internal/service/openai_gateway_service_hotpath_test.go b/backend/internal/service/openai_gateway_service_hotpath_test.go
+index a51f58bf5..d38574f0f 100644
+--- a/backend/internal/service/openai_gateway_service_hotpath_test.go
++++ b/backend/internal/service/openai_gateway_service_hotpath_test.go
+@@ -105,6 +105,7 @@ func TestOpenAIRequestView_HasPatches(t *testing.T) {
+ 
+ func TestOpenAIGatewayService_Forward_HTTPPatchPathKeepsLargeInputRaw(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
++	resetGatewayForwardingSettingsCacheForTest(t)
+ 	upstream := &httpUpstreamRecorder{
+ 		resp: &http.Response{
+ 			StatusCode: http.StatusOK,
+@@ -116,7 +117,10 @@ func TestOpenAIGatewayService_Forward_HTTPPatchPathKeepsLargeInputRaw(t *testing
+ 	}
+ 	cfg := &config.Config{}
+ 	cfg.Security.URLAllowlist.Enabled = false
+-	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
++	settingService := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
++		SettingKeyEnableOpenAICodexPromptInjection: "true",
++	}}, cfg)
++	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream, settingService: settingService}
+ 	account := &Account{
+ 		ID:          1,
+ 		Name:        "openai-apikey",
+@@ -146,6 +150,50 @@ func TestOpenAIGatewayService_Forward_HTTPPatchPathKeepsLargeInputRaw(t *testing
+ 	require.Equal(t, "9007199254740993", gjson.GetBytes(upstream.lastBody, "input.0.content.0.nonce").Raw)
+ }
+ 
++func TestOpenAIGatewayService_Forward_HTTPSystemPromptSkipsDefaultInstructions(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	resetGatewayForwardingSettingsCacheForTest(t)
++
++	upstream := &httpUpstreamRecorder{
++		resp: &http.Response{
++			StatusCode: http.StatusOK,
++			Header:     http.Header{"Content-Type": []string{"application/json"}},
++			Body:       io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":1,"output_tokens":2}}`)),
++		},
++	}
++	cfg := &config.Config{}
++	cfg.Security.URLAllowlist.Enabled = false
++	settingService := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
++		SettingKeyEnableOpenAICodexPromptInjection: "true",
++	}}, cfg)
++	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream, settingService: settingService}
++	account := &Account{
++		ID:          3,
++		Name:        "openai-apikey",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key":  "sk-test",
++			"base_url": "https://example.com",
++		},
++		Extra: map[string]any{"use_responses_api": true},
++	}
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
++	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
++
++	const systemPrompt = "Use the supplied structured records only."
++	body := []byte(fmt.Sprintf(`{"model":"gpt-5","stream":false,"system_prompt":%q,"input":[{"type":"message","content":"hi"}]}`, systemPrompt))
++	result, err := svc.Forward(context.Background(), c, account, body)
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.NotNil(t, upstream.lastReq)
++	require.Equal(t, systemPrompt, gjson.GetBytes(upstream.lastBody, "system_prompt").String())
++	require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
++}
++
+ func TestOpenAIGatewayService_Forward_DecodedMutationKeepsLaterFieldDeletes(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 	upstream := &httpUpstreamRecorder{
+diff --git a/backend/internal/service/openai_oauth_passthrough_test.go b/backend/internal/service/openai_oauth_passthrough_test.go
+index c7dc77b3a..0bdea721c 100644
+--- a/backend/internal/service/openai_oauth_passthrough_test.go
++++ b/backend/internal/service/openai_oauth_passthrough_test.go
+@@ -818,6 +818,10 @@ func TestOpenAIGatewayService_OAuthPassthrough_UpstreamRequestIgnoresClientCance
+ 
+ func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsGetsDefault(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
++	resetGatewayForwardingSettingsCacheForTest(t)
++	settingService := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
++		SettingKeyEnableOpenAICodexPromptInjection: "true",
++	}}, &config.Config{})
+ 
+ 	for _, stream := range []bool{false, true} {
+ 		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+@@ -843,7 +847,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsGetsDefau
+ 				Header:     http.Header{"Content-Type": []string{responseContentType}, "x-request-id": []string{"rid"}},
+ 				Body:       io.NopCloser(strings.NewReader(responseBody)),
+ 			}}
+-			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
++			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream, settingService: settingService}
+ 			account := &Account{
+ 				ID: 123, Name: "acc", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
+ 				Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+@@ -865,6 +869,41 @@ func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsGetsDefau
+ 	}
+ }
+ 
++func TestOpenAIGatewayService_OAuthPassthrough_CodexSystemPromptDoesNotGetDefault(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	resetGatewayForwardingSettingsCacheForTest(t)
++	settingService := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
++		SettingKeyEnableOpenAICodexPromptInjection: "true",
++	}}, &config.Config{})
++
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
++	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
++
++	const systemPrompt = "Use the supplied structured records only."
++	originalBody := []byte(fmt.Sprintf(`{"model":"gpt-5.1-codex-max","stream":true,"store":true,"system_prompt":%q,"input":[{"type":"text","text":"hi"}]}`, systemPrompt))
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid-system-prompt"}},
++		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
++	}}
++	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream, settingService: settingService}
++	account := &Account{
++		ID: 123, Name: "acc", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
++		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
++		Extra:       map[string]any{"openai_passthrough": true, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
++		Status:      StatusActive, Schedulable: true, RateMultiplier: f64p(1),
++	}
++
++	result, err := svc.Forward(context.Background(), c, account, originalBody)
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.NotNil(t, upstream.lastReq)
++	require.Equal(t, systemPrompt, gjson.GetBytes(upstream.lastBody, "system_prompt").String())
++	require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
++}
++
+ func TestOpenAIGatewayService_OAuthPassthrough_DisabledUsesLegacyTransform(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 
+diff --git a/backend/internal/service/setting_gateway_runtime.go b/backend/internal/service/setting_gateway_runtime.go
+index 2f13278e3..2d6c12c55 100644
+--- a/backend/internal/service/setting_gateway_runtime.go
++++ b/backend/internal/service/setting_gateway_runtime.go
+@@ -57,6 +57,7 @@ type cachedGatewayForwardingSettings struct {
+ 	metadataPassthrough              bool
+ 	cchSigning                       bool
+ 	claudeOAuthSystemPromptInjection bool
++	openAICodexPromptInjection       bool
+ 	claudeOAuthSystemPrompt          string
+ 	claudeOAuthSystemPromptBlocks    string
+ 	anthropicCacheTTL1hInjection     bool
+@@ -705,9 +706,9 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
+ }
+ 
+ type gatewayForwardingSettingsResult struct {
+-	fp, mp, cch, claudeOAuthSystemPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
+-	clientDatelineNormalization                                                           bool
+-	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                string
++	fp, mp, cch, claudeOAuthSystemPromptInjection, openAICodexPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
++	clientDatelineNormalization                                                                                       bool
++	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                                            string
+ }
+ 
+ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context) gatewayForwardingSettingsResult {
+@@ -718,6 +719,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+ 				mp:                               cached.metadataPassthrough,
+ 				cch:                              cached.cchSigning,
+ 				claudeOAuthSystemPromptInjection: cached.claudeOAuthSystemPromptInjection,
++				openAICodexPromptInjection:       cached.openAICodexPromptInjection,
+ 				claudeOAuthSystemPrompt:          cached.claudeOAuthSystemPrompt,
+ 				claudeOAuthSystemPromptBlocks:    cached.claudeOAuthSystemPromptBlocks,
+ 				cacheTTL1h:                       cached.anthropicCacheTTL1hInjection,
+@@ -734,6 +736,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+ 					mp:                               cached.metadataPassthrough,
+ 					cch:                              cached.cchSigning,
+ 					claudeOAuthSystemPromptInjection: cached.claudeOAuthSystemPromptInjection,
++					openAICodexPromptInjection:       cached.openAICodexPromptInjection,
+ 					claudeOAuthSystemPrompt:          cached.claudeOAuthSystemPrompt,
+ 					claudeOAuthSystemPromptBlocks:    cached.claudeOAuthSystemPromptBlocks,
+ 					cacheTTL1h:                       cached.anthropicCacheTTL1hInjection,
+@@ -749,6 +752,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+ 			SettingKeyEnableMetadataPassthrough,
+ 			SettingKeyEnableCCHSigning,
+ 			SettingKeyEnableClaudeOAuthSystemPromptInjection,
++			SettingKeyEnableOpenAICodexPromptInjection,
+ 			SettingKeyClaudeOAuthSystemPrompt,
+ 			SettingKeyClaudeOAuthSystemPromptBlocks,
+ 			SettingKeyEnableAnthropicCacheTTL1hInjection,
+@@ -762,12 +766,13 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+ 				metadataPassthrough:              false,
+ 				cchSigning:                       false,
+ 				claudeOAuthSystemPromptInjection: true,
++				openAICodexPromptInjection:       false,
+ 				anthropicCacheTTL1hInjection:     false,
+ 				rewriteMessageCacheControl:       s.defaultRewriteMessageCacheControl(),
+ 				clientDatelineNormalization:      true,
+ 				expiresAt:                        time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
+ 			})
+-			return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
++			return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, openAICodexPromptInjection: false, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
+ 		}
+ 		fp := true
+ 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
+@@ -779,6 +784,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+ 		if v, ok := values[SettingKeyEnableClaudeOAuthSystemPromptInjection]; ok && v != "" {
+ 			systemPromptInjection = v == "true"
+ 		}
++		openAICodexPromptInjection := values[SettingKeyEnableOpenAICodexPromptInjection] == "true"
+ 		systemPrompt := values[SettingKeyClaudeOAuthSystemPrompt]
+ 		systemPromptBlocks := values[SettingKeyClaudeOAuthSystemPromptBlocks]
+ 		cacheTTL1h := values[SettingKeyEnableAnthropicCacheTTL1hInjection] == "true"
+@@ -795,6 +801,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+ 			metadataPassthrough:              mp,
+ 			cchSigning:                       cch,
+ 			claudeOAuthSystemPromptInjection: systemPromptInjection,
++			openAICodexPromptInjection:       openAICodexPromptInjection,
+ 			claudeOAuthSystemPrompt:          systemPrompt,
+ 			claudeOAuthSystemPromptBlocks:    systemPromptBlocks,
+ 			anthropicCacheTTL1hInjection:     cacheTTL1h,
+@@ -807,6 +814,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+ 			mp:                               mp,
+ 			cch:                              cch,
+ 			claudeOAuthSystemPromptInjection: systemPromptInjection,
++			openAICodexPromptInjection:       openAICodexPromptInjection,
+ 			claudeOAuthSystemPrompt:          systemPrompt,
+ 			claudeOAuthSystemPromptBlocks:    systemPromptBlocks,
+ 			cacheTTL1h:                       cacheTTL1h,
+@@ -817,7 +825,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+ 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
+ 		return r
+ 	}
+-	return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, clientDatelineNormalization: true}
++	return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, openAICodexPromptInjection: false, clientDatelineNormalization: true}
+ }
+ 
+ // GetGatewayForwardingSettings returns cached gateway forwarding settings.
+@@ -852,6 +860,13 @@ func (s *SettingService) GetClaudeOAuthSystemPromptInjectionSettings(ctx context
+ 	return result.claudeOAuthSystemPromptInjection, result.claudeOAuthSystemPrompt, result.claudeOAuthSystemPromptBlocks
+ }
+ 
++// IsOpenAICodexPromptInjectionEnabled reports whether the gateway may add its
++// Codex prompt when an OpenAI request does not carry one. The setting is
++// opt-in and fails closed when the setting store is unavailable.
++func (s *SettingService) IsOpenAICodexPromptInjectionEnabled(ctx context.Context) bool {
++	return s.getGatewayForwardingSettingsCached(ctx).openAICodexPromptInjection
++}
++
+ // GetClaudeCodeVersionBounds 获取 Claude Code 版本号上下限要求
+ // 使用进程内 atomic.Value 缓存，60 秒 TTL，热路径零锁开销
+ // singleflight 防止缓存过期时 thundering herd
+diff --git a/backend/internal/service/setting_parse.go b/backend/internal/service/setting_parse.go
+index 9f3dfbddf..3b89e0abc 100644
+--- a/backend/internal/service/setting_parse.go
++++ b/backend/internal/service/setting_parse.go
+@@ -235,6 +235,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
+ 		SettingKeyEnableAnthropicCacheTTL1hInjection:                 "false",
+ 		SettingKeyRewriteMessageCacheControl:                         strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
+ 		SettingKeyEnableClientDatelineNormalization:                  "true",
++		SettingKeyEnableOpenAICodexPromptInjection:                   "false",
+ 		SettingKeyAntigravityUserAgentVersion:                        "",
+ 		SettingKeyOpenAICodexUserAgent:                               "",
+ 		SettingKeyOpenAICodexClientVersion:                           "",
+@@ -843,7 +844,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
+ 	result.AllowUngroupedKeyScheduling = settings[SettingKeyAllowUngroupedKeyScheduling] == "true"
+ 
+ 	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false,
+-	// cch_signing=false, claude_oauth_system_prompt_injection=true)
++	// cch_signing=false, claude_oauth_system_prompt_injection=true,
++	// openai_codex_prompt_injection=false)
+ 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {
+ 		result.EnableFingerprintUnification = v == "true"
+ 	} else {
+@@ -856,6 +858,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
+ 	} else {
+ 		result.EnableClaudeOAuthSystemPromptInjection = true
+ 	}
++	result.EnableOpenAICodexPromptInjection = settings[SettingKeyEnableOpenAICodexPromptInjection] == "true"
+ 	result.ClaudeOAuthSystemPrompt = settings[SettingKeyClaudeOAuthSystemPrompt]
+ 	result.ClaudeOAuthSystemPromptBlocks = settings[SettingKeyClaudeOAuthSystemPromptBlocks]
+ 	result.EnableAnthropicCacheTTL1hInjection = settings[SettingKeyEnableAnthropicCacheTTL1hInjection] == "true"
+diff --git a/backend/internal/service/setting_service_claude_oauth_system_prompt_test.go b/backend/internal/service/setting_service_claude_oauth_system_prompt_test.go
+index d4a10787e..5f8fe22b5 100644
+--- a/backend/internal/service/setting_service_claude_oauth_system_prompt_test.go
++++ b/backend/internal/service/setting_service_claude_oauth_system_prompt_test.go
+@@ -2,6 +2,7 @@ package service
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"testing"
+ 
+ 	"github.com/Wei-Shaw/sub2api/internal/config"
+@@ -47,3 +48,58 @@ func TestSettingService_GetClaudeOAuthSystemPromptInjectionSettings(t *testing.T
+ 		require.Equal(t, customBlocks, blocks)
+ 	})
+ }
++
++func TestSettingService_IsOpenAICodexPromptInjectionEnabled(t *testing.T) {
++	t.Run("defaults to disabled", func(t *testing.T) {
++		resetGatewayForwardingSettingsCacheForTest(t)
++		svc := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{}}, &config.Config{})
++
++		require.False(t, svc.IsOpenAICodexPromptInjectionEnabled(context.Background()))
++	})
++
++	t.Run("uses configured switch", func(t *testing.T) {
++		resetGatewayForwardingSettingsCacheForTest(t)
++		svc := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
++			SettingKeyEnableOpenAICodexPromptInjection: "true",
++		}}, &config.Config{})
++
++		require.True(t, svc.IsOpenAICodexPromptInjectionEnabled(context.Background()))
++	})
++
++	t.Run("fails closed when settings cannot be read", func(t *testing.T) {
++		resetGatewayForwardingSettingsCacheForTest(t)
++		svc := NewSettingService(&gatewayForwardingErrorSettingRepo{}, &config.Config{})
++
++		require.False(t, svc.IsOpenAICodexPromptInjectionEnabled(context.Background()))
++	})
++}
++
++type gatewayForwardingErrorSettingRepo struct{}
++
++func (r *gatewayForwardingErrorSettingRepo) Get(context.Context, string) (*Setting, error) {
++	return nil, ErrSettingNotFound
++}
++
++func (r *gatewayForwardingErrorSettingRepo) GetValue(context.Context, string) (string, error) {
++	return "", ErrSettingNotFound
++}
++
++func (r *gatewayForwardingErrorSettingRepo) Set(context.Context, string, string) error {
++	return errors.New("unexpected Set call")
++}
++
++func (r *gatewayForwardingErrorSettingRepo) GetMultiple(context.Context, []string) (map[string]string, error) {
++	return nil, errors.New("settings unavailable")
++}
++
++func (r *gatewayForwardingErrorSettingRepo) SetMultiple(context.Context, map[string]string) error {
++	return errors.New("unexpected SetMultiple call")
++}
++
++func (r *gatewayForwardingErrorSettingRepo) GetAll(context.Context) (map[string]string, error) {
++	return nil, errors.New("unexpected GetAll call")
++}
++
++func (r *gatewayForwardingErrorSettingRepo) Delete(context.Context, string) error {
++	return errors.New("unexpected Delete call")
++}
+diff --git a/backend/internal/service/setting_service_update_test.go b/backend/internal/service/setting_service_update_test.go
+index 750f01728..0708c5bf5 100644
+--- a/backend/internal/service/setting_service_update_test.go
++++ b/backend/internal/service/setting_service_update_test.go
+@@ -647,6 +647,15 @@ func TestSettingService_ParseSettings_APIKeyACLTrustForwardedIPUsesStoredValue(t
+ 	require.False(t, got.APIKeyACLTrustForwardedIP)
+ }
+ 
++func TestSettingService_ParseSettings_OpenAICodexPromptInjectionDefaultsToDisabled(t *testing.T) {
++	svc := NewSettingService(&settingUpdateRepoStub{}, &config.Config{})
++
++	require.False(t, svc.parseSettings(map[string]string{}).EnableOpenAICodexPromptInjection)
++	require.True(t, svc.parseSettings(map[string]string{
++		SettingKeyEnableOpenAICodexPromptInjection: "true",
++	}).EnableOpenAICodexPromptInjection)
++}
++
+ func TestSettingService_ParseSettings_ForwardedClientIPHeaders(t *testing.T) {
+ 	cfg := &config.Config{}
+ 	cfg.SetForwardedClientIPSettings(true, []string{"X-Config-IP"})
+@@ -903,3 +912,14 @@ func TestSettingService_StalePasskeyTrueWithoutConfigReportsDisabled(t *testing.
+ 	require.NoError(t, err)
+ 	require.False(t, settings.PasskeyEnabled)
+ }
++
++func TestSettingService_UpdateSettingsPersistsOpenAICodexPromptInjection(t *testing.T) {
++	repo := &settingUpdateRepoStub{}
++	svc := NewSettingService(repo, &config.Config{})
++
++	err := svc.UpdateSettings(context.Background(), &SystemSettings{
++		EnableOpenAICodexPromptInjection: true,
++	})
++	require.NoError(t, err)
++	require.Equal(t, "true", repo.updates[SettingKeyEnableOpenAICodexPromptInjection])
++}
+diff --git a/backend/internal/service/setting_update.go b/backend/internal/service/setting_update.go
+index a4fadded0..f1a47d839 100644
+--- a/backend/internal/service/setting_update.go
++++ b/backend/internal/service/setting_update.go
+@@ -463,6 +463,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
+ 	updates[SettingKeyEnableMetadataPassthrough] = strconv.FormatBool(settings.EnableMetadataPassthrough)
+ 	updates[SettingKeyEnableCCHSigning] = strconv.FormatBool(settings.EnableCCHSigning)
+ 	updates[SettingKeyEnableClaudeOAuthSystemPromptInjection] = strconv.FormatBool(settings.EnableClaudeOAuthSystemPromptInjection)
++	updates[SettingKeyEnableOpenAICodexPromptInjection] = strconv.FormatBool(settings.EnableOpenAICodexPromptInjection)
+ 	updates[SettingKeyClaudeOAuthSystemPrompt] = settings.ClaudeOAuthSystemPrompt
+ 	if err := ValidateClaudeOAuthSystemPromptBlocksConfig(settings.ClaudeOAuthSystemPromptBlocks); err != nil {
+ 		return nil, err
+@@ -700,6 +701,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
+ 		metadataPassthrough:              settings.EnableMetadataPassthrough,
+ 		cchSigning:                       settings.EnableCCHSigning,
+ 		claudeOAuthSystemPromptInjection: settings.EnableClaudeOAuthSystemPromptInjection,
++		openAICodexPromptInjection:       settings.EnableOpenAICodexPromptInjection,
+ 		claudeOAuthSystemPrompt:          settings.ClaudeOAuthSystemPrompt,
+ 		claudeOAuthSystemPromptBlocks:    settings.ClaudeOAuthSystemPromptBlocks,
+ 		anthropicCacheTTL1hInjection:     settings.EnableAnthropicCacheTTL1hInjection,
+diff --git a/backend/internal/service/settings_view.go b/backend/internal/service/settings_view.go
+index a93900094..c52a2d33b 100644
+--- a/backend/internal/service/settings_view.go
++++ b/backend/internal/service/settings_view.go
+@@ -231,6 +231,7 @@ type SystemSettings struct {
+ 	EnableMetadataPassthrough              bool   // 是否透传客户端原始 metadata（默认 false）
+ 	EnableCCHSigning                       bool   // 已废弃 no-op：新版 CLI 取消 cch 签名后网关不再注入/签名 cch，开关无效果
+ 	EnableClaudeOAuthSystemPromptInjection bool   // 是否对 Claude OAuth mimic 路径注入 Claude Code system blocks（默认 true）
++	EnableOpenAICodexPromptInjection       bool   // 是否在 OpenAI Codex 请求缺少指令时注入 Codex 提示词（默认 false）
+ 	ClaudeOAuthSystemPrompt                string // Claude OAuth mimic 路径注入的通用扩展 system prompt；空值使用内置默认
+ 	ClaudeOAuthSystemPromptBlocks          string // Claude OAuth mimic 路径注入的 system blocks JSON 配置；空值使用内置默认
+ 	EnableAnthropicCacheTTL1hInjection     bool   // 是否对 Anthropic OAuth/SetupToken 请求体注入 1h cache_control ttl（默认 false）
+diff --git a/frontend/src/api/admin/settings.ts b/frontend/src/api/admin/settings.ts
+index f5f19918a..dba70eb75 100644
+--- a/frontend/src/api/admin/settings.ts
++++ b/frontend/src/api/admin/settings.ts
+@@ -624,6 +624,7 @@ export interface SystemSettings {
+   enable_metadata_passthrough: boolean;
+   enable_cch_signing: boolean;
+   enable_claude_oauth_system_prompt_injection: boolean;
++  enable_codex_instructions_injection: boolean;
+   claude_oauth_system_prompt: string;
+   claude_oauth_system_prompt_blocks: string;
+   enable_anthropic_cache_ttl_1h_injection: boolean;
+@@ -938,6 +939,7 @@ export interface UpdateSettingsRequest {
+   enable_metadata_passthrough?: boolean;
+   enable_cch_signing?: boolean;
+   enable_claude_oauth_system_prompt_injection?: boolean;
++  enable_codex_instructions_injection?: boolean;
+   claude_oauth_system_prompt?: string;
+   claude_oauth_system_prompt_blocks?: string;
+   enable_anthropic_cache_ttl_1h_injection?: boolean;
+diff --git a/frontend/src/i18n/locales/en/admin/settings.ts b/frontend/src/i18n/locales/en/admin/settings.ts
+index 424cca1de..ef88fadd9 100644
+--- a/frontend/src/i18n/locales/en/admin/settings.ts
++++ b/frontend/src/i18n/locales/en/admin/settings.ts
+@@ -475,6 +475,8 @@ export default {
+         cchSigningHint: 'Sign the billing header in forwarded requests with CCH hash. When disabled, the placeholder is preserved.',
+         claudeOAuthSystemPromptInjection: 'Claude OAuth System Blocks',
+         claudeOAuthSystemPromptInjectionHint: 'Inject Claude Code-like system blocks for Claude OAuth requests from non-Claude-Code clients. Enabled by default.',
++        codexInstructionsInjection: 'Codex default prompt injection',
++        codexInstructionsInjectionHint: 'Controls whether /v1/responses and /v1/chat/completions requests receive the default Codex prompt. Disabled means no injection; off by default.',
+         claudeOAuthSystemPrompt: 'Claude OAuth Expansion Prompt',
+         claudeOAuthSystemPromptPlaceholder: 'Leave empty to use the built-in Claude Code expansion prompt.',
+         claudeOAuthSystemPromptHint: 'Legacy compatibility: controls only the third injected system block.',
+diff --git a/frontend/src/i18n/locales/zh/admin/settings.ts b/frontend/src/i18n/locales/zh/admin/settings.ts
+index 41d7b673d..c2c76e56f 100644
+--- a/frontend/src/i18n/locales/zh/admin/settings.ts
++++ b/frontend/src/i18n/locales/zh/admin/settings.ts
+@@ -468,6 +468,8 @@ export default {
+         cchSigningHint: '对转发请求的 billing header 进行 CCH 哈希签名。关闭时保留原始占位符。',
+         claudeOAuthSystemPromptInjection: 'Claude OAuth System 注入',
+         claudeOAuthSystemPromptInjectionHint: '为非 Claude Code 客户端的 Claude OAuth 请求注入 Claude Code 形态的 system blocks。默认开启。',
++        codexInstructionsInjection: 'Codex 默认提示词注入',
++        codexInstructionsInjectionHint: '控制 /v1/responses 和 /v1/chat/completions 请求是否补充默认 Codex 提示词。关闭时不注入，默认关闭。',
+         claudeOAuthSystemPrompt: 'Claude OAuth 扩展提示词',
+         claudeOAuthSystemPromptPlaceholder: '留空时使用内置 Claude Code 扩展提示词。',
+         claudeOAuthSystemPromptHint: '兼容旧配置：仅控制第三个注入的 system block。',
+diff --git a/frontend/src/views/admin/SettingsView.vue b/frontend/src/views/admin/SettingsView.vue
+index 80af0b194..d288ca3fc 100644
+--- a/frontend/src/views/admin/SettingsView.vue
++++ b/frontend/src/views/admin/SettingsView.vue
+@@ -4501,6 +4501,31 @@
+               </h2>
+             </div>
+             <div class="p-6 space-y-4">
++                <div class="flex items-center justify-between">
++                  <div class="pr-4">
++                    <label
++                      class="block text-sm font-medium text-gray-700 dark:text-gray-300"
++                    >
++                      {{
++                        t(
++                          "admin.settings.gatewayForwarding.codexInstructionsInjection",
++                        )
++                      }}
++                    </label>
++                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
++                      {{
++                        t(
++                          "admin.settings.gatewayForwarding.codexInstructionsInjectionHint",
++                        )
++                      }}
++                    </p>
++                  </div>
++                  <Toggle
++                    v-model="form.enable_codex_instructions_injection"
++                    data-testid="codex-instructions-injection-toggle"
++                  />
++                </div>
++
+                 <div>
+                   <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                     {{ t("admin.settings.gatewayForwarding.codexClientRestrictionTitle") }}
+@@ -9715,6 +9740,7 @@ const form = reactive<SettingsForm>({
+   enable_metadata_passthrough: false,
+   enable_cch_signing: false,
+   enable_claude_oauth_system_prompt_injection: true,
++  enable_codex_instructions_injection: false,
+   claude_oauth_system_prompt: "",
+   claude_oauth_system_prompt_blocks: defaultClaudeOAuthSystemPromptBlocks,
+   enable_anthropic_cache_ttl_1h_injection: false,
+@@ -11287,6 +11313,8 @@ async function saveSettings() {
+       enable_cch_signing: form.enable_cch_signing,
+       enable_claude_oauth_system_prompt_injection:
+         form.enable_claude_oauth_system_prompt_injection,
++      enable_codex_instructions_injection:
++        form.enable_codex_instructions_injection,
+       claude_oauth_system_prompt: form.claude_oauth_system_prompt?.trim()
+         ? form.claude_oauth_system_prompt
+         : "",
+diff --git a/frontend/src/views/admin/__tests__/SettingsView.spec.ts b/frontend/src/views/admin/__tests__/SettingsView.spec.ts
+index bf6fe5e68..1cbd95704 100644
+--- a/frontend/src/views/admin/__tests__/SettingsView.spec.ts
++++ b/frontend/src/views/admin/__tests__/SettingsView.spec.ts
+@@ -1171,6 +1171,29 @@ describe("admin SettingsView payment visible method controls", () => {
+     ]);
+   });
+ 
++  it("keeps Codex default prompt injection disabled until explicitly enabled", async () => {
++    const wrapper = mountView();
++
++    await flushPromises();
++    await openGatewayTab(wrapper);
++
++    const toggle = wrapper.get(
++      '[data-testid="codex-instructions-injection-toggle"]',
++    );
++    expect((toggle.element as HTMLInputElement).checked).toBe(false);
++
++    await toggle.setValue(true);
++    await wrapper.find("form").trigger("submit.prevent");
++    await flushPromises();
++
++    expect(updateSettings).toHaveBeenCalledTimes(1);
++    expect(updateSettings).toHaveBeenCalledWith(
++      expect.objectContaining({
++        enable_codex_instructions_injection: true,
++      }),
++    );
++  });
++
+   it("submits Antigravity user agent version gateway setting", async () => {
+     getSettings.mockResolvedValueOnce({
+       ...baseSettingsResponse,
