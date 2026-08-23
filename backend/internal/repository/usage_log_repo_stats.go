@@ -809,11 +809,11 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 
 	for rows.Next() {
 		var (
-			inboundGrouped, upstreamGrouped                                      int
-			inboundEndpoint, upstreamEndpoint                                    sql.NullString
-			requests, inputTokens, outputTokens, cacheCreationTokens, cacheReads int64
+			inboundGrouped, upstreamGrouped                                                     int
+			inboundEndpoint, upstreamEndpoint                                                   sql.NullString
+			requests, inputTokens, outputTokens, cacheCreationTokens, cacheReads                int64
 			audioInputTokens, audioOutputTokens, audioCacheCreationTokens, audioCacheReadTokens int64
-			cost, actualCost, accountCost, averageDurationMs                     float64
+			cost, actualCost, accountCost, averageDurationMs                                    float64
 		)
 		if err := rows.Scan(
 			&inboundGrouped,
@@ -848,13 +848,13 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			stats.TotalRequests = requests
 			stats.TotalInputTokens = inputTokens
 			stats.TotalOutputTokens = outputTokens
-				stats.TotalCacheCreationTokens = cacheCreationTokens
-				stats.TotalCacheReadTokens = cacheReads
-				stats.TotalCacheTokens = cacheCreationTokens + cacheReads
-				stats.TotalAudioInputTokens = audioInputTokens
-				stats.TotalAudioOutputTokens = audioOutputTokens
-				stats.TotalAudioCacheCreationTokens = audioCacheCreationTokens
-				stats.TotalAudioCacheReadTokens = audioCacheReadTokens
+			stats.TotalCacheCreationTokens = cacheCreationTokens
+			stats.TotalCacheReadTokens = cacheReads
+			stats.TotalCacheTokens = cacheCreationTokens + cacheReads
+			stats.TotalAudioInputTokens = audioInputTokens
+			stats.TotalAudioOutputTokens = audioOutputTokens
+			stats.TotalAudioCacheCreationTokens = audioCacheCreationTokens
+			stats.TotalAudioCacheReadTokens = audioCacheReadTokens
 			stats.TotalCost = cost
 			stats.TotalActualCost = actualCost
 			totalAccountCost = accountCost

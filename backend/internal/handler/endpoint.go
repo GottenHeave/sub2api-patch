@@ -30,11 +30,11 @@ const (
 	EndpointVideosExtensions     = "/v1/videos/extensions"
 	EndpointVideos               = "/v1/videos"
 	EndpointGeminiModels         = "/v1beta/models"
-	EndpointRealtime            = "/v1/realtime"
-	EndpointRealtimeREST        = "/v1/realtime/rest"
-	EndpointRealtimeCallsAccept = EndpointRealtimeREST
-	EndpointAudioTranscriptions = "/v1/audio/transcriptions"
-	EndpointTranscribe          = "/transcribe"
+	EndpointRealtime             = "/v1/realtime"
+	EndpointRealtimeREST         = "/v1/realtime/rest"
+	EndpointRealtimeCallsAccept  = EndpointRealtimeREST
+	EndpointAudioTranscriptions  = "/v1/audio/transcriptions"
+	EndpointTranscribe           = "/transcribe"
 )
 
 const EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
