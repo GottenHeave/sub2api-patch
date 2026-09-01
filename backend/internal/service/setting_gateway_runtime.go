@@ -738,10 +738,10 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 }
 
 type gatewayForwardingSettingsResult struct {
-	openAITTFTMode                                                                                                             string
+	openAITTFTMode                                                                                                    string
 	fp, mp, cch, claudeOAuthSystemPromptInjection, openAICodexPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
-	clientDatelineNormalization                                                                                                bool
-	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                                                     string
+	clientDatelineNormalization                                                                                       bool
+	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                                            string
 }
 
 func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context) gatewayForwardingSettingsResult {
