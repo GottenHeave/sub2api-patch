@@ -154,7 +154,7 @@ func TestPrepareUsageLogInsert_PersistsNativeCompactionV2WithoutChangingRequestT
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 	require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-2])
 	require.Equal(t, true, prepared.args[len(prepared.args)-2])
-	require.Equal(t, int16(service.RequestTypeStream), prepared.args[30])
+	require.Equal(t, int16(service.RequestTypeStream), prepared.args[34])
 	require.Equal(t, service.RequestTypeStream, log.RequestType)
 	require.True(t, log.Stream)
 	require.False(t, log.OpenAIWSMode)
@@ -258,25 +258,6 @@ func anySliceToDriverValues(values []any) []driver.Value {
 func usageLogInsertMockArgs(log service.UsageLog) []driver.Value {
 	prepared := prepareUsageLogInsert(&log)
 	return anySliceToDriverValues(prepared.args)
-}
-
-func usageStatsSummaryColumns() []string {
-	return []string{
-		"total_requests",
-		"total_input_tokens",
-		"total_output_tokens",
-		"total_cache_tokens",
-		"total_cache_creation_tokens",
-		"total_cache_read_tokens",
-		"total_audio_input_tokens",
-		"total_audio_output_tokens",
-		"total_audio_cache_creation_tokens",
-		"total_audio_cache_read_tokens",
-		"total_cost",
-		"total_actual_cost",
-		"total_account_cost",
-		"avg_duration_ms",
-	}
 }
 
 func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {

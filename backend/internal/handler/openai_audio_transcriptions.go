@@ -124,7 +124,6 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 		if failoverClientGone(c) {
 			if retryAccountReleaseFunc != nil {
 				retryAccountReleaseFunc()
-				retryAccountReleaseFunc = nil
 			}
 			reqLog.Info("openai.audio_transcriptions.failover_aborted_client_disconnected")
 			return
@@ -229,7 +228,6 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 						case <-c.Request.Context().Done():
 							if retryAccountReleaseFunc != nil {
 								retryAccountReleaseFunc()
-								retryAccountReleaseFunc = nil
 							}
 							return
 						case <-time.After(sameAccountRetryDelay):

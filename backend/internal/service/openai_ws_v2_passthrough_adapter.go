@@ -1092,12 +1092,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				capturedSessionModel = sessionFrameModel
 			}
 			if realtimeUpstreamModel != "" {
-				modelForSessionRewrite := sessionFrameModel
-				if modelForSessionRewrite == "" {
-					modelForSessionRewrite = capturedSessionModel
-				}
-				if modelForSessionRewrite == "" {
-					modelForSessionRewrite = realtimeUpstreamModel
+				modelForSessionRewrite := realtimeUpstreamModel
+				if sessionFrameModel != "" {
+					modelForSessionRewrite = openAIRealtimeUpstreamModel(account, sessionFrameModel)
+				} else if capturedSessionModel != "" {
+					modelForSessionRewrite = openAIRealtimeUpstreamModel(account, capturedSessionModel)
 				}
 				payload = rewriteOpenAIRealtimeSessionModel(payload, modelForSessionRewrite)
 			}

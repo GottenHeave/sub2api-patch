@@ -1748,7 +1748,7 @@ func parseOpenAIRateLimitResetTime(body []byte) *int64 {
 	return nil
 }
 
-	func parseOpenCodeGoUsageLimitResetDuration(message string) time.Duration {
+func parseOpenCodeGoUsageLimitResetDuration(message string) time.Duration {
 	resetPrefix := openCodeGoUsageLimitResetPattern.FindStringIndex(message)
 	if resetPrefix == nil {
 		return 0

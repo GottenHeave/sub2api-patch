@@ -328,6 +328,7 @@ func TestParseUsageAndEnrichCoverage(t *testing.T) {
 	require.Equal(t, 4, parsedAudio.OutputAudioTokens)
 	require.Equal(t, 1, parsedAudio.CacheCreationAudioTokens)
 	require.Equal(t, 2, parsedAudio.CacheReadAudioTokens)
+	finalizeRelayTurnUsage(state)
 	require.Equal(t, 22, state.usage.InputTokens)
 	require.Equal(t, 9, state.usage.OutputTokens)
 	require.Equal(t, 7, state.usage.CacheCreationInputTokens)
@@ -349,7 +350,7 @@ func TestParseUsageAndEnrichCoverage(t *testing.T) {
 	enrichResult(nil, state, 0)
 }
 
-	func TestParseUsageAndAccumulateIncludesIndependentReasoningTokens(t *testing.T) {
+func TestParseUsageAndAccumulateIncludesIndependentReasoningTokens(t *testing.T) {
 	t.Parallel()
 
 	state := &relayState{}
@@ -370,9 +371,9 @@ func TestParseUsageAndEnrichCoverage(t *testing.T) {
 		nil,
 	)
 	require.Equal(t, 119, got.OutputTokens, "inclusive Responses output must not double-count reasoning")
-	}
+}
 
-	func TestParseUsageAndAccumulateAudioVariants(t *testing.T) {
+func TestParseUsageAndAccumulateAudioVariants(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

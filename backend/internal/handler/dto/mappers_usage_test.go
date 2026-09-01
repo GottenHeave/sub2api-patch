@@ -64,7 +64,6 @@ func TestUsageLogFromService_IncludesAudioUsageFields(t *testing.T) {
 	userDTO := UsageLogFromService(log)
 	adminDTO := UsageLogFromServiceAdmin(log)
 
-
 	for _, got := range []*UsageLog{userDTO, &adminDTO.UsageLog} {
 		require.Equal(t, 11, got.AudioInputTokens)
 		require.Equal(t, 12, got.AudioOutputTokens)

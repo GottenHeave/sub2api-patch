@@ -392,10 +392,7 @@ func parseOpenAIAudioTranscriptionRetryAfterSeconds(body []byte) *int64 {
 }
 
 func isOpenAIAudioTranscriptionSameAccountRetryable(account *Account, _ int) bool {
-	if account == nil {
-		return false
-	}
-	return true
+	return account != nil
 }
 
 func estimateOpenAIAudioTranscriptionUsage(parsed *OpenAIAudioTranscriptionsRequest, responseBody []byte) OpenAIUsage {
