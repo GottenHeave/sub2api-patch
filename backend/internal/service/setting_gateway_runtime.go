@@ -865,7 +865,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
 		return r
 	}
-	return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, openAICodexPromptInjection: false, clientDatelineNormalization: true}
+	return gatewayForwardingSettingsResult{openAITTFTMode: OpenAITTFTModeSemantic, fp: true, claudeOAuthSystemPromptInjection: true, openAICodexPromptInjection: false, clientDatelineNormalization: true}
 }
 
 // GetOpenAITTFTMode 返回 Responses first_token_ms 的统计口径。
