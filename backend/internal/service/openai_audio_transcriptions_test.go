@@ -246,6 +246,10 @@ func (r *audioTranscriptionRateLimitAccountRepoStub) IncrementQuotaUsed(context.
 	return nil
 }
 
+func (r *audioTranscriptionRateLimitAccountRepoStub) ResetQuotaUsedAndClearRateLimitCooldown(context.Context, int64) error {
+	return nil
+}
+
 func (r *audioTranscriptionRateLimitAccountRepoStub) ResetQuotaUsed(context.Context, int64) error {
 	return nil
 }
