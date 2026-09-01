@@ -3611,10 +3611,10 @@ index 099444662..794042c7f 100644
 +	s.openaiWSFallbackUntil.Delete(accountID)
 +}
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay.go b/backend/internal/service/openai_ws_v2/passthrough_relay.go
-index abc94e8f1..c19e4a893 100644
+index e28223e09..f21a5cd0e 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay.go
-@@ -26,6 +26,10 @@ type Usage struct {
+@@ -29,6 +29,10 @@ type Usage struct {
  	OutputTokens             int
  	CacheCreationInputTokens int
  	CacheReadInputTokens     int
@@ -3625,7 +3625,7 @@ index abc94e8f1..c19e4a893 100644
  	ImageOutputTokens        int
  }
  
-@@ -69,6 +73,7 @@ type RelayOptions struct {
+@@ -76,6 +80,7 @@ type RelayOptions struct {
  	FirstTurnStartedAt              time.Time
  	TakeNextTurnStartedAt           func() time.Time
  	FirstMessageType                coderws.MessageType
@@ -3633,7 +3633,7 @@ index abc94e8f1..c19e4a893 100644
  	FirstMessageSent                bool
  	StartClientAfterFirstDownstream bool
  	OnUsageParseFailure             func(eventType string, usageRaw string)
-@@ -141,6 +146,9 @@ func Relay(
+@@ -155,6 +160,9 @@ func Relay(
  	options RelayOptions,
  ) (RelayResult, *RelayExit) {
  	result := RelayResult{RequestModel: strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())}
@@ -3643,7 +3643,7 @@ index abc94e8f1..c19e4a893 100644
  	if clientConn == nil || upstreamConn == nil {
  		return result, &RelayExit{Stage: "relay_init", Err: errors.New("relay connection is nil")}
  	}
-@@ -231,7 +239,7 @@ func Relay(
+@@ -245,7 +253,7 @@ func Relay(
  			MessageType:  relayMessageTypeString(firstMessageType),
  			PayloadBytes: len(firstClientMessage),
  		})
@@ -3652,7 +3652,7 @@ index abc94e8f1..c19e4a893 100644
  		if err := writeUpstream(firstMessageType, firstClientMessage); err != nil {
  			result.Duration = nowFn().Sub(startAt)
  			emitRelayTrace(onTrace, RelayTraceEvent{
-@@ -243,16 +251,15 @@ func Relay(
+@@ -257,16 +265,15 @@ func Relay(
  			})
  			return result, &RelayExit{Stage: "write_upstream", Err: err}
  		}
@@ -3671,21 +3671,21 @@ index abc94e8f1..c19e4a893 100644
  	exitCh := make(chan relayExitSignal, 3)
  	dropDownstreamWrites := atomic.Bool{}
  	clientReaderStarted := atomic.Bool{}
-@@ -920,18 +927,15 @@ func parseUsageAndAccumulate(
+@@ -1059,18 +1066,15 @@ func parseUsageAndAccumulate(
  		return Usage{}
  	}
  
--	inputResult := gjson.GetBytes(message, "response.usage.input_tokens")
+-	inputResult := usageResult.Get("input_tokens")
 -	if !inputResult.Exists() {
--		inputResult = gjson.GetBytes(message, "response.usage.prompt_tokens")
+-		inputResult = usageResult.Get("prompt_tokens")
 -	}
--	outputResult := gjson.GetBytes(message, "response.usage.output_tokens")
+-	outputResult := usageResult.Get("output_tokens")
 -	if !outputResult.Exists() {
--		outputResult = gjson.GetBytes(message, "response.usage.completion_tokens")
+-		outputResult = usageResult.Get("completion_tokens")
 -	}
--	cachedResult := gjson.GetBytes(message, "response.usage.input_tokens_details.cached_tokens")
+-	cachedResult := usageResult.Get("input_tokens_details.cached_tokens")
 -	if !cachedResult.Exists() {
--		cachedResult = gjson.GetBytes(message, "response.usage.prompt_tokens_details.cached_tokens")
+-		cachedResult = usageResult.Get("prompt_tokens_details.cached_tokens")
 -	}
 +	inputResult := firstUsageResult(usageResult, "input_tokens", "prompt_tokens")
 +	outputResult := firstUsageResult(usageResult, "output_tokens", "completion_tokens")
@@ -3699,10 +3699,10 @@ index abc94e8f1..c19e4a893 100644
  	imageTokens := usageResult.Get("output_tokens_details.image_tokens").Int()
  	if imageTokens == 0 {
  		imageTokens = usageResult.Get("completion_tokens_details.image_tokens").Int()
-@@ -939,8 +943,9 @@ func parseUsageAndAccumulate(
- 
- 	inputTokens, inputOK := parseUsageIntField(inputResult, true)
- 	outputTokens, outputOK := parseUsageIntField(outputResult, true)
+@@ -1079,8 +1083,9 @@ func parseUsageAndAccumulate(
+ 	requireTotals := isTerminalEvent(strings.TrimSpace(eventType))
+ 	inputTokens, inputOK := parseUsageIntField(inputResult, requireTotals)
+ 	outputTokens, outputOK := parseUsageIntField(outputResult, requireTotals)
 +	_, cacheCreationOK := parseUsageIntField(cacheCreationResult, false)
  	cachedTokens, cachedOK := parseUsageIntField(cachedResult, false)
 -	if !inputOK || !outputOK || !cachedOK {
@@ -3710,7 +3710,7 @@ index abc94e8f1..c19e4a893 100644
  		recordUsageParseFailure()
  		if onParseFailure != nil {
  			onParseFailure(eventType, usageRaw)
-@@ -953,17 +958,67 @@ func parseUsageAndAccumulate(
+@@ -1102,7 +1107,33 @@ func parseUsageAndAccumulate(
  		OutputTokens:             outputTokens,
  		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
  		CacheReadInputTokens:     cachedTokens,
@@ -3744,16 +3744,46 @@ index abc94e8f1..c19e4a893 100644
 +		ImageOutputTokens: int(imageTokens),
  	}
  
- 	state.usage.InputTokens += parsedUsage.InputTokens
- 	state.usage.OutputTokens += parsedUsage.OutputTokens
- 	state.usage.CacheCreationInputTokens += parsedUsage.CacheCreationInputTokens
- 	state.usage.CacheReadInputTokens += parsedUsage.CacheReadInputTokens
-+	state.usage.InputAudioTokens += parsedUsage.InputAudioTokens
-+	state.usage.OutputAudioTokens += parsedUsage.OutputAudioTokens
-+	state.usage.CacheCreationAudioTokens += parsedUsage.CacheCreationAudioTokens
-+	state.usage.CacheReadAudioTokens += parsedUsage.CacheReadAudioTokens
- 	state.usage.ImageOutputTokens += parsedUsage.ImageOutputTokens
- 	return parsedUsage
+ 	if isTerminalEvent(strings.TrimSpace(eventType)) {
+@@ -1119,6 +1150,8 @@ func parseUsageAndAccumulate(
+ func relayUsageHasTokens(usage Usage) bool {
+ 	return usage.InputTokens > 0 || usage.OutputTokens > 0 ||
+ 		usage.CacheCreationInputTokens > 0 || usage.CacheReadInputTokens > 0 ||
++		usage.InputAudioTokens > 0 || usage.OutputAudioTokens > 0 ||
++		usage.CacheCreationAudioTokens > 0 || usage.CacheReadAudioTokens > 0 ||
+ 		usage.ImageOutputTokens > 0
+ }
+ 
+@@ -1138,6 +1171,18 @@ func mergeRelayUsageNonZero(dst *Usage, src Usage) {
+ 	if src.CacheReadInputTokens > 0 {
+ 		dst.CacheReadInputTokens = src.CacheReadInputTokens
+ 	}
++	if src.InputAudioTokens > 0 {
++		dst.InputAudioTokens = src.InputAudioTokens
++	}
++	if src.OutputAudioTokens > 0 {
++		dst.OutputAudioTokens = src.OutputAudioTokens
++	}
++	if src.CacheCreationAudioTokens > 0 {
++		dst.CacheCreationAudioTokens = src.CacheCreationAudioTokens
++	}
++	if src.CacheReadAudioTokens > 0 {
++		dst.CacheReadAudioTokens = src.CacheReadAudioTokens
++	}
+ 	if src.ImageOutputTokens > 0 {
+ 		dst.ImageOutputTokens = src.ImageOutputTokens
+ 	}
+@@ -1152,11 +1197,35 @@ func finalizeRelayTurnUsage(state *relayState) Usage {
+ 	state.usage.OutputTokens += turnUsage.OutputTokens
+ 	state.usage.CacheCreationInputTokens += turnUsage.CacheCreationInputTokens
+ 	state.usage.CacheReadInputTokens += turnUsage.CacheReadInputTokens
++	state.usage.InputAudioTokens += turnUsage.InputAudioTokens
++	state.usage.OutputAudioTokens += turnUsage.OutputAudioTokens
++	state.usage.CacheCreationAudioTokens += turnUsage.CacheCreationAudioTokens
++	state.usage.CacheReadAudioTokens += turnUsage.CacheReadAudioTokens
+ 	state.usage.ImageOutputTokens += turnUsage.ImageOutputTokens
+ 	state.turnUsage = Usage{}
+ 	return turnUsage
  }
  
 +func firstUsageResult(value gjson.Result, paths ...string) gjson.Result {
@@ -3780,7 +3810,7 @@ index abc94e8f1..c19e4a893 100644
  	if !value.Exists() {
  		return 0, !required
 diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-index df094a336..a342fe875 100644
+index 95de10df7..787513669 100644
 --- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 +++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 @@ -17,6 +17,7 @@ import (
@@ -3791,7 +3821,7 @@ index df094a336..a342fe875 100644
  )
  
  type openAIWSClientFrameConn struct {
-@@ -585,6 +586,35 @@ func openAIWSPassthroughIsTerminalOutput(payload []byte) bool {
+@@ -593,6 +594,35 @@ func openAIWSPassthroughIsTerminalOutput(payload []byte) bool {
  	}
  }
  
@@ -3827,16 +3857,16 @@ index df094a336..a342fe875 100644
  var _ openaiwsv2.FrameConn = (*openAIWSClientFrameConn)(nil)
  var _ openaiwsv2.FrameConn = (*openAIWSPassthroughFirstOutputFrameConn)(nil)
  
-@@ -661,6 +691,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -672,6 +702,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	firstClientMessage []byte,
  	hooks *OpenAIWSIngressHooks,
  	wsDecision OpenAIWSProtocolDecision,
 +	upstreamEndpoint string,
 +	realtimeModel string,
  ) error {
- 	if s == nil {
- 		return errors.New("service is nil")
-@@ -686,7 +718,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	// The same request context survives scheduler failover attempts. Clear any
+ 	// reverse mapping installed by the prior account before processing frames.
+@@ -701,7 +733,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			firstClientMessage = capped
  		}
  	}
@@ -3852,11 +3882,11 @@ index df094a336..a342fe875 100644
 +		requestModel = strings.TrimSpace(realtimeModel)
 +	}
  	requestPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
+ 	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "prompt_cache_key").String())
  	logOpenAIWSV2Passthrough(
- 		"relay_start account_id=%d model=%s previous_response_id=%s first_message_type=%s first_message_bytes=%d",
-@@ -729,6 +771,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
- 	if capturedSessionModel != "" && capturedSessionModel != strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String()) {
- 		firstClientMessage = s.ReplaceModelInBody(firstClientMessage, capturedSessionModel)
+@@ -768,6 +810,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	if accountScoped {
+ 		firstClientMessage = accountScopedFirst
  	}
 +	if initialRequestModel == "" {
 +		initialRequestModel = strings.TrimSpace(realtimeModel)
@@ -3864,26 +3894,26 @@ index df094a336..a342fe875 100644
  	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
  	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
  	if policyErr != nil {
-@@ -752,6 +797,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -791,6 +836,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, blocked.Message, blocked)
  	}
  	firstClientMessage = updatedFirst
 +	firstClientMessage = rewriteOpenAIRealtimeSessionModel(firstClientMessage, realtimeModel)
  
  	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
- 	// usage 上报：filter
-@@ -769,7 +815,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
- 	usageMeta.initFromFirstFrame(firstClientMessage, capturedSessionModel)
- 	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "prompt_cache_key").String())
- 
+ 	// usage 上报：filter 命中时 service_tier 已经从 firstClientMessage 中删除，
+@@ -809,7 +855,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	usageMeta.captureRequestedReasoningEffort(originalFirstClientMessage, capturedSessionModel)
+ 	_, initialUpstreamModel := usageMeta.turnModels(initialRequestModel)
+ 	SetOpsUpstreamModel(c, initialUpstreamModel)
 -	wsURL, err := s.buildOpenAIResponsesWSURL(account)
 +	wsURL, err := s.buildOpenAIWSURL(account, upstreamEndpoint, realtimeModel)
  	if err != nil {
  		return fmt.Errorf("build ws url: %w", err)
  	}
-@@ -970,45 +1016,45 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
- 					}
+@@ -1039,45 +1085,45 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  				}
+ 				usageMeta.captureRequestedReasoningEffort(originalResponseCreate)
  			}
 +			// Refresh the captured session model before policy evaluation. Realtime
 +			// clients may change it in a session.update frame.
@@ -3958,7 +3988,7 @@ index df094a336..a342fe875 100644
  			// Per-frame model first; if the client omits "model" on a
  			// follow-up frame (legal in Realtime), fall back to the
  			// session-level model captured from the first frame so the
-@@ -1070,6 +1116,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1141,6 +1187,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  		)
  	}
  	upstreamFirstMessageSent = true
@@ -3969,7 +3999,7 @@ index df094a336..a342fe875 100644
  
  	readNextClientFrame := func(readCtx context.Context, conn openaiwsv2.FrameConn) (coderws.MessageType, []byte, error) {
  		for {
-@@ -1110,8 +1160,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1182,8 +1232,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			// terminate a healthy active upstream turn.
  			IdleTimeout:                     0,
  			FirstMessageType:                coderws.MessageText,
@@ -3980,7 +4010,7 @@ index df094a336..a342fe875 100644
  			ReadClientFrame:                 readNextClientFrame,
  			OnUsageParseFailure: func(eventType string, usageRaw string) {
  				logOpenAIWSV2Passthrough(
-@@ -1133,6 +1184,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1205,6 +1256,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  						OutputTokens:             turn.Usage.OutputTokens,
  						CacheCreationInputTokens: turn.Usage.CacheCreationInputTokens,
  						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
@@ -3991,7 +4021,7 @@ index df094a336..a342fe875 100644
  						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
  					},
  					Model:                         turnRequestModel,
-@@ -1254,6 +1309,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1339,6 +1394,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			OutputTokens:             relayResult.Usage.OutputTokens,
  			CacheCreationInputTokens: relayResult.Usage.CacheCreationInputTokens,
  			CacheReadInputTokens:     relayResult.Usage.CacheReadInputTokens,

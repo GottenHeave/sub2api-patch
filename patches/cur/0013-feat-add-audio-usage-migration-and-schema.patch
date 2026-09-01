@@ -5,7 +5,7 @@ Subject: [PATCH] feat: add audio usage migration and schema
 
 
 diff --git a/backend/ent/migrate/schema.go b/backend/ent/migrate/schema.go
-index f667c3ffb..e06c82c61 100644
+index 270eecd87..fb8b02036 100644
 --- a/backend/ent/migrate/schema.go
 +++ b/backend/ent/migrate/schema.go
 @@ -1646,6 +1646,10 @@ var (

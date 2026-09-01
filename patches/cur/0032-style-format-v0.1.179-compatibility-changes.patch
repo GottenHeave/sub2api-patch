@@ -5,7 +5,7 @@ Subject: [PATCH] style: format v0.1.179 compatibility changes
 
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
-index 833e44fa2..98c7fae69 100644
+index 5c363c071..70227fcc9 100644
 --- a/backend/internal/handler/endpoint.go
 +++ b/backend/internal/handler/endpoint.go
 @@ -30,11 +30,11 @@ const (
@@ -26,10 +26,10 @@ index 833e44fa2..98c7fae69 100644
  
  const EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
 diff --git a/backend/internal/repository/usage_log_repo_request_type_test.go b/backend/internal/repository/usage_log_repo_request_type_test.go
-index cc7b6e428..19477ebf4 100644
+index c9f765354..877fe7c84 100644
 --- a/backend/internal/repository/usage_log_repo_request_type_test.go
 +++ b/backend/internal/repository/usage_log_repo_request_type_test.go
-@@ -418,22 +418,22 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
+@@ -530,22 +530,22 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
  			"upstream_endpoint",
  			"requests",
  			"input_tokens",
@@ -65,10 +65,10 @@ index cc7b6e428..19477ebf4 100644
  	stats, err := repo.GetStatsWithFilters(context.Background(), filters)
  	require.NoError(t, err)
 diff --git a/backend/internal/repository/usage_log_repo_stats.go b/backend/internal/repository/usage_log_repo_stats.go
-index 716fdd489..988e27a72 100644
+index db5f0e740..21d3240f4 100644
 --- a/backend/internal/repository/usage_log_repo_stats.go
 +++ b/backend/internal/repository/usage_log_repo_stats.go
-@@ -808,11 +808,11 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
+@@ -809,11 +809,11 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
  
  	for rows.Next() {
  		var (
@@ -84,7 +84,7 @@ index 716fdd489..988e27a72 100644
  		)
  		if err := rows.Scan(
  			&inboundGrouped,
-@@ -847,13 +847,13 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
+@@ -848,13 +848,13 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
  			stats.TotalRequests = requests
  			stats.TotalInputTokens = inputTokens
  			stats.TotalOutputTokens = outputTokens

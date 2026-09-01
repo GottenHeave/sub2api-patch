@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: audit <audit@example.invalid>
+Date: Tue, 1 Sep 2026 19:37:06 +0000
+Subject: [PATCH] style: format gateway forwarding settings
+
+
+diff --git a/backend/internal/service/setting_gateway_runtime.go b/backend/internal/service/setting_gateway_runtime.go
+index f58f4b212..f23a2d5e2 100644
+--- a/backend/internal/service/setting_gateway_runtime.go
++++ b/backend/internal/service/setting_gateway_runtime.go
+@@ -738,10 +738,10 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
+ }
+ 
+ type gatewayForwardingSettingsResult struct {
+-	openAITTFTMode                                                                                                             string
++	openAITTFTMode                                                                                                    string
+ 	fp, mp, cch, claudeOAuthSystemPromptInjection, openAICodexPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
+-	clientDatelineNormalization                                                                                                bool
+-	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                                                     string
++	clientDatelineNormalization                                                                                       bool
++	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                                            string
+ }
+ 
+ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context) gatewayForwardingSettingsResult {

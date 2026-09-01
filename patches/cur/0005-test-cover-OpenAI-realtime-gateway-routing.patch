@@ -5,7 +5,7 @@ Subject: [PATCH] test: cover OpenAI realtime gateway routing
 
 
 diff --git a/backend/internal/handler/endpoint_test.go b/backend/internal/handler/endpoint_test.go
-index 005c397d4..bf3d53c9c 100644
+index f87b27fcd..395e350a1 100644
 --- a/backend/internal/handler/endpoint_test.go
 +++ b/backend/internal/handler/endpoint_test.go
 @@ -30,6 +30,19 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
@@ -63,7 +63,7 @@ index 005c397d4..bf3d53c9c 100644
  		{"openai alpha search", EndpointAlphaSearch, "/backend-api/codex/alpha/search", service.PlatformOpenAI, EndpointAlphaSearch},
  		{"openai image generations", EndpointImagesGenerations, "/v1/images/generations", service.PlatformOpenAI, EndpointImagesGenerations},
 diff --git a/backend/internal/handler/failover_loop_test.go b/backend/internal/handler/failover_loop_test.go
-index e65b43c17..cb94bcfdc 100644
+index d362682cd..4d73304da 100644
 --- a/backend/internal/handler/failover_loop_test.go
 +++ b/backend/internal/handler/failover_loop_test.go
 @@ -2,6 +2,7 @@ package handler
@@ -74,7 +74,7 @@ index e65b43c17..cb94bcfdc 100644
  	"net/http"
  	"net/http/httptest"
  	"testing"
-@@ -514,6 +515,66 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
+@@ -584,6 +585,66 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
  	})
  }
  
@@ -163,7 +163,7 @@ index 0dacd74dc..b99a398cd 100644
  
  	for _, tt := range tests {
 diff --git a/backend/internal/handler/openai_gateway_handler_test.go b/backend/internal/handler/openai_gateway_handler_test.go
-index 898449cc2..a862691cc 100644
+index 23acd158b..ebc8b5b2b 100644
 --- a/backend/internal/handler/openai_gateway_handler_test.go
 +++ b/backend/internal/handler/openai_gateway_handler_test.go
 @@ -173,6 +173,40 @@ func TestOpenAIResponsesRequiredCapability(t *testing.T) {
@@ -208,7 +208,7 @@ index 898449cc2..a862691cc 100644
  	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
  
 diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
-index 362054a7d..d0ef2528d 100644
+index 9ab241bdf..0796778c9 100644
 --- a/backend/internal/server/routes/gateway_test.go
 +++ b/backend/internal/server/routes/gateway_test.go
 @@ -58,6 +58,34 @@ func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string
@@ -246,7 +246,7 @@ index 362054a7d..d0ef2528d 100644
  func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
  	router := newGatewayRoutesTestRouter()
  
-@@ -454,3 +482,127 @@ func TestGatewayRoutesOpenAICountTokensPathIsRegistered(t *testing.T) {
+@@ -466,3 +494,127 @@ func TestGatewayRoutesOpenAICountTokensPathIsRegistered(t *testing.T) {
  	router.ServeHTTP(w, req)
  	require.NotEqual(t, http.StatusNotFound, w.Code)
  }
@@ -375,7 +375,7 @@ index 362054a7d..d0ef2528d 100644
 +	}
 +}
 diff --git a/backend/internal/service/openai_fast_policy_ws_test.go b/backend/internal/service/openai_fast_policy_ws_test.go
-index f624a0080..47780acb0 100644
+index 195bdd459..9b311b6a7 100644
 --- a/backend/internal/service/openai_fast_policy_ws_test.go
 +++ b/backend/internal/service/openai_fast_policy_ws_test.go
 @@ -51,6 +51,26 @@ func TestWSResponseCreate_DefaultPassesPriorityAndNormalizesFast(t *testing.T) {
@@ -406,10 +406,10 @@ index f624a0080..47780acb0 100644
  	svc := newOpenAIGatewayServiceWithSettings(t, openAIFastFilterPriorityPolicy())
  	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
-index 1d18d3d70..1d24e3f6b 100644
+index 69113a59d..3f39d8515 100644
 --- a/backend/internal/service/openai_gateway_service_test.go
 +++ b/backend/internal/service/openai_gateway_service_test.go
-@@ -3429,12 +3429,24 @@ func TestExtractOpenAIUsageFromJSONBytes_AcceptsResponseAndChatUsageShapes(t *te
+@@ -3573,12 +3573,24 @@ func TestExtractOpenAIUsageFromJSONBytes_AcceptsResponseAndChatUsageShapes(t *te
  	require.Equal(t, 2, usage.CacheReadInputTokens)
  	require.Equal(t, 4, usage.CacheCreationInputTokens)
  
@@ -436,13 +436,13 @@ index 1d18d3d70..1d24e3f6b 100644
  	usage, ok = extractOpenAIUsageFromJSONBytes([]byte(`{"usage":{"input_tokens":11,"output_tokens":2,"cache_write_input_tokens":6}}`))
  	require.True(t, ok)
 diff --git a/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go b/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go
-index 2622f7f20..69ecf613f 100644
+index 945986c8c..eb3c3c545 100644
 --- a/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go
 +++ b/backend/internal/service/openai_ws_forwarder_hotpath_optimization_test.go
-@@ -37,6 +37,18 @@ func TestParseOpenAIWSResponseUsageFromCompletedEvent(t *testing.T) {
- 	require.Equal(t, 19, usage.InputTokens)
- 	require.Equal(t, 5, usage.OutputTokens)
- 	require.Equal(t, 4, usage.CacheReadInputTokens)
+@@ -49,6 +49,18 @@ func TestParseOpenAIWSResponseUsageFromCompletedEvent(t *testing.T) {
+ 		usage,
+ 	)
+ 	require.Equal(t, OpenAIUsage{InputTokens: 3}, *usage)
 +
 +	parseOpenAIWSResponseUsageFromCompletedEvent(
 +		[]byte(`{"type":"response.incomplete","response":{"usage":{"prompt_tokens":21,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":5,"audio_tokens":7,"cached_tokens_details":{"audio_tokens":2},"cache_creation":{"audio_tokens":1}},"completion_tokens_details":{"audio_tokens":3}}}}`),
@@ -459,7 +459,7 @@ index 2622f7f20..69ecf613f 100644
  
  func TestOpenAIWSEventShouldParseUsageTerminalEvents(t *testing.T) {
 diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
-index 2c6977638..e4179ef60 100644
+index 6923352d7..6ac5e8e66 100644
 --- a/backend/internal/service/openai_ws_forwarder_success_test.go
 +++ b/backend/internal/service/openai_ws_forwarder_success_test.go
 @@ -78,6 +78,16 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
@@ -770,7 +770,7 @@ index 2c6977638..e4179ef60 100644
  func TestOpenAIGatewayService_Forward_WSv2_ImageGenerationCountsOutputs(t *testing.T) {
  	gin.SetMode(gin.TestMode)
  
-@@ -1852,6 +2130,7 @@ func TestOpenAIGatewayService_Forward_WSv2ReadTimeoutAppliesPerRead(t *testing.T
+@@ -1919,6 +2197,7 @@ func TestOpenAIGatewayService_Forward_WSv2ReadTimeoutAppliesPerRead(t *testing.T
  type openAIWSCaptureDialer struct {
  	mu          sync.Mutex
  	conn        *openAIWSCaptureConn
@@ -778,7 +778,7 @@ index 2c6977638..e4179ef60 100644
  	lastHeaders http.Header
  	handshake   http.Header
  	dialCount   int
-@@ -1864,9 +2143,9 @@ func (d *openAIWSCaptureDialer) Dial(
+@@ -1931,9 +2210,9 @@ func (d *openAIWSCaptureDialer) Dial(
  	proxyURL string,
  ) (openAIWSClientConn, int, http.Header, error) {
  	_ = ctx
@@ -789,7 +789,7 @@ index 2c6977638..e4179ef60 100644
  	d.lastHeaders = cloneHeader(headers)
  	d.dialCount++
  	respHeaders := cloneHeader(d.handshake)
-@@ -1874,6 +2153,18 @@ func (d *openAIWSCaptureDialer) Dial(
+@@ -1941,6 +2220,18 @@ func (d *openAIWSCaptureDialer) Dial(
  	return d.conn, 0, respHeaders, nil
  }
  
@@ -808,7 +808,7 @@ index 2c6977638..e4179ef60 100644
  func (d *openAIWSCaptureDialer) DialCount() int {
  	d.mu.Lock()
  	defer d.mu.Unlock()
-@@ -1973,6 +2264,16 @@ func (c *openAIWSCaptureConn) Close() error {
+@@ -2040,6 +2331,16 @@ func (c *openAIWSCaptureConn) Close() error {
  	return nil
  }
  
@@ -826,10 +826,10 @@ index 2c6977638..e4179ef60 100644
  	if src == nil {
  		return nil
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go b/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
-index ebb2394a1..743ceb395 100644
+index 80fef47d4..9f9fb9a2d 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
-@@ -313,17 +313,102 @@ func TestParseUsageAndEnrichCoverage(t *testing.T) {
+@@ -314,18 +314,42 @@ func TestParseUsageAndEnrichCoverage(t *testing.T) {
  	require.Equal(t, 4, state.usage.CacheCreationInputTokens)
  	require.Equal(t, 3, state.usage.ImageOutputTokens)
  
@@ -869,7 +869,18 @@ index ebb2394a1..743ceb395 100644
  	enrichResult(nil, state, 0)
  }
  
-+func TestParseUsageAndAccumulateAudioVariants(t *testing.T) {
+-func TestParseUsageAndAccumulateIncludesIndependentReasoningTokens(t *testing.T) {
++	func TestParseUsageAndAccumulateIncludesIndependentReasoningTokens(t *testing.T) {
+ 	t.Parallel()
+ 
+ 	state := &relayState{}
+@@ -346,6 +370,67 @@ func TestParseUsageAndAccumulateIncludesIndependentReasoningTokens(t *testing.T)
+ 		nil,
+ 	)
+ 	require.Equal(t, 119, got.OutputTokens, "inclusive Responses output must not double-count reasoning")
++	}
++
++	func TestParseUsageAndAccumulateAudioVariants(t *testing.T) {
 +	t.Parallel()
 +
 +	tests := []struct {
@@ -928,16 +939,14 @@ index ebb2394a1..743ceb395 100644
 +			require.Equal(t, tt.wantCacheReadAudioTokens, usage.CacheReadAudioTokens)
 +		})
 +	}
-+}
-+
- func TestParseUsageAndAccumulateAcceptsChatUsageAliases(t *testing.T) {
- 	t.Parallel()
+ }
  
+ func TestParseUsageAndAccumulateAcceptsChatUsageAliases(t *testing.T) {
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay_test.go b/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
-index 12e550669..686400540 100644
+index 28b896f24..62106f822 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay_test.go
-@@ -218,6 +218,32 @@ func TestRelay_BasicRelayAndUsage(t *testing.T) {
+@@ -260,6 +260,32 @@ func TestRelay_BasicRelayAndUsage(t *testing.T) {
  	require.JSONEq(t, `{"type":"response.completed","response":{"id":"resp_123","usage":{"input_tokens":7,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}}}}`, string(clientWrites[0].payload))
  }
  

@@ -5,7 +5,7 @@ Subject: [PATCH] feat: regenerate audio usage ent code
 
 
 diff --git a/backend/ent/mutation.go b/backend/ent/mutation.go
-index ddf50a1c4..5e6553223 100644
+index 54d284ad9..d8552aad4 100644
 --- a/backend/ent/mutation.go
 +++ b/backend/ent/mutation.go
 @@ -44228,86 +44228,94 @@ func (m *UsageCleanupTaskMutation) ResetEdge(name string) error {
@@ -596,7 +596,7 @@ index ddf50a1c4..5e6553223 100644
  		m.ResetCacheCreation5mTokens()
  		return nil
 diff --git a/backend/ent/runtime/runtime.go b/backend/ent/runtime/runtime.go
-index 03a6894e0..88332dc3b 100644
+index 088b876b9..a0788f925 100644
 --- a/backend/ent/runtime/runtime.go
 +++ b/backend/ent/runtime/runtime.go
 @@ -2026,96 +2026,112 @@ func init() {

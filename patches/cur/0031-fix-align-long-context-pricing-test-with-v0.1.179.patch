@@ -5,7 +5,7 @@ Subject: [PATCH] fix: align long-context pricing test with v0.1.179
 
 
 diff --git a/backend/internal/service/openai_gateway_record_usage_test.go b/backend/internal/service/openai_gateway_record_usage_test.go
-index c3f0cd5f6..2ab8920ba 100644
+index 23b9a4bdc..c9f060677 100644
 --- a/backend/internal/service/openai_gateway_record_usage_test.go
 +++ b/backend/internal/service/openai_gateway_record_usage_test.go
 @@ -1200,7 +1200,7 @@ func TestOpenAIGatewayServiceRecordUsage_ChargesCachedAudioInputAsCacheReadOnly(

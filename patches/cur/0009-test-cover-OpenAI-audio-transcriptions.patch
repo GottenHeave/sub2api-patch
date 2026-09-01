@@ -416,10 +416,10 @@ index 430d91baf..87e8e72a0 100644
  	now := time.Now()
  	future10m := now.Add(10 * time.Minute).Format(time.RFC3339)
 diff --git a/backend/internal/service/openai_account_scheduler_test.go b/backend/internal/service/openai_account_scheduler_test.go
-index cd914da0f..d2a02433d 100644
+index 081cf30f9..f0a97c7cc 100644
 --- a/backend/internal/service/openai_account_scheduler_test.go
 +++ b/backend/internal/service/openai_account_scheduler_test.go
-@@ -560,6 +560,62 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Require
+@@ -629,6 +629,62 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Require
  	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
  }
  
@@ -482,7 +482,7 @@ index cd914da0f..d2a02433d 100644
  func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_EmbeddingsSkipsChatOnlyAccount(t *testing.T) {
  	resetOpenAIAdvancedSchedulerSettingCacheForTest()
  
-@@ -2956,6 +3012,204 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
+@@ -3078,6 +3134,204 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
  	require.Equal(t, 0, decision.CandidateCount)
  }
  

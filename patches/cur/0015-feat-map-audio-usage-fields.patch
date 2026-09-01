@@ -5,12 +5,12 @@ Subject: [PATCH] feat: map audio usage fields
 
 
 diff --git a/backend/internal/handler/dto/mappers.go b/backend/internal/handler/dto/mappers.go
-index d5a9403a2..232f60e2d 100644
+index 1c02cd69a..c229212c6 100644
 --- a/backend/internal/handler/dto/mappers.go
 +++ b/backend/internal/handler/dto/mappers.go
-@@ -645,12 +645,17 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
+@@ -647,12 +647,17 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
  		ServiceTier:               l.ServiceTier,
- 		ReasoningEffort:           l.ReasoningEffort,
+ 		ReasoningEffort:           userFacingReasoningEffort(l),
  		InboundEndpoint:           l.InboundEndpoint,
 +		UpstreamEndpoint:          l.UpstreamEndpoint,
  		GroupID:                   l.GroupID,
@@ -27,11 +27,11 @@ index d5a9403a2..232f60e2d 100644
  		CacheCreation1hTokens:     l.CacheCreation1hTokens,
  		InputCost:                 l.InputCost,
 diff --git a/backend/internal/handler/dto/mappers_usage_test.go b/backend/internal/handler/dto/mappers_usage_test.go
-index d396bbfa2..1318c9a94 100644
+index bd4e382cb..3e434ef83 100644
 --- a/backend/internal/handler/dto/mappers_usage_test.go
 +++ b/backend/internal/handler/dto/mappers_usage_test.go
-@@ -28,6 +28,29 @@ func TestUsageLogFromService_IncludesOpenAIWSMode(t *testing.T) {
- 	require.False(t, UsageLogFromServiceAdmin(httpLog).OpenAIWSMode)
+@@ -49,6 +49,30 @@ func TestUsageLogFromService_PreservesNativeCompactionAndStream(t *testing.T) {
+ 	require.True(t, adminDTO.NativeCompactionV2)
  }
  
 +func TestUsageLogFromService_IncludesAudioUsageFields(t *testing.T) {
@@ -49,6 +49,7 @@ index d396bbfa2..1318c9a94 100644
 +	userDTO := UsageLogFromService(log)
 +	adminDTO := UsageLogFromServiceAdmin(log)
 +
++
 +	for _, got := range []*UsageLog{userDTO, &adminDTO.UsageLog} {
 +		require.Equal(t, 11, got.AudioInputTokens)
 +		require.Equal(t, 12, got.AudioOutputTokens)
@@ -61,10 +62,10 @@ index d396bbfa2..1318c9a94 100644
  	t.Parallel()
  
 diff --git a/backend/internal/handler/dto/types.go b/backend/internal/handler/dto/types.go
-index 2cd623f7d..86ce4508a 100644
+index 5ac667e17..c17b57eef 100644
 --- a/backend/internal/handler/dto/types.go
 +++ b/backend/internal/handler/dto/types.go
-@@ -497,10 +497,14 @@ type UsageLog struct {
+@@ -501,10 +501,14 @@ type UsageLog struct {
  	GroupID        *int64 `json:"group_id"`
  	SubscriptionID *int64 `json:"subscription_id"`
  
@@ -84,7 +85,7 @@ index 2cd623f7d..86ce4508a 100644
  	CacheCreation5mTokens int `json:"cache_creation_5m_tokens"`
  	CacheCreation1hTokens int `json:"cache_creation_1h_tokens"`
 diff --git a/backend/internal/pkg/usagestats/usage_log_types.go b/backend/internal/pkg/usagestats/usage_log_types.go
-index ad97026e2..d102758b9 100644
+index 9d651d85a..85c26d216 100644
 --- a/backend/internal/pkg/usagestats/usage_log_types.go
 +++ b/backend/internal/pkg/usagestats/usage_log_types.go
 @@ -50,26 +50,34 @@ type DashboardStats struct {
@@ -197,7 +198,7 @@ index ad97026e2..d102758b9 100644
  }
  
  // EndpointStat represents usage statistics for a single request endpoint.
-@@ -225,24 +241,32 @@ type UserDashboardStats struct {
+@@ -226,24 +242,32 @@ type UserDashboardStats struct {
  	ActiveAPIKeys int64 `json:"active_api_keys"`
  
  	// 累计 Token 使用统计
@@ -246,7 +247,7 @@ index ad97026e2..d102758b9 100644
  
  	// 性能统计
  	AverageDurationMs float64 `json:"average_duration_ms"`
-@@ -289,20 +313,24 @@ type UsageLogFilters struct {
+@@ -291,20 +315,24 @@ type UsageLogFilters struct {
  
  // UsageStats represents usage statistics
  type UsageStats struct {
@@ -286,7 +287,7 @@ index ad97026e2..d102758b9 100644
  
  // PlatformUsage 表示某用户/某 API key 在单个"有效平台"维度的用量明细。
 diff --git a/backend/internal/server/api_contract_test.go b/backend/internal/server/api_contract_test.go
-index 7f3b25f76..578ea23b8 100644
+index c7a16945f..ff4b0e56c 100644
 --- a/backend/internal/server/api_contract_test.go
 +++ b/backend/internal/server/api_contract_test.go
 @@ -539,6 +539,10 @@ func TestAPIContracts(t *testing.T) {
@@ -300,7 +301,7 @@ index 7f3b25f76..578ea23b8 100644
  					"total_tokens": 53,
  					"total_cost": 0.75,
  					"total_actual_cost": 0.75,
-@@ -599,6 +603,10 @@ func TestAPIContracts(t *testing.T) {
+@@ -600,6 +604,10 @@ func TestAPIContracts(t *testing.T) {
  							"cache_read_tokens": 2,
  							"cache_creation_5m_tokens": 0,
  							"cache_creation_1h_tokens": 0,

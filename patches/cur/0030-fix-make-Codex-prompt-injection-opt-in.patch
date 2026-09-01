@@ -5,10 +5,10 @@ Subject: [PATCH] fix: make Codex prompt injection opt-in
 
 
 diff --git a/backend/internal/handler/admin/setting_handler.go b/backend/internal/handler/admin/setting_handler.go
-index 01a066165..7c828c0bc 100644
+index e8b2c49a6..5aabb29d8 100644
 --- a/backend/internal/handler/admin/setting_handler.go
 +++ b/backend/internal/handler/admin/setting_handler.go
-@@ -292,6 +292,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
+@@ -293,6 +293,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
  		EnableMetadataPassthrough:                              settings.EnableMetadataPassthrough,
  		EnableCCHSigning:                                       settings.EnableCCHSigning,
  		EnableClaudeOAuthSystemPromptInjection:                 settings.EnableClaudeOAuthSystemPromptInjection,
@@ -17,10 +17,10 @@ index 01a066165..7c828c0bc 100644
  		ClaudeOAuthSystemPromptBlocks:                          settings.ClaudeOAuthSystemPromptBlocks,
  		EnableAnthropicCacheTTL1hInjection:                     settings.EnableAnthropicCacheTTL1hInjection,
 diff --git a/backend/internal/handler/admin/setting_handler_audit.go b/backend/internal/handler/admin/setting_handler_audit.go
-index d6110f43d..29c91a94f 100644
+index 66810e70b..3017b0357 100644
 --- a/backend/internal/handler/admin/setting_handler_audit.go
 +++ b/backend/internal/handler/admin/setting_handler_audit.go
-@@ -461,6 +461,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
+@@ -464,6 +464,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
  	if before.EnableClaudeOAuthSystemPromptInjection != after.EnableClaudeOAuthSystemPromptInjection {
  		changed = append(changed, "enable_claude_oauth_system_prompt_injection")
  	}
@@ -59,10 +59,10 @@ index b4c94809b..36c64a7f3 100644
  	h, _ := newStepUpSwitchTestHandler(t, map[string]string{
  		service.SettingKeyTurnstileEnabled:   "true",
 diff --git a/backend/internal/handler/admin/setting_handler_update.go b/backend/internal/handler/admin/setting_handler_update.go
-index e2399d089..faaf04cc4 100644
+index b4840f0ba..4ef8dbd78 100644
 --- a/backend/internal/handler/admin/setting_handler_update.go
 +++ b/backend/internal/handler/admin/setting_handler_update.go
-@@ -247,6 +247,7 @@ type UpdateSettingsRequest struct {
+@@ -248,6 +248,7 @@ type UpdateSettingsRequest struct {
  	EnableMetadataPassthrough              *bool   `json:"enable_metadata_passthrough"`
  	EnableCCHSigning                       *bool   `json:"enable_cch_signing"`
  	EnableClaudeOAuthSystemPromptInjection *bool   `json:"enable_claude_oauth_system_prompt_injection"`
@@ -70,7 +70,7 @@ index e2399d089..faaf04cc4 100644
  	ClaudeOAuthSystemPrompt                *string `json:"claude_oauth_system_prompt"`
  	ClaudeOAuthSystemPromptBlocks          *string `json:"claude_oauth_system_prompt_blocks"`
  	EnableAnthropicCacheTTL1hInjection     *bool   `json:"enable_anthropic_cache_ttl_1h_injection"`
-@@ -1698,6 +1699,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
+@@ -1708,6 +1709,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
  			}
  			return previousSettings.EnableClaudeOAuthSystemPromptInjection
  		}(),
@@ -83,7 +83,7 @@ index e2399d089..faaf04cc4 100644
  		ClaudeOAuthSystemPrompt: func() string {
  			if req.ClaudeOAuthSystemPrompt != nil {
  				return *req.ClaudeOAuthSystemPrompt
-@@ -2268,6 +2275,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
+@@ -2284,6 +2291,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
  		EnableMetadataPassthrough:                              updatedSettings.EnableMetadataPassthrough,
  		EnableCCHSigning:                                       updatedSettings.EnableCCHSigning,
  		EnableClaudeOAuthSystemPromptInjection:                 updatedSettings.EnableClaudeOAuthSystemPromptInjection,
@@ -92,10 +92,10 @@ index e2399d089..faaf04cc4 100644
  		ClaudeOAuthSystemPromptBlocks:                          updatedSettings.ClaudeOAuthSystemPromptBlocks,
  		EnableAnthropicCacheTTL1hInjection:                     updatedSettings.EnableAnthropicCacheTTL1hInjection,
 diff --git a/backend/internal/handler/dto/settings.go b/backend/internal/handler/dto/settings.go
-index 798de2fed..2de38451f 100644
+index ff9797d86..91446732b 100644
 --- a/backend/internal/handler/dto/settings.go
 +++ b/backend/internal/handler/dto/settings.go
-@@ -205,6 +205,7 @@ type SystemSettings struct {
+@@ -206,6 +206,7 @@ type SystemSettings struct {
  	EnableMetadataPassthrough              bool   `json:"enable_metadata_passthrough"`
  	EnableCCHSigning                       bool   `json:"enable_cch_signing"`
  	EnableClaudeOAuthSystemPromptInjection bool   `json:"enable_claude_oauth_system_prompt_injection"`
@@ -104,10 +104,10 @@ index 798de2fed..2de38451f 100644
  	ClaudeOAuthSystemPromptBlocks          string `json:"claude_oauth_system_prompt_blocks"`
  	EnableAnthropicCacheTTL1hInjection     bool   `json:"enable_anthropic_cache_ttl_1h_injection"`
 diff --git a/backend/internal/server/api_contract_test.go b/backend/internal/server/api_contract_test.go
-index 578ea23b8..92cd4fb94 100644
+index ff4b0e56c..2fd152777 100644
 --- a/backend/internal/server/api_contract_test.go
 +++ b/backend/internal/server/api_contract_test.go
-@@ -914,6 +914,7 @@ func TestAPIContracts(t *testing.T) {
+@@ -915,6 +915,7 @@ func TestAPIContracts(t *testing.T) {
  					"backend_mode_enabled": false,
  					"enable_cch_signing": false,
  					"enable_claude_oauth_system_prompt_injection": true,
@@ -115,7 +115,7 @@ index 578ea23b8..92cd4fb94 100644
  					"claude_oauth_system_prompt": "",
  					"claude_oauth_system_prompt_blocks": "",
  					"enable_anthropic_cache_ttl_1h_injection": false,
-@@ -1222,6 +1223,7 @@ func TestAPIContracts(t *testing.T) {
+@@ -1225,6 +1226,7 @@ func TestAPIContracts(t *testing.T) {
  					"enable_metadata_passthrough": false,
  					"enable_cch_signing": false,
  					"enable_claude_oauth_system_prompt_injection": true,
@@ -143,10 +143,10 @@ index 5fea5547a..d2f7ff4b7 100644
  	client *http.Client
  }
 diff --git a/backend/internal/service/domain_constants.go b/backend/internal/service/domain_constants.go
-index 860276b75..431765a0a 100644
+index 50de7a05d..cf892287f 100644
 --- a/backend/internal/service/domain_constants.go
 +++ b/backend/internal/service/domain_constants.go
-@@ -622,6 +622,8 @@ const (
+@@ -634,6 +634,8 @@ const (
  	SettingKeyEnableCCHSigning = "enable_cch_signing"
  	// SettingKeyEnableClaudeOAuthSystemPromptInjection 是否对 Claude OAuth mimic 路径注入 Claude Code system blocks（默认 true）
  	SettingKeyEnableClaudeOAuthSystemPromptInjection = "enable_claude_oauth_system_prompt_injection"
@@ -239,10 +239,10 @@ index 000000000..8060d1391
 +	require.False(t, hasInstructions)
 +}
 diff --git a/backend/internal/service/openai_codex_transform.go b/backend/internal/service/openai_codex_transform.go
-index c89fd038d..cf471d29e 100644
+index fbd14ba96..748f265ac 100644
 --- a/backend/internal/service/openai_codex_transform.go
 +++ b/backend/internal/service/openai_codex_transform.go
-@@ -1319,7 +1319,7 @@ func applyCodexClientMetadata(reqBody map[string]any, account *Account) bool {
+@@ -1472,7 +1472,7 @@ func applyCodexClientMetadata(reqBody map[string]any, account *Account) bool {
  
  // applyInstructions 处理 instructions 字段：仅在 instructions 为空时填充默认值。
  func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
@@ -251,7 +251,7 @@ index c89fd038d..cf471d29e 100644
  		return false
  	}
  	model, _ := reqBody["model"].(string)
-@@ -1327,6 +1327,35 @@ func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
+@@ -1480,6 +1480,35 @@ func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
  	return true
  }
  
@@ -288,10 +288,10 @@ index c89fd038d..cf471d29e 100644
  // 处理以下情况：字段不存在、nil、空字符串、纯空白字符串
  func isInstructionsEmpty(reqBody map[string]any) bool {
 diff --git a/backend/internal/service/openai_gateway_chat_completions.go b/backend/internal/service/openai_gateway_chat_completions.go
-index 9c413f0bc..38425ceb4 100644
+index 07b32497b..19df1f497 100644
 --- a/backend/internal/service/openai_gateway_chat_completions.go
 +++ b/backend/internal/service/openai_gateway_chat_completions.go
-@@ -240,7 +240,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
+@@ -249,7 +249,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
  		}
  		isJSONObjectFormat := strings.EqualFold(strings.TrimSpace(gjson.GetBytes(responsesBody, "text.format.type").String()), "json_object")
  		codexResult := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{
@@ -301,38 +301,33 @@ index 9c413f0bc..38425ceb4 100644
 +			SkipDefaultInstructions:             !isResponsesShape || !s.isOpenAICodexPromptInjectionEnabled(ctx),
  			OmitPromotedSystemMessagesFromInput: !isResponsesShape && !isJSONObjectFormat,
  		})
- 		if !isResponsesShape {
+ 		if codexResult.Error != nil {
 diff --git a/backend/internal/service/openai_gateway_forward.go b/backend/internal/service/openai_gateway_forward.go
-index ec5fafdb7..c58b9989f 100644
+index 23a41d29c..3467b549c 100644
 --- a/backend/internal/service/openai_gateway_forward.go
 +++ b/backend/internal/service/openai_gateway_forward.go
-@@ -288,7 +288,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
+@@ -360,7 +360,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
  
  	instructions := gjson.GetBytes(body, "instructions")
  	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
--	if instructionsEmpty && !compatMessagesBridge && !nativeDeepSeekResponses {
-+	if instructionsEmpty && !compatMessagesBridge && !nativeDeepSeekResponses && s.isOpenAICodexPromptInjectionEnabled(ctx) && !hasOpenAICodexExplicitSystemPromptBody(body) {
+-	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses {
++	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses && s.isOpenAICodexPromptInjectionEnabled(ctx) && !hasOpenAICodexExplicitSystemPromptBody(body) {
  		markPatchSet("instructions", defaultCodexSynthInstructions(reqModel))
  	}
  
-@@ -415,7 +415,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
- 			ensureCodexOAuthInstructionsField(decoded)
- 			markDecodedModified()
- 		} else {
--			codexResult = applyCodexOAuthTransform(decoded, isCodexCLI, isCompactRequest)
-+			codexResult = applyCodexOAuthTransformWithOptions(decoded, codexOAuthTransformOptions{
-+				IsCodexCLI:              isCodexCLI,
-+				IsCompact:               isCompactRequest,
-+				SkipDefaultInstructions: !s.isOpenAICodexPromptInjectionEnabled(ctx),
-+			})
+@@ -504,6 +504,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
+ 			codexResult = applyCodexOAuthTransformWithOptions(decoded, codexOAuthTransformOptions{
+ 				IsCodexCLI:                          isCodexCLI,
+ 				IsCompact:                           isCompactRequest,
++				SkipDefaultInstructions:             !s.isOpenAICodexPromptInjectionEnabled(ctx),
+ 				OmitPromotedSystemMessagesFromInput: omitPromotedSystemMessages,
+ 			})
  		}
- 		if codexResult.Modified {
- 			markDecodedModified()
 diff --git a/backend/internal/service/openai_gateway_passthrough.go b/backend/internal/service/openai_gateway_passthrough.go
-index c15a78ef4..c93f55433 100644
+index 4bd4ba26c..b4982387d 100644
 --- a/backend/internal/service/openai_gateway_passthrough.go
 +++ b/backend/internal/service/openai_gateway_passthrough.go
-@@ -142,7 +142,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
+@@ -163,7 +163,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
  			})
  			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
  		}
@@ -345,10 +340,10 @@ index c15a78ef4..c93f55433 100644
  			if setErr != nil {
  				return nil, fmt.Errorf("set passthrough codex instructions: %w", setErr)
 diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
-index 9aca0182d..f060aa524 100644
+index 8ee17451f..03ad3d20f 100644
 --- a/backend/internal/service/openai_gateway_request_body.go
 +++ b/backend/internal/service/openai_gateway_request_body.go
-@@ -842,6 +842,49 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
+@@ -1326,6 +1326,49 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
  	return ""
  }
  
@@ -399,10 +394,10 @@ index 9aca0182d..f060aa524 100644
  	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex")
  }
 diff --git a/backend/internal/service/openai_gateway_service.go b/backend/internal/service/openai_gateway_service.go
-index 5191367bd..c7498b298 100644
+index 32b8533e1..a279e97a7 100644
 --- a/backend/internal/service/openai_gateway_service.go
 +++ b/backend/internal/service/openai_gateway_service.go
-@@ -720,6 +720,14 @@ func (s *OpenAIGatewayService) getOpenAIWSProtocolResolver() OpenAIWSProtocolRes
+@@ -741,6 +741,14 @@ func (s *OpenAIGatewayService) getOpenAIWSProtocolResolver() OpenAIWSProtocolRes
  	return NewOpenAIWSProtocolResolver(cfg)
  }
  
@@ -418,18 +413,18 @@ index 5191367bd..c7498b298 100644
  	if err == nil {
  		return "", false
 diff --git a/backend/internal/service/openai_gateway_service_hotpath_test.go b/backend/internal/service/openai_gateway_service_hotpath_test.go
-index a51f58bf5..d38574f0f 100644
+index 3b7e80bc7..b64a651d8 100644
 --- a/backend/internal/service/openai_gateway_service_hotpath_test.go
 +++ b/backend/internal/service/openai_gateway_service_hotpath_test.go
-@@ -105,6 +105,7 @@ func TestOpenAIRequestView_HasPatches(t *testing.T) {
+@@ -104,6 +104,7 @@ func TestOpenAIRequestView_HasPatches(t *testing.T) {
  
- func TestOpenAIGatewayService_Forward_HTTPPatchPathKeepsLargeInputRaw(t *testing.T) {
+ func TestOpenAIGatewayService_Forward_APIKeyMissingInstructionsKeepsLargeInputRaw(t *testing.T) {
  	gin.SetMode(gin.TestMode)
 +	resetGatewayForwardingSettingsCacheForTest(t)
  	upstream := &httpUpstreamRecorder{
  		resp: &http.Response{
  			StatusCode: http.StatusOK,
-@@ -116,7 +117,10 @@ func TestOpenAIGatewayService_Forward_HTTPPatchPathKeepsLargeInputRaw(t *testing
+@@ -115,7 +116,10 @@ func TestOpenAIGatewayService_Forward_APIKeyMissingInstructionsKeepsLargeInputRa
  	}
  	cfg := &config.Config{}
  	cfg.Security.URLAllowlist.Enabled = false
@@ -441,7 +436,7 @@ index a51f58bf5..d38574f0f 100644
  	account := &Account{
  		ID:          1,
  		Name:        "openai-apikey",
-@@ -146,6 +150,50 @@ func TestOpenAIGatewayService_Forward_HTTPPatchPathKeepsLargeInputRaw(t *testing
+@@ -144,6 +148,50 @@ func TestOpenAIGatewayService_Forward_APIKeyMissingInstructionsKeepsLargeInputRa
  	require.Equal(t, "9007199254740993", gjson.GetBytes(upstream.lastBody, "input.0.content.0.nonce").Raw)
  }
  
@@ -493,10 +488,10 @@ index a51f58bf5..d38574f0f 100644
  	gin.SetMode(gin.TestMode)
  	upstream := &httpUpstreamRecorder{
 diff --git a/backend/internal/service/openai_oauth_passthrough_test.go b/backend/internal/service/openai_oauth_passthrough_test.go
-index c7dc77b3a..0bdea721c 100644
+index 121a76879..ac5fd343e 100644
 --- a/backend/internal/service/openai_oauth_passthrough_test.go
 +++ b/backend/internal/service/openai_oauth_passthrough_test.go
-@@ -818,6 +818,10 @@ func TestOpenAIGatewayService_OAuthPassthrough_UpstreamRequestIgnoresClientCance
+@@ -856,6 +856,10 @@ func TestOpenAIGatewayService_OAuthPassthrough_UpstreamRequestIgnoresClientCance
  
  func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsGetsDefault(t *testing.T) {
  	gin.SetMode(gin.TestMode)
@@ -507,7 +502,7 @@ index c7dc77b3a..0bdea721c 100644
  
  	for _, stream := range []bool{false, true} {
  		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
-@@ -843,7 +847,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsGetsDefau
+@@ -881,7 +885,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsGetsDefau
  				Header:     http.Header{"Content-Type": []string{responseContentType}, "x-request-id": []string{"rid"}},
  				Body:       io.NopCloser(strings.NewReader(responseBody)),
  			}}
@@ -516,7 +511,7 @@ index c7dc77b3a..0bdea721c 100644
  			account := &Account{
  				ID: 123, Name: "acc", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
  				Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
-@@ -865,6 +869,41 @@ func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsGetsDefau
+@@ -903,6 +907,41 @@ func TestOpenAIGatewayService_OAuthPassthrough_CodexMissingInstructionsGetsDefau
  	}
  }
  
@@ -559,10 +554,10 @@ index c7dc77b3a..0bdea721c 100644
  	gin.SetMode(gin.TestMode)
  
 diff --git a/backend/internal/service/setting_gateway_runtime.go b/backend/internal/service/setting_gateway_runtime.go
-index 2f13278e3..2d6c12c55 100644
+index 40fccd8fe..f58f4b212 100644
 --- a/backend/internal/service/setting_gateway_runtime.go
 +++ b/backend/internal/service/setting_gateway_runtime.go
-@@ -57,6 +57,7 @@ type cachedGatewayForwardingSettings struct {
+@@ -58,6 +58,7 @@ type cachedGatewayForwardingSettings struct {
  	metadataPassthrough              bool
  	cchSigning                       bool
  	claudeOAuthSystemPromptInjection bool
@@ -570,20 +565,22 @@ index 2f13278e3..2d6c12c55 100644
  	claudeOAuthSystemPrompt          string
  	claudeOAuthSystemPromptBlocks    string
  	anthropicCacheTTL1hInjection     bool
-@@ -705,9 +706,9 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
+@@ -737,10 +738,10 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
  }
  
  type gatewayForwardingSettingsResult struct {
+-	openAITTFTMode                                                                        string
 -	fp, mp, cch, claudeOAuthSystemPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
 -	clientDatelineNormalization                                                           bool
 -	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                string
++	openAITTFTMode                                                                                                             string
 +	fp, mp, cch, claudeOAuthSystemPromptInjection, openAICodexPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
-+	clientDatelineNormalization                                                                                       bool
-+	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                                            string
++	clientDatelineNormalization                                                                                                bool
++	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                                                     string
  }
  
  func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context) gatewayForwardingSettingsResult {
-@@ -718,6 +719,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+@@ -752,6 +753,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
  				mp:                               cached.metadataPassthrough,
  				cch:                              cached.cchSigning,
  				claudeOAuthSystemPromptInjection: cached.claudeOAuthSystemPromptInjection,
@@ -591,7 +588,7 @@ index 2f13278e3..2d6c12c55 100644
  				claudeOAuthSystemPrompt:          cached.claudeOAuthSystemPrompt,
  				claudeOAuthSystemPromptBlocks:    cached.claudeOAuthSystemPromptBlocks,
  				cacheTTL1h:                       cached.anthropicCacheTTL1hInjection,
-@@ -734,6 +736,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+@@ -769,6 +771,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
  					mp:                               cached.metadataPassthrough,
  					cch:                              cached.cchSigning,
  					claudeOAuthSystemPromptInjection: cached.claudeOAuthSystemPromptInjection,
@@ -599,7 +596,7 @@ index 2f13278e3..2d6c12c55 100644
  					claudeOAuthSystemPrompt:          cached.claudeOAuthSystemPrompt,
  					claudeOAuthSystemPromptBlocks:    cached.claudeOAuthSystemPromptBlocks,
  					cacheTTL1h:                       cached.anthropicCacheTTL1hInjection,
-@@ -749,6 +752,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+@@ -785,6 +788,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
  			SettingKeyEnableMetadataPassthrough,
  			SettingKeyEnableCCHSigning,
  			SettingKeyEnableClaudeOAuthSystemPromptInjection,
@@ -607,7 +604,7 @@ index 2f13278e3..2d6c12c55 100644
  			SettingKeyClaudeOAuthSystemPrompt,
  			SettingKeyClaudeOAuthSystemPromptBlocks,
  			SettingKeyEnableAnthropicCacheTTL1hInjection,
-@@ -762,12 +766,13 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+@@ -799,12 +803,13 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
  				metadataPassthrough:              false,
  				cchSigning:                       false,
  				claudeOAuthSystemPromptInjection: true,
@@ -617,12 +614,12 @@ index 2f13278e3..2d6c12c55 100644
  				clientDatelineNormalization:      true,
  				expiresAt:                        time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
  			})
--			return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
-+			return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, openAICodexPromptInjection: false, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
+-			return gatewayForwardingSettingsResult{openAITTFTMode: OpenAITTFTModeSemantic, fp: true, claudeOAuthSystemPromptInjection: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
++			return gatewayForwardingSettingsResult{openAITTFTMode: OpenAITTFTModeSemantic, fp: true, claudeOAuthSystemPromptInjection: true, openAICodexPromptInjection: false, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
  		}
+ 		ttftMode := normalizeOpenAITTFTMode(values[SettingKeyOpenAITTFTMode])
  		fp := true
- 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
-@@ -779,6 +784,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+@@ -817,6 +822,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
  		if v, ok := values[SettingKeyEnableClaudeOAuthSystemPromptInjection]; ok && v != "" {
  			systemPromptInjection = v == "true"
  		}
@@ -630,7 +627,7 @@ index 2f13278e3..2d6c12c55 100644
  		systemPrompt := values[SettingKeyClaudeOAuthSystemPrompt]
  		systemPromptBlocks := values[SettingKeyClaudeOAuthSystemPromptBlocks]
  		cacheTTL1h := values[SettingKeyEnableAnthropicCacheTTL1hInjection] == "true"
-@@ -795,6 +801,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+@@ -834,6 +840,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
  			metadataPassthrough:              mp,
  			cchSigning:                       cch,
  			claudeOAuthSystemPromptInjection: systemPromptInjection,
@@ -638,7 +635,7 @@ index 2f13278e3..2d6c12c55 100644
  			claudeOAuthSystemPrompt:          systemPrompt,
  			claudeOAuthSystemPromptBlocks:    systemPromptBlocks,
  			anthropicCacheTTL1hInjection:     cacheTTL1h,
-@@ -807,6 +814,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+@@ -847,6 +854,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
  			mp:                               mp,
  			cch:                              cch,
  			claudeOAuthSystemPromptInjection: systemPromptInjection,
@@ -646,7 +643,7 @@ index 2f13278e3..2d6c12c55 100644
  			claudeOAuthSystemPrompt:          systemPrompt,
  			claudeOAuthSystemPromptBlocks:    systemPromptBlocks,
  			cacheTTL1h:                       cacheTTL1h,
-@@ -817,7 +825,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
+@@ -857,7 +865,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
  	if r, ok := val.(gatewayForwardingSettingsResult); ok {
  		return r
  	}
@@ -654,8 +651,8 @@ index 2f13278e3..2d6c12c55 100644
 +	return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, openAICodexPromptInjection: false, clientDatelineNormalization: true}
  }
  
- // GetGatewayForwardingSettings returns cached gateway forwarding settings.
-@@ -852,6 +860,13 @@ func (s *SettingService) GetClaudeOAuthSystemPromptInjectionSettings(ctx context
+ // GetOpenAITTFTMode 返回 Responses first_token_ms 的统计口径。
+@@ -897,6 +905,13 @@ func (s *SettingService) GetClaudeOAuthSystemPromptInjectionSettings(ctx context
  	return result.claudeOAuthSystemPromptInjection, result.claudeOAuthSystemPrompt, result.claudeOAuthSystemPromptBlocks
  }
  
@@ -670,10 +667,10 @@ index 2f13278e3..2d6c12c55 100644
  // 使用进程内 atomic.Value 缓存，60 秒 TTL，热路径零锁开销
  // singleflight 防止缓存过期时 thundering herd
 diff --git a/backend/internal/service/setting_parse.go b/backend/internal/service/setting_parse.go
-index 9f3dfbddf..3b89e0abc 100644
+index 36e7706dd..18cbe909f 100644
 --- a/backend/internal/service/setting_parse.go
 +++ b/backend/internal/service/setting_parse.go
-@@ -235,6 +235,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
+@@ -236,6 +236,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
  		SettingKeyEnableAnthropicCacheTTL1hInjection:                 "false",
  		SettingKeyRewriteMessageCacheControl:                         strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
  		SettingKeyEnableClientDatelineNormalization:                  "true",
@@ -681,17 +678,17 @@ index 9f3dfbddf..3b89e0abc 100644
  		SettingKeyAntigravityUserAgentVersion:                        "",
  		SettingKeyOpenAICodexUserAgent:                               "",
  		SettingKeyOpenAICodexClientVersion:                           "",
-@@ -843,7 +844,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
+@@ -845,7 +846,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
  	result.AllowUngroupedKeyScheduling = settings[SettingKeyAllowUngroupedKeyScheduling] == "true"
  
  	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false,
 -	// cch_signing=false, claude_oauth_system_prompt_injection=true)
 +	// cch_signing=false, claude_oauth_system_prompt_injection=true,
 +	// openai_codex_prompt_injection=false)
+ 	result.OpenAITTFTMode = normalizeOpenAITTFTMode(settings[SettingKeyOpenAITTFTMode])
  	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {
  		result.EnableFingerprintUnification = v == "true"
- 	} else {
-@@ -856,6 +858,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
+@@ -859,6 +861,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
  	} else {
  		result.EnableClaudeOAuthSystemPromptInjection = true
  	}
@@ -806,10 +803,10 @@ index 750f01728..0708c5bf5 100644
 +	require.Equal(t, "true", repo.updates[SettingKeyEnableOpenAICodexPromptInjection])
 +}
 diff --git a/backend/internal/service/setting_update.go b/backend/internal/service/setting_update.go
-index a4fadded0..f1a47d839 100644
+index 8928a6353..11a18dffe 100644
 --- a/backend/internal/service/setting_update.go
 +++ b/backend/internal/service/setting_update.go
-@@ -463,6 +463,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
+@@ -469,6 +469,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
  	updates[SettingKeyEnableMetadataPassthrough] = strconv.FormatBool(settings.EnableMetadataPassthrough)
  	updates[SettingKeyEnableCCHSigning] = strconv.FormatBool(settings.EnableCCHSigning)
  	updates[SettingKeyEnableClaudeOAuthSystemPromptInjection] = strconv.FormatBool(settings.EnableClaudeOAuthSystemPromptInjection)
@@ -817,7 +814,7 @@ index a4fadded0..f1a47d839 100644
  	updates[SettingKeyClaudeOAuthSystemPrompt] = settings.ClaudeOAuthSystemPrompt
  	if err := ValidateClaudeOAuthSystemPromptBlocksConfig(settings.ClaudeOAuthSystemPromptBlocks); err != nil {
  		return nil, err
-@@ -700,6 +701,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
+@@ -707,6 +708,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
  		metadataPassthrough:              settings.EnableMetadataPassthrough,
  		cchSigning:                       settings.EnableCCHSigning,
  		claudeOAuthSystemPromptInjection: settings.EnableClaudeOAuthSystemPromptInjection,
@@ -826,10 +823,10 @@ index a4fadded0..f1a47d839 100644
  		claudeOAuthSystemPromptBlocks:    settings.ClaudeOAuthSystemPromptBlocks,
  		anthropicCacheTTL1hInjection:     settings.EnableAnthropicCacheTTL1hInjection,
 diff --git a/backend/internal/service/settings_view.go b/backend/internal/service/settings_view.go
-index a93900094..c52a2d33b 100644
+index 002560e82..818f9d7a7 100644
 --- a/backend/internal/service/settings_view.go
 +++ b/backend/internal/service/settings_view.go
-@@ -231,6 +231,7 @@ type SystemSettings struct {
+@@ -233,6 +233,7 @@ type SystemSettings struct {
  	EnableMetadataPassthrough              bool   // 是否透传客户端原始 metadata（默认 false）
  	EnableCCHSigning                       bool   // 已废弃 no-op：新版 CLI 取消 cch 签名后网关不再注入/签名 cch，开关无效果
  	EnableClaudeOAuthSystemPromptInjection bool   // 是否对 Claude OAuth mimic 路径注入 Claude Code system blocks（默认 true）
@@ -838,10 +835,10 @@ index a93900094..c52a2d33b 100644
  	ClaudeOAuthSystemPromptBlocks          string // Claude OAuth mimic 路径注入的 system blocks JSON 配置；空值使用内置默认
  	EnableAnthropicCacheTTL1hInjection     bool   // 是否对 Anthropic OAuth/SetupToken 请求体注入 1h cache_control ttl（默认 false）
 diff --git a/frontend/src/api/admin/settings.ts b/frontend/src/api/admin/settings.ts
-index f5f19918a..dba70eb75 100644
+index 29e1550c3..643ad04a5 100644
 --- a/frontend/src/api/admin/settings.ts
 +++ b/frontend/src/api/admin/settings.ts
-@@ -624,6 +624,7 @@ export interface SystemSettings {
+@@ -625,6 +625,7 @@ export interface SystemSettings {
    enable_metadata_passthrough: boolean;
    enable_cch_signing: boolean;
    enable_claude_oauth_system_prompt_injection: boolean;
@@ -849,7 +846,7 @@ index f5f19918a..dba70eb75 100644
    claude_oauth_system_prompt: string;
    claude_oauth_system_prompt_blocks: string;
    enable_anthropic_cache_ttl_1h_injection: boolean;
-@@ -938,6 +939,7 @@ export interface UpdateSettingsRequest {
+@@ -941,6 +942,7 @@ export interface UpdateSettingsRequest {
    enable_metadata_passthrough?: boolean;
    enable_cch_signing?: boolean;
    enable_claude_oauth_system_prompt_injection?: boolean;
@@ -858,10 +855,10 @@ index f5f19918a..dba70eb75 100644
    claude_oauth_system_prompt_blocks?: string;
    enable_anthropic_cache_ttl_1h_injection?: boolean;
 diff --git a/frontend/src/i18n/locales/en/admin/settings.ts b/frontend/src/i18n/locales/en/admin/settings.ts
-index 2d6d34409..57fdff48c 100644
+index 79125850c..6352f2819 100644
 --- a/frontend/src/i18n/locales/en/admin/settings.ts
 +++ b/frontend/src/i18n/locales/en/admin/settings.ts
-@@ -475,6 +475,8 @@ export default {
+@@ -485,6 +485,8 @@ export default {
          cchSigningHint: 'Sign the billing header in forwarded requests with CCH hash. When disabled, the placeholder is preserved.',
          claudeOAuthSystemPromptInjection: 'Claude OAuth System Blocks',
          claudeOAuthSystemPromptInjectionHint: 'Inject Claude Code-like system blocks for Claude OAuth requests from non-Claude-Code clients. Enabled by default.',
@@ -871,10 +868,10 @@ index 2d6d34409..57fdff48c 100644
          claudeOAuthSystemPromptPlaceholder: 'Leave empty to use the built-in Claude Code expansion prompt.',
          claudeOAuthSystemPromptHint: 'Legacy compatibility: controls only the third injected system block.',
 diff --git a/frontend/src/i18n/locales/zh/admin/settings.ts b/frontend/src/i18n/locales/zh/admin/settings.ts
-index f31548066..ba78e55ba 100644
+index 07898e7a9..886d3adaf 100644
 --- a/frontend/src/i18n/locales/zh/admin/settings.ts
 +++ b/frontend/src/i18n/locales/zh/admin/settings.ts
-@@ -468,6 +468,8 @@ export default {
+@@ -478,6 +478,8 @@ export default {
          cchSigningHint: '对转发请求的 billing header 进行 CCH 哈希签名。关闭时保留原始占位符。',
          claudeOAuthSystemPromptInjection: 'Claude OAuth System 注入',
          claudeOAuthSystemPromptInjectionHint: '为非 Claude Code 客户端的 Claude OAuth 请求注入 Claude Code 形态的 system blocks。默认开启。',
@@ -884,7 +881,7 @@ index f31548066..ba78e55ba 100644
          claudeOAuthSystemPromptPlaceholder: '留空时使用内置 Claude Code 扩展提示词。',
          claudeOAuthSystemPromptHint: '兼容旧配置：仅控制第三个注入的 system block。',
 diff --git a/frontend/src/views/admin/SettingsView.vue b/frontend/src/views/admin/SettingsView.vue
-index 80af0b194..d288ca3fc 100644
+index 8f6848af9..a27ac0d98 100644
 --- a/frontend/src/views/admin/SettingsView.vue
 +++ b/frontend/src/views/admin/SettingsView.vue
 @@ -4501,6 +4501,31 @@
@@ -919,7 +916,7 @@ index 80af0b194..d288ca3fc 100644
                  <div>
                    <h3 class="text-base font-semibold text-gray-900 dark:text-white">
                      {{ t("admin.settings.gatewayForwarding.codexClientRestrictionTitle") }}
-@@ -9715,6 +9740,7 @@ const form = reactive<SettingsForm>({
+@@ -9766,6 +9791,7 @@ const form = reactive<SettingsForm>({
    enable_metadata_passthrough: false,
    enable_cch_signing: false,
    enable_claude_oauth_system_prompt_injection: true,
@@ -927,7 +924,7 @@ index 80af0b194..d288ca3fc 100644
    claude_oauth_system_prompt: "",
    claude_oauth_system_prompt_blocks: defaultClaudeOAuthSystemPromptBlocks,
    enable_anthropic_cache_ttl_1h_injection: false,
-@@ -11287,6 +11313,8 @@ async function saveSettings() {
+@@ -11342,6 +11368,8 @@ async function saveSettings() {
        enable_cch_signing: form.enable_cch_signing,
        enable_claude_oauth_system_prompt_injection:
          form.enable_claude_oauth_system_prompt_injection,
@@ -937,10 +934,10 @@ index 80af0b194..d288ca3fc 100644
          ? form.claude_oauth_system_prompt
          : "",
 diff --git a/frontend/src/views/admin/__tests__/SettingsView.spec.ts b/frontend/src/views/admin/__tests__/SettingsView.spec.ts
-index bf6fe5e68..1cbd95704 100644
+index 70fc723ed..3130d46b1 100644
 --- a/frontend/src/views/admin/__tests__/SettingsView.spec.ts
 +++ b/frontend/src/views/admin/__tests__/SettingsView.spec.ts
-@@ -1171,6 +1171,29 @@ describe("admin SettingsView payment visible method controls", () => {
+@@ -1172,6 +1172,29 @@ describe("admin SettingsView payment visible method controls", () => {
      ]);
    });
  

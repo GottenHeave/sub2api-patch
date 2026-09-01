@@ -5,7 +5,7 @@ Subject: [PATCH] ci: improve downstream Docker build cache and docs context
 
 
 diff --git a/Dockerfile b/Dockerfile
-index c7991c5a6..c8796e41d 100644
+index adfa4d470..c3d792874 100644
 --- a/Dockerfile
 +++ b/Dockerfile
 @@ -41,7 +41,7 @@ RUN --mount=type=cache,id=sub2api-pnpm-store,target=/root/.local/share/pnpm/stor

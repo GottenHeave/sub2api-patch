@@ -5,10 +5,10 @@ Subject: [PATCH] fix: adapt patchset to v0.1.178
 
 
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index d815ed200..dc5477aa4 100644
+index f8e153f72..1e6033a87 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -227,7 +227,13 @@ func RegisterGatewayRoutes(
+@@ -230,7 +230,13 @@ func RegisterGatewayRoutes(
  			h.OpenAIGateway.ResponsesWebSocket(c)
  		})
  		gateway.GET("/realtime", func(c *gin.Context) {
@@ -23,7 +23,7 @@ index d815ed200..dc5477aa4 100644
  				c.JSON(http.StatusNotFound, gin.H{
  					"error": gin.H{
  						"type":    "not_found_error",
-@@ -363,14 +369,6 @@ func RegisterGatewayRoutes(
+@@ -366,14 +372,6 @@ func RegisterGatewayRoutes(
  		gateway.GET("/custom-voices/:voice_id", customVoicePathHandler)
  		gateway.PATCH("/custom-voices/:voice_id", customVoicePathHandler)
  		gateway.DELETE("/custom-voices/:voice_id", customVoicePathHandler)
@@ -39,7 +39,7 @@ index d815ed200..dc5477aa4 100644
  			if getGroupPlatform(c) != service.PlatformGrok {
  				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
-index 2943756de..77e907299 100644
+index c6cfc9676..73f254ea1 100644
 --- a/backend/internal/service/openai_ws_forwarder_success_test.go
 +++ b/backend/internal/service/openai_ws_forwarder_success_test.go
 @@ -280,7 +280,7 @@ func TestOpenAIGatewayService_BuildOpenAIWSHeadersRealtimeOmitsResponsesBeta(t *
