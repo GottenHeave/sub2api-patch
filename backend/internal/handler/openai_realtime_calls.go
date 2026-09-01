@@ -186,7 +186,7 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduledModel, false, nil)
 				if failoverErr.RetryableOnSameAccount {
 					retryLimit := account.GetPoolModeRetryCount()
 					if sameAccountRetryCount[account.ID] < retryLimit {
@@ -215,7 +215,7 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
 				switchCount++
 				continue
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduledModel, false, nil)
 			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 			fields := []zap.Field{
 				zap.Int64("account_id", account.ID),
@@ -231,9 +231,9 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
 		}
 
 		if result != nil {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, true, result.FirstTokenMs)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduledModel, true, result.FirstTokenMs)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, true, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduledModel, true, nil)
 		}
 		return
 	}

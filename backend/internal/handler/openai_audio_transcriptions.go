@@ -255,7 +255,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 					)
 					return
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduledModel, false, nil)
 				h.gatewayService.RecordOpenAIAccountSwitch()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
@@ -276,7 +276,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 				)
 				return
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, false, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduledModel, false, nil)
 			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 			fields := []zap.Field{
 				zap.Int64("account_id", account.ID),
@@ -295,9 +295,9 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 		}
 
 		if result != nil {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, true, result.FirstTokenMs)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduledModel, true, result.FirstTokenMs)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, scheduledModel, true, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduledModel, true, nil)
 		}
 
 		userAgent := c.GetHeader("User-Agent")
