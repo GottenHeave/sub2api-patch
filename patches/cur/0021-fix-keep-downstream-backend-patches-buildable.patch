@@ -878,7 +878,7 @@ index 543733d39..c82ba0776 100644
  	t.Helper()
  	mediaType, params, err := mime.ParseMediaType(contentType)
 diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
-index d4bdbb67b..8ee17451f 100644
+index be89cdbc0..9664ff358 100644
 --- a/backend/internal/service/openai_gateway_request_body.go
 +++ b/backend/internal/service/openai_gateway_request_body.go
 @@ -45,6 +45,10 @@ func buildOpenAIResponsesURL(base string) string {
@@ -9591,7 +9591,7 @@ index b6af8fc06..0ea69aaa0 100644
 +	return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision, upstreamEndpoint, model)
 +}
 diff --git a/backend/internal/service/openai_ws_forwarder_payload.go b/backend/internal/service/openai_ws_forwarder_payload.go
-index 94738221a..73af86d12 100644
+index 939db2843..6f8138e4e 100644
 --- a/backend/internal/service/openai_ws_forwarder_payload.go
 +++ b/backend/internal/service/openai_ws_forwarder_payload.go
 @@ -26,13 +26,37 @@ func validateOpenAIWSBearerToken(account *Account, token string) error {
@@ -9633,9 +9633,9 @@ index 94738221a..73af86d12 100644
  	case AccountTypeSetupToken:
  		if account.IsOpenAIOAuthLike() {
  			targetURL = chatgptCodexURL
-@@ -42,16 +66,28 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
- 	case AccountTypeAPIKey:
- 		baseURL := account.GetOpenAIBaseURL()
+@@ -45,16 +69,28 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
+ 			baseURL = account.GetCNProtocolBaseURL(APIProtocolResponses)
+ 		}
  		if baseURL == "" {
 -			targetURL = openaiPlatformAPIURL
 +			if realtimeEndpoint {
@@ -9665,7 +9665,7 @@ index 94738221a..73af86d12 100644
  	}
  
  	parsed, err := url.Parse(strings.TrimSpace(targetURL))
-@@ -68,9 +104,21 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
+@@ -71,9 +107,21 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
  	default:
  		return "", fmt.Errorf("unsupported scheme for ws: %s", parsed.Scheme)
  	}
@@ -9687,7 +9687,7 @@ index 94738221a..73af86d12 100644
  func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
  	ctx context.Context,
  	c *gin.Context,
-@@ -154,7 +202,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
+@@ -157,7 +205,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
  	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
  		betaValue = openAIWSBetaV1Value
  	}

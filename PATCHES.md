@@ -20,6 +20,7 @@ Patch topics:
 11. v0.1.179 compatibility alignment
 12. structured Codex system-prompt preservation
 13. v0.1.185 compatibility and lint alignment
+14. OpenAI audio transcription upstream diagnostics
 
 These patches are synthetic topic patches rebuilt from the final downstream tree, not a raw replay of the original downstream commit history. This is intentional: some original commits predate the latest upstream sync and do not replay cleanly one by one, while the final downstream tree is valid.
 
@@ -43,6 +44,12 @@ The structured Codex system-prompt topic keeps raw and decoded request checks
 consistent for string and structured prompt values. A caller-provided system
 prompt therefore suppresses the optional default prompt before and after OAuth
 request transformation, preserving the caller's prompt prefix for caching.
+
+The audio transcription diagnostics topic records failover-eligible upstream
+HTTP responses and transport/read failures with account, model, status, request
+ID, and sanitized response details. It does not log uploaded audio or
+authorization headers, and does not change VoiceInk request or response
+protocol behavior.
 
 Future downstream work should be added as new logical patches after applying and validating the current patchset.
 

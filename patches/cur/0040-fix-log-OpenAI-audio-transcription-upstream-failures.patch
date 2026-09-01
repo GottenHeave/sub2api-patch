@@ -1,0 +1,409 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: audit <audit@example.invalid>
+Date: Tue, 1 Sep 2026 21:40:50 +0000
+Subject: [PATCH] fix: log OpenAI audio transcription upstream failures
+
+
+diff --git a/backend/internal/service/openai_audio_transcriptions.go b/backend/internal/service/openai_audio_transcriptions.go
+index 499e9fb25..de36beeec 100644
+--- a/backend/internal/service/openai_audio_transcriptions.go
++++ b/backend/internal/service/openai_audio_transcriptions.go
+@@ -4,6 +4,7 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"encoding/base64"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"math"
+@@ -32,6 +33,7 @@ const (
+ 	openAIAudioTranscriptionsModelRateLimitPrefix = "openai_audio_transcriptions:"
+ 	openAIAudioTranscriptionsMaxFieldSize         = 1 << 20
+ 	OpenAIAudioTranscriptionsRequiredAccountTypes = AccountTypeAPIKey + "," + AccountTypeOAuth
++	openAIAudioTranscriptionLogValueMaxBytes      = 2048
+ )
+ 
+ type OpenAIAudioTranscriptionsRequest struct {
+@@ -278,41 +280,83 @@ func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
+ 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+ 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+ 	if err != nil {
+-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
++		safeErr := sanitizeOpenAIAudioTranscriptionLogValue(err.Error(), openAIAudioTranscriptionLogValueMaxBytes)
++		upstreamURL := safeOpenAIAudioTranscriptionURL(upstreamReq)
++		logger.FromContext(ctx).Error(
++			"openai.audio_transcriptions.upstream_request_failed",
++			zap.Int64("account_id", account.ID),
++			zap.String("account_name", strings.TrimSpace(account.Name)),
++			zap.String("account_type", account.Type),
++			zap.String("platform", account.Platform),
++			zap.String("request_model", requestModel),
++			zap.String("upstream_model", upstreamModel),
++			zap.Int("upstream_status_code", 0),
++			zap.String("upstream_url", upstreamURL),
++			zap.String("error", safeErr),
++		)
+ 		setOpsUpstreamError(c, 0, safeErr, "")
+ 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+ 			Platform:           account.Platform,
+ 			AccountID:          account.ID,
+ 			AccountName:        account.Name,
+ 			UpstreamStatusCode: 0,
+-			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
++			UpstreamURL:        upstreamURL,
+ 			Kind:               "request_error",
+ 			Message:            safeErr,
+ 		})
+ 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+ 	}
+ 	if resp.StatusCode >= 400 {
+-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+-		_ = resp.Body.Close()
++		var respBody []byte
++		var readErr error
++		if resp.Body == nil {
++			readErr = errors.New("upstream response body is nil")
++		} else {
++			respBody, readErr = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
++			_ = resp.Body.Close()
++		}
+ 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+ 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+ 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
++		if readErr != nil {
++			logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, requestModel, upstreamModel, upstreamReq, resp, readErr)
++		}
+ 		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
++			retryableOnSameAccount := isOpenAIAudioTranscriptionSameAccountRetryable(account, resp.StatusCode)
++			upstreamDetail := s.openAIAudioTranscriptionErrorDetail(respBody)
++			loggedUpstreamMsg := sanitizeOpenAIAudioTranscriptionLogValue(upstreamMsg, openAIAudioTranscriptionLogValueMaxBytes)
++			logger.FromContext(ctx).Warn(
++				"openai.audio_transcriptions.upstream_error",
++				zap.Int64("account_id", account.ID),
++				zap.String("account_name", strings.TrimSpace(account.Name)),
++				zap.String("account_type", account.Type),
++				zap.String("platform", account.Platform),
++				zap.String("request_model", requestModel),
++				zap.String("upstream_model", upstreamModel),
++				zap.Int("upstream_status_code", resp.StatusCode),
++				zap.String("upstream_request_id", strings.TrimSpace(resp.Header.Get("x-request-id"))),
++				zap.String("upstream_url", safeOpenAIAudioTranscriptionURL(upstreamReq)),
++				zap.String("upstream_error_message", loggedUpstreamMsg),
++				zap.String("upstream_response_body", upstreamDetail),
++				zap.Bool("retryable_on_same_account", retryableOnSameAccount),
++			)
+ 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+-				Platform:           account.Platform,
+-				AccountID:          account.ID,
+-				AccountName:        account.Name,
+-				UpstreamStatusCode: resp.StatusCode,
+-				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+-				Kind:               "failover",
+-				Message:            upstreamMsg,
++				Platform:             account.Platform,
++				AccountID:            account.ID,
++				AccountName:          account.Name,
++				UpstreamStatusCode:   resp.StatusCode,
++				UpstreamRequestID:    resp.Header.Get("x-request-id"),
++				UpstreamURL:          safeOpenAIAudioTranscriptionURL(upstreamReq),
++				UpstreamResponseBody: upstreamDetail,
++				Kind:                 "failover",
++				Message:              loggedUpstreamMsg,
++				Detail:               upstreamDetail,
+ 			})
+ 			return nil, &UpstreamFailoverError{
+ 				StatusCode:             resp.StatusCode,
+ 				ResponseBody:           respBody,
+ 				ResponseHeaders:        resp.Header.Clone(),
+-				RetryableOnSameAccount: isOpenAIAudioTranscriptionSameAccountRetryable(account, resp.StatusCode),
++				RetryableOnSameAccount: retryableOnSameAccount,
+ 			}
+ 		}
+ 		return s.handleErrorResponse(ctx, resp, c, account, forwardBody)
+@@ -321,6 +365,7 @@ func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
+ 
+ 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+ 	if err != nil {
++		logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, requestModel, upstreamModel, upstreamReq, resp, err)
+ 		return nil, err
+ 	}
+ 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+@@ -345,6 +390,69 @@ func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
+ 	}, nil
+ }
+ 
++func (s *OpenAIGatewayService) openAIAudioTranscriptionErrorDetail(responseBody []byte) string {
++	if s == nil || s.cfg == nil || !s.cfg.Gateway.LogUpstreamErrorBody {
++		return ""
++	}
++	maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
++	if maxBytes <= 0 || maxBytes > openAIAudioTranscriptionLogValueMaxBytes {
++		maxBytes = openAIAudioTranscriptionLogValueMaxBytes
++	}
++	detail, _ := sanitizeErrorBodyForStorage(string(responseBody), maxBytes)
++	return sanitizeOpenAIAudioTranscriptionLogValue(detail, maxBytes)
++}
++
++func sanitizeOpenAIAudioTranscriptionLogValue(value string, maxBytes int) string {
++	if maxBytes <= 0 {
++		maxBytes = openAIAudioTranscriptionLogValueMaxBytes
++	}
++	value = sanitizeUpstreamErrorMessage(strings.TrimSpace(value))
++	value = redactContentModerationSecrets(value)
++	value = strings.ReplaceAll(value, "\n", "\\n")
++	value = strings.ReplaceAll(value, "\r", "\\r")
++	return truncateString(value, maxBytes)
++}
++
++func safeOpenAIAudioTranscriptionURL(req *http.Request) string {
++	if req == nil || req.URL == nil {
++		return ""
++	}
++	u := *req.URL
++	u.User = nil
++	u.RawQuery = ""
++	u.ForceQuery = false
++	u.Fragment = ""
++	u.RawFragment = ""
++	return safeUpstreamURL(u.String())
++}
++
++func logOpenAIAudioTranscriptionResponseReadFailure(
++	ctx context.Context,
++	account *Account,
++	requestModel string,
++	upstreamModel string,
++	upstreamReq *http.Request,
++	resp *http.Response,
++	err error,
++) {
++	if account == nil || resp == nil || err == nil {
++		return
++	}
++	logger.FromContext(ctx).Error(
++		"openai.audio_transcriptions.upstream_response_read_failed",
++		zap.Int64("account_id", account.ID),
++		zap.String("account_name", strings.TrimSpace(account.Name)),
++		zap.String("account_type", account.Type),
++		zap.String("platform", account.Platform),
++		zap.String("request_model", requestModel),
++		zap.String("upstream_model", upstreamModel),
++		zap.Int("upstream_status_code", resp.StatusCode),
++		zap.String("upstream_request_id", strings.TrimSpace(resp.Header.Get("x-request-id"))),
++		zap.String("upstream_url", safeOpenAIAudioTranscriptionURL(upstreamReq)),
++		zap.String("error", sanitizeOpenAIAudioTranscriptionLogValue(err.Error(), openAIAudioTranscriptionLogValueMaxBytes)),
++	)
++}
++
+ // FinalizeOpenAIAudioTranscriptionFailover applies the account and model state
+ // changes for a transcription failover after the request-local retry budget
+ // has been exhausted.
+diff --git a/backend/internal/service/openai_audio_transcriptions_test.go b/backend/internal/service/openai_audio_transcriptions_test.go
+index 51d0739ec..e61e869bd 100644
+--- a/backend/internal/service/openai_audio_transcriptions_test.go
++++ b/backend/internal/service/openai_audio_transcriptions_test.go
+@@ -5,20 +5,25 @@ import (
+ 	"context"
+ 	"encoding/base64"
+ 	"errors"
++	"fmt"
+ 	"io"
+ 	"mime"
+ 	"mime/multipart"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"net/textproto"
++	"strconv"
+ 	"strings"
+ 	"testing"
+ 	"time"
+ 
+ 	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+ 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+ 	"github.com/gin-gonic/gin"
+ 	"github.com/stretchr/testify/require"
++	"go.uber.org/zap"
++	"go.uber.org/zap/zaptest/observer"
+ )
+ 
+ func buildOpenAIAudioTranscriptionMultipart(t *testing.T, fields map[string]string, fileBytes []byte) ([]byte, string) {
+@@ -750,6 +755,177 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_FailoverStatuses(t *test
+ 	}
+ }
+ 
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_FailoverLogsDiagnostics(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model": "gpt-4o-mini-transcribe",
++	}, []byte("fake-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	upstreamBody := `{"error":{"message":"VoiceInk transcription failed"},"request_id":"upstream-body-id"}`
++	upstream := &httpUpstreamRecorder{resp: newOpenAIAudioTranscriptionResponse(http.StatusInternalServerError, upstreamBody)}
++	cfg := &config.Config{}
++	cfg.Gateway.LogUpstreamErrorBody = true
++	cfg.Gateway.LogUpstreamErrorBodyMaxBytes = 512
++	core, logs := observer.New(zap.WarnLevel)
++	ctx := logger.IntoContext(context.Background(), zap.New(core))
++	svc := &OpenAIGatewayService{
++		cfg:          cfg,
++		httpUpstream: upstream,
++	}
++	account := openAIAudioTranscriptionOAuthAccount(8)
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	_, err = svc.ForwardAudioTranscriptions(ctx, c, account, parsed, "")
++
++	var failoverErr *UpstreamFailoverError
++	require.ErrorAs(t, err, &failoverErr)
++	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
++	require.True(t, ok)
++	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
++	require.True(t, ok)
++	require.Len(t, events, 1)
++	require.Equal(t, "rid_audio", events[0].UpstreamRequestID)
++	require.Equal(t, chatgptTranscribeURL, events[0].UpstreamURL)
++	require.Equal(t, upstreamBody, events[0].UpstreamResponseBody)
++	require.Equal(t, upstreamBody, events[0].Detail)
++
++	entries := logs.FilterMessage("openai.audio_transcriptions.upstream_error").All()
++	require.Len(t, entries, 1)
++	loggedFields := map[string]string{}
++	for _, field := range entries[0].Context {
++		value := field.String
++		if value == "" && field.Integer != 0 {
++			value = strconv.FormatInt(field.Integer, 10)
++		}
++		loggedFields[field.Key] = value
++	}
++	require.Equal(t, "8", loggedFields["account_id"])
++	require.Equal(t, AccountTypeOAuth, loggedFields["account_type"])
++	require.Equal(t, "gpt-4o-mini-transcribe", loggedFields["request_model"])
++	require.Equal(t, "gpt-4o-mini-transcribe", loggedFields["upstream_model"])
++	require.Equal(t, "500", loggedFields["upstream_status_code"])
++	require.Equal(t, "rid_audio", loggedFields["upstream_request_id"])
++	require.Equal(t, chatgptTranscribeURL, loggedFields["upstream_url"])
++	require.Equal(t, upstreamBody, loggedFields["upstream_response_body"])
++}
++
++func TestOpenAIAudioTranscriptionLogValueRedactsSecrets(t *testing.T) {
++	raw := `Authorization: Bearer sk-proj-1234567890abcdef access_token=oauth-secret https://user:password@example.test/transcribe?token=query-secret`
++
++	got := sanitizeOpenAIAudioTranscriptionLogValue(raw, 2048)
++
++	require.NotContains(t, got, "sk-proj-1234567890abcdef")
++	require.NotContains(t, got, "oauth-secret")
++	require.NotContains(t, got, "password@example.test")
++	require.NotContains(t, got, "query-secret")
++	require.Contains(t, got, "[已脱敏]")
++}
++
++func TestOpenAIAudioTranscriptionNilErrorBodyLogsDiagnostics(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model": "gpt-4o-mini-transcribe",
++	}, []byte("fake-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusInternalServerError,
++		Header: http.Header{
++			"Content-Type": []string{"application/json"},
++			"X-Request-Id": []string{"rid_nil_body"},
++		},
++	}}
++	core, logs := observer.New(zap.ErrorLevel)
++	ctx := logger.IntoContext(context.Background(), zap.New(core))
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	_, err = svc.ForwardAudioTranscriptions(ctx, c, openAIAudioTranscriptionAPIKeyAccount(9), parsed, "")
++
++	var failoverErr *UpstreamFailoverError
++	require.ErrorAs(t, err, &failoverErr)
++	entries := logs.FilterMessage("openai.audio_transcriptions.upstream_response_read_failed").All()
++	require.Len(t, entries, 1)
++	require.Contains(t, entries[0].Message, "upstream_response_read_failed")
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_RequestErrorLogsDiagnostics(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model": "gpt-4o-mini-transcribe",
++	}, []byte("fake-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	core, logs := observer.New(zap.ErrorLevel)
++	ctx := logger.IntoContext(context.Background(), zap.New(core))
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: &httpUpstreamRecorder{err: errors.New("dial failed")},
++	}
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	_, err = svc.ForwardAudioTranscriptions(ctx, c, openAIAudioTranscriptionAPIKeyAccount(10), parsed, "")
++	require.Error(t, err)
++
++	entries := logs.FilterMessage("openai.audio_transcriptions.upstream_request_failed").All()
++	require.Len(t, entries, 1)
++	assertObservedField(t, entries[0], "account_id", "10")
++	assertObservedField(t, entries[0], "request_model", "gpt-4o-mini-transcribe")
++	assertObservedField(t, entries[0], "upstream_status_code", "0")
++	assertObservedField(t, entries[0], "error", "dial failed")
++}
++
++type audioTranscriptionReadErrorCloser struct {
++	err error
++}
++
++func (r audioTranscriptionReadErrorCloser) Read([]byte) (int, error) {
++	return 0, r.err
++}
++
++func (audioTranscriptionReadErrorCloser) Close() error {
++	return nil
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_SuccessBodyReadFailureLogsDiagnostics(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model": "gpt-4o-mini-transcribe",
++	}, []byte("fake-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	readErr := errors.New("upstream body read failed")
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header: http.Header{
++			"Content-Type": []string{"application/json"},
++			"X-Request-Id": []string{"rid_read_error"},
++		},
++		Body: audioTranscriptionReadErrorCloser{err: readErr},
++	}}
++	core, logs := observer.New(zap.ErrorLevel)
++	ctx := logger.IntoContext(context.Background(), zap.New(core))
++	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	_, err = svc.ForwardAudioTranscriptions(ctx, c, openAIAudioTranscriptionAPIKeyAccount(11), parsed, "")
++	require.ErrorIs(t, err, readErr)
++
++	entries := logs.FilterMessage("openai.audio_transcriptions.upstream_response_read_failed").All()
++	require.Len(t, entries, 1)
++	assertObservedField(t, entries[0], "account_id", "11")
++	assertObservedField(t, entries[0], "upstream_status_code", "200")
++	assertObservedField(t, entries[0], "upstream_request_id", "rid_read_error")
++	assertObservedField(t, entries[0], "error", readErr.Error())
++}
++
++func assertObservedField(t *testing.T, entry observer.LoggedEntry, key string, want string) {
++	t.Helper()
++	value, ok := entry.ContextMap()[key]
++	require.True(t, ok, "missing observed field %q", key)
++	require.Equal(t, want, fmt.Sprint(value), "observed field %q", key)
++}
++
+ func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthFailoverStatuses(t *testing.T) {
+ 	tests := []struct {
+ 		name               string

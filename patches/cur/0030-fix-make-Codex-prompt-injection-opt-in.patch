@@ -288,7 +288,7 @@ index fbd14ba96..748f265ac 100644
  // 处理以下情况：字段不存在、nil、空字符串、纯空白字符串
  func isInstructionsEmpty(reqBody map[string]any) bool {
 diff --git a/backend/internal/service/openai_gateway_chat_completions.go b/backend/internal/service/openai_gateway_chat_completions.go
-index 07b32497b..19df1f497 100644
+index 6afca5179..4be0dd383 100644
 --- a/backend/internal/service/openai_gateway_chat_completions.go
 +++ b/backend/internal/service/openai_gateway_chat_completions.go
 @@ -249,7 +249,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
@@ -303,7 +303,7 @@ index 07b32497b..19df1f497 100644
  		})
  		if codexResult.Error != nil {
 diff --git a/backend/internal/service/openai_gateway_forward.go b/backend/internal/service/openai_gateway_forward.go
-index 23a41d29c..3467b549c 100644
+index 875dd3ae8..c07a02778 100644
 --- a/backend/internal/service/openai_gateway_forward.go
 +++ b/backend/internal/service/openai_gateway_forward.go
 @@ -360,7 +360,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
@@ -324,7 +324,7 @@ index 23a41d29c..3467b549c 100644
  			})
  		}
 diff --git a/backend/internal/service/openai_gateway_passthrough.go b/backend/internal/service/openai_gateway_passthrough.go
-index 4bd4ba26c..b4982387d 100644
+index ecca15478..0357ffece 100644
 --- a/backend/internal/service/openai_gateway_passthrough.go
 +++ b/backend/internal/service/openai_gateway_passthrough.go
 @@ -163,7 +163,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
@@ -340,7 +340,7 @@ index 4bd4ba26c..b4982387d 100644
  			if setErr != nil {
  				return nil, fmt.Errorf("set passthrough codex instructions: %w", setErr)
 diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
-index 8ee17451f..03ad3d20f 100644
+index 9664ff358..db195ed6a 100644
 --- a/backend/internal/service/openai_gateway_request_body.go
 +++ b/backend/internal/service/openai_gateway_request_body.go
 @@ -1326,6 +1326,49 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
