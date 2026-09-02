@@ -1832,6 +1832,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if req.RequirePrivacySet && !account.IsPrivacySet() {
 		return false, "privacy_not_set"
 	}
+	if accountID, _ := ctx.Value(openAIRealtimeCallAccountContextKey{}).(int64); accountID > 0 && account.ID != accountID {
+		return false, "realtime_call_account"
+	}
 	if s != nil && s.service != nil && s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.RequestedModel) {
 		return false, "runtime_blocked"
 	}
@@ -2508,6 +2511,12 @@ func cloneExcludedAccountIDs(excludedIDs map[int64]struct{}) map[int64]struct{} 
 }
 
 func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {
+	if requiredTransport == OpenAIUpstreamTransportRealtimeSideband {
+		return account != nil && account.Platform == PlatformOpenAI && (account.Type == AccountTypeAPIKey || account.Type == AccountTypeOAuth)
+	}
+	if requiredTransport == OpenAIUpstreamTransportRealtimeWebsocket {
+		return account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey
+	}
 	if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
 		return true
 	}
