@@ -2207,7 +2207,7 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
 	requestedModel string,
 	excludedIDs map[int64]struct{},
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, string, error) {
-	selectionCtx := withOpenAIAudioTranscriptionSelection(ctx, false)
+	selectionCtx := withOpenAIAudioTranscriptionSelection(ctx, OpenAIAudioTranscriptionsAccountSelectionModel(requestedModel) != "")
 	selection, decision, err := s.selectAccountWithScheduler(
 		selectionCtx,
 		groupID,
