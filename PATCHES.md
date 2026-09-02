@@ -21,6 +21,7 @@ Patch topics:
 12. structured Codex system-prompt preservation
 13. v0.1.185 compatibility and lint alignment
 14. OpenAI audio transcription upstream diagnostics
+15. OpenAI audio transcription model selection
 
 These patches are synthetic topic patches rebuilt from the final downstream tree, not a raw replay of the original downstream commit history. This is intentional: some original commits predate the latest upstream sync and do not replay cleanly one by one, while the final downstream tree is valid.
 
@@ -50,6 +51,13 @@ HTTP responses and transport/read failures with account, model, status, request
 ID, and sanitized response details. It does not log uploaded audio or
 authorization headers, and does not change VoiceInk request or response
 protocol behavior.
+
+The audio transcription model selection topic keeps the ordinary account model
+mapping preference, then allows known transcription models to use an otherwise
+eligible OpenAI account when its mapping lists only chat models. Account type,
+schedulability, model rate limits, channel restrictions, endpoint capabilities,
+and profit controls remain enforced, and other endpoints keep their model
+allowlists.
 
 Future downstream work should be added as new logical patches after applying and validating the current patchset.
 
