@@ -866,7 +866,7 @@ func TestForwardAudioTranscriptions_DiagnosticsExcludeProviderResponseBody(t *te
 	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
 	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(c, body)
 	require.NoError(t, err)
-	providerEcho := `{"error":{"message":"provider-echo-secret"}}`
+	providerEcho := `{"error":{"message":"provider-echo-secret Authorization: Bearer sk-test oauth=oauth-secret https://user:password@example.test/transcribe?token=query-secret"}}`
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: &httpUpstreamRecorder{resp: newOpenAIAudioTranscriptionResponse(http.StatusInternalServerError, providerEcho)}}
 
 	_, err = svc.ForwardAudioTranscriptions(context.Background(), c, openAIAudioTranscriptionAPIKeyAccount(10), parsed, "")
@@ -879,6 +879,9 @@ func TestForwardAudioTranscriptions_DiagnosticsExcludeProviderResponseBody(t *te
 	require.True(t, ok)
 	require.Len(t, events, 1)
 	require.NotContains(t, events[0].Message, "provider-echo-secret")
+	require.NotContains(t, events[0].Message, "sk-test")
+	require.NotContains(t, events[0].Message, "oauth-secret")
+	require.NotContains(t, events[0].Message, "query-secret")
 	require.Empty(t, events[0].Detail)
 	require.Empty(t, events[0].UpstreamResponseBody)
 }

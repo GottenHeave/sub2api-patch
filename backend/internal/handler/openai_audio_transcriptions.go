@@ -276,7 +276,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 					zap.Any("group_id", apiKey.GroupID),
 					zap.String("model", parsed.Model),
 					zap.Int64("account_id", account.ID),
-				).Error("openai.audio_transcriptions.record_usage_failed", zap.Error(err))
+				).Error("openai.audio_transcriptions.record_usage_failed")
 			}
 		})
 		return
