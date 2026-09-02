@@ -79,13 +79,16 @@ jobs:
           echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Require manual upstream CI success
+        id: require_manual_ci
         if: steps.resolve_manual.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           upstream_sha="$(git -C worktree rev-parse HEAD)"
-          sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_sha"
+          ready_sha="$(sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_sha")"
+          git -C worktree checkout --detach "$ready_sha"
+          echo "upstream_sha=${ready_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Verify dispatched mirror SHA
         if: github.event_name == 'workflow_dispatch' && inputs.validated_mirror_sha != ''
@@ -125,7 +128,12 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          candidate_head="$(git -C worktree rev-parse HEAD)"
+          candidate_head="${{ steps.require_manual_ci.outputs.upstream_sha }}"
+          checked_out_head="$(git -C worktree rev-parse HEAD)"
+          if [ "$candidate_head" != "$checked_out_head" ]; then
+            echo "CI-ready upstream checkout mismatch: expected $candidate_head, got $checked_out_head" >&2
+            exit 1
+          fi
           upstream_commit="$candidate_head"
           case "$(git -C worktree show -s --format=%s HEAD)" in
             "Prepare validated upstream promotion")
