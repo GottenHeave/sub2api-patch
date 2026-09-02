@@ -151,6 +151,35 @@ func TestGatewayRoutesRealtimeDispatchMatrix(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, w.Code)
 }
 
+func TestGatewayRoutesRealtimeRESTPathsAreRegistered(t *testing.T) {
+	router := newGatewayRoutesTestRouter(service.PlatformOpenAI)
+
+	for _, path := range []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/translations/client_secrets",
+		"/v1/realtime/calls",
+		"/v1/realtime/translations/calls",
+		"/v1/realtime/calls/call_123/accept",
+		"/v1/realtime/calls/call_123/hangup",
+		"/v1/realtime/calls/call_123/refer",
+		"/v1/realtime/calls/call_123/reject",
+		"/v1/realtime/sessions",
+		"/v1/realtime/transcription_sessions",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s", path)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/realtime/sessions", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	newGatewayRoutesTestRouter(service.PlatformGrok).ServeHTTP(w, req)
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
 func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
 	router := newGatewayRoutesTestRouter()
 	registered := make(map[string]bool)
