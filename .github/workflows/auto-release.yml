@@ -187,12 +187,15 @@ jobs:
           - patchset commit: ${patchset_commit}
 
           Patch topics:
-          - CI image publishing
-          - IPv6-only proxy probing
-          - OpenAI realtime websocket proxying
-          - OpenAI audio transcription proxying
-          - Audio usage accounting and billing
-          - OpenAI realtime REST endpoints
+          - downstream Docker image publication
+          - pnpm dependency caching in the Docker BuildKit build
+          - singular \`input_token_details.cached_tokens\` parsing
+          - OpenAI realtime WebSocket sessions and translations
+          - OpenAI realtime REST sessions, translations, and calls
+          - moderation of OpenAI realtime client events
+          - OpenAI audio transcription HTTP transport and routes
+          - audio transcription scheduling, retry, diagnostics, and zero-cost usage logging
+          - caller-provided Codex system-prompt preservation
           EOF
           sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
           if grep -E '#[0-9]+|/issues/[0-9]+|/pull/[0-9]+' release-notes.md; then
