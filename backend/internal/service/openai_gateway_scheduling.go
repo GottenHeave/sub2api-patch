@@ -401,6 +401,9 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 	if !openAIAudioTranscriptionAccountExplicitlySupportsModel(ctx, account, requestedModel) {
 		return "audio_transcription_model_not_supported"
 	}
+	if accountID, _ := ctx.Value(openAIRealtimeCallAccountContextKey{}).(int64); accountID > 0 && account.ID != accountID {
+		return "realtime_call_account"
+	}
 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
 		if account.IsSchedulable() {
 			return "model_rate_limited"
