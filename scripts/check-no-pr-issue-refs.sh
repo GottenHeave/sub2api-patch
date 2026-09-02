@@ -12,10 +12,16 @@ done
 patch_files=()
 while IFS= read -r -d '' path; do
   patch_files+=("$path")
-done < <(find patches -type f -name '*.patch' -print0 2>/dev/null)
+done < <(find patches -type f -name '*.patch' -print0 2>/dev/null | sort -z)
 
 if [ "${#patch_files[@]}" -gt 0 ]; then
-  python3 scripts/sanitize-patches.py --check "${patch_files[@]}"
+  base_repo="${PATCH_BASE_REPO:?PATCH_BASE_REPO is required when checking patches}"
+  base_ref="${EXPECTED_BASE_SHA:?EXPECTED_BASE_SHA is required when checking patches}"
+  python3 scripts/sanitize-patches.py \
+    --check \
+    --repo "$base_repo" \
+    --base-ref "$base_ref" \
+    "${patch_files[@]}"
 fi
 
 if [ "${#scan_paths[@]}" -eq 0 ]; then

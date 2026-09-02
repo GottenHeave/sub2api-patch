@@ -15,32 +15,25 @@ Subject: [PATCH 08/11] feat: proxy OpenAI realtime REST endpoints
  8 files changed, 1426 insertions(+), 1 deletion(-)
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
-index 8ee8928b2..80ad3e686 100644
+index 8ee8928b2540bdb8d3712a4318f64d7767f2b5cc..80ad3e686ce6474dfc7c951ee1f7486c6c822dee 100644
 --- a/backend/internal/handler/endpoint.go
 +++ b/backend/internal/handler/endpoint.go
-@@ -32,4 +32,5 @@ const (
- 	EndpointGeminiModels         = "/v1beta/models"
+@@ -33,2 +33,3 @@ const (
  	EndpointRealtime             = "/v1/realtime"
 +	EndpointRealtimeREST         = "/v1/realtime/rest"
  )
- 
-@@ -111,4 +112,6 @@ func NormalizeInboundEndpoint(path string) string {
- 	case strings.Contains(path, EndpointResponses) || isResponsesRootAliasPath(path):
+@@ -112,2 +113,4 @@ func NormalizeInboundEndpoint(path string) string {
  		return EndpointResponses
 +	case isRealtimeRESTEndpoint(path):
 +		return EndpointRealtimeREST
  	case strings.Contains(path, EndpointRealtime):
- 		return EndpointRealtime
-@@ -207,4 +210,7 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
- 			return EndpointRealtime
+@@ -208,2 +211,5 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
  		}
 +		if inbound == EndpointRealtimeREST {
 +			return realtimeRESTUpstreamPath(rawRequestPath)
 +		}
  		// OpenAI forwards everything to the Responses API.
- 		// Preserve subresource suffix (e.g. /v1/responses/compact,
-@@ -261,4 +267,39 @@ func responsesSubpathSuffix(rawPath string) string {
- }
+@@ -262,2 +268,37 @@ func responsesSubpathSuffix(rawPath string) string {
  
 +func isRealtimeRESTEndpoint(path string) bool {
 +	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
@@ -78,10 +71,9 @@ index 8ee8928b2..80ad3e686 100644
 +}
 +
  // ──────────────────────────────────────────────────────────
- // Middleware
 diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
 new file mode 100644
-index 000000000..4485f3301
+index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd6a1ea61f
 --- /dev/null
 +++ b/backend/internal/handler/openai_realtime_calls.go
 @@ -0,0 +1,229 @@
@@ -316,7 +308,7 @@ index 000000000..4485f3301
 +}
 diff --git a/backend/internal/handler/openai_realtime_calls_test.go b/backend/internal/handler/openai_realtime_calls_test.go
 new file mode 100644
-index 000000000..d3cf895ba
+index 0000000000000000000000000000000000000000..d3cf895bacca892b6d541f91bc8e5238ed71e805
 --- /dev/null
 +++ b/backend/internal/handler/openai_realtime_calls_test.go
 @@ -0,0 +1,302 @@
@@ -623,11 +615,10 @@ index 000000000..d3cf895ba
 +	}
 +}
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index cace97ea8..8f7af707d 100644
+index cace97ea8402476267976111d1da79ad6a3715d7..8f7af707d397850fbf9f8c83b9a7a181a268941d 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -260,4 +260,26 @@ func RegisterGatewayRoutes(
- 			h.OpenAIGateway.RealtimeTranslationWebSocket(c)
+@@ -261,2 +261,24 @@ func RegisterGatewayRoutes(
  		})
 +		realtimeRESTHandler := func(c *gin.Context) {
 +			if getGroupPlatform(c) != service.PlatformOpenAI {
@@ -652,13 +643,11 @@ index cace97ea8..8f7af707d 100644
 +		gateway.POST("/realtime/sessions", realtimeRESTHandler)
 +		gateway.POST("/realtime/transcription_sessions", realtimeRESTHandler)
  		// OpenAI Chat Completions API: auto-route based on group platform
- 		gateway.POST("/chat/completions", func(c *gin.Context) {
 diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
-index 03f4b97fc..3f545b22e 100644
+index 03f4b97fcc0d4dc8ae2fdfe10cccc3c1bae707ca..3f545b22ecf7f8ad7e6e42366be6a8545e86396a 100644
 --- a/backend/internal/server/routes/gateway_test.go
 +++ b/backend/internal/server/routes/gateway_test.go
-@@ -152,4 +152,33 @@ func TestGatewayRoutesRealtimeDispatchMatrix(t *testing.T) {
- }
+@@ -153,2 +153,31 @@ func TestGatewayRoutesRealtimeDispatchMatrix(t *testing.T) {
  
 +func TestGatewayRoutesRealtimeRESTPathsAreRegistered(t *testing.T) {
 +	router := newGatewayRoutesTestRouter(service.PlatformOpenAI)
@@ -690,9 +679,8 @@ index 03f4b97fc..3f545b22e 100644
 +}
 +
  func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
- 	router := newGatewayRoutesTestRouter()
 diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-index 97953c5fb..e1cf21da6 100644
+index 97953c5fb12aec009787a4a0c71421ebedf38ff3..e1cf21da618990f51d4bf9ec85c4dd11fb2a0def 100644
 --- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
 +++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
 @@ -59,2 +59,12 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
@@ -711,7 +699,7 @@ index 97953c5fb..e1cf21da6 100644
  	}
 diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
 new file mode 100644
-index 000000000..9844270d2
+index 0000000000000000000000000000000000000000..9844270d2b575ae30eefd9dfe21e4f3b838ac386
 --- /dev/null
 +++ b/backend/internal/service/openai_realtime_calls.go
 @@ -0,0 +1,380 @@
@@ -1097,7 +1085,7 @@ index 000000000..9844270d2
 +}
 diff --git a/backend/internal/service/openai_realtime_calls_test.go b/backend/internal/service/openai_realtime_calls_test.go
 new file mode 100644
-index 000000000..336f0382b
+index 0000000000000000000000000000000000000000..336f0382b7adfb935da2dcdd997502d46178985d
 --- /dev/null
 +++ b/backend/internal/service/openai_realtime_calls_test.go
 @@ -0,0 +1,412 @@

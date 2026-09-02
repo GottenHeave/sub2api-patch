@@ -8,11 +8,10 @@ Subject: [PATCH 02/11] build: cache pnpm dependencies with BuildKit
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/Dockerfile b/Dockerfile
-index adfa4d470..c3d792874 100644
+index adfa4d4702ec6a383019343bb9159bf389f9cc38..c3d792874c771db26b784f2fbd2c6137e67f2871 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -42,5 +42,5 @@ RUN --mount=type=cache,id=sub2api-pnpm-store,target=/root/.local/share/pnpm/stor
- COPY frontend/ ./
+@@ -43,4 +43,4 @@ COPY frontend/ ./
  COPY docs/legal/ /app/docs/legal/
 -RUN pnpm run build
 +RUN --mount=type=cache,id=sub2api-pnpm-store,target=/root/.local/share/pnpm/store pnpm run build

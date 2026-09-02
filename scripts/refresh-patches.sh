@@ -44,14 +44,10 @@ expected_tree="$(git rev-parse 'HEAD^{tree}')"
 
 staging_dir="$(mktemp -d "$repo_root/patches/.refresh.XXXXXX")"
 
-git format-patch \
-  --zero-commit \
-  --no-signature \
-  --numbered \
-  --stat \
-  --unified=2 \
-  -o "$staging_dir" \
-  "$base_ref"..HEAD
+python3 "$repo_root/scripts/format-patch-series.py" \
+  --repo "$worktree" \
+  --base-ref "$base_ref" \
+  --output "$staging_dir"
 
 cd "$repo_root"
 shopt -s nullglob
@@ -61,14 +57,19 @@ if [ "${#staged_patches[@]}" -eq 0 ]; then
   exit 1
 fi
 
-python3 scripts/sanitize-patches.py "${staged_patches[@]}"
+python3 scripts/sanitize-patches.py \
+  --repo "$worktree" \
+  --base-ref "$base_sha" \
+  "${staged_patches[@]}"
 
 validation_dir="$(mktemp -d "$repo_root/patches/.replay.XXXXXX")"
 git clone --quiet --no-checkout "$worktree" "$validation_dir"
 git -C "$validation_dir" config user.name "patch replay validation"
 git -C "$validation_dir" config user.email "patch-replay@example.invalid"
+git -C "$validation_dir" config core.hooksPath /dev/null
 git -C "$validation_dir" checkout --quiet --detach "$base_sha"
-git -C "$validation_dir" am --quiet "${staged_patches[@]}"
+git -C "$validation_dir" -c core.hooksPath=/dev/null \
+  am --quiet --no-3way "${staged_patches[@]}"
 actual_tree="$(git -C "$validation_dir" rev-parse 'HEAD^{tree}')"
 if [ "$actual_tree" != "$expected_tree" ]; then
   echo "refreshed patches do not reproduce the patched tree" >&2
@@ -82,6 +83,7 @@ rmdir "$backup_dir"
 mv "$patch_dir" "$backup_dir"
 mv "$staging_dir" "$patch_dir"
 staging_dir=""
-scripts/check-no-pr-issue-refs.sh "$repo_root"
+PATCH_BASE_REPO="$worktree" EXPECTED_BASE_SHA="$base_sha" \
+  scripts/check-no-pr-issue-refs.sh "$repo_root"
 rm -rf "$backup_dir"
 backup_dir=""

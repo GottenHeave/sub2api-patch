@@ -3,9 +3,11 @@ set -euo pipefail
 
 worktree="${1:-.}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+base_sha="$(git -C "$worktree" rev-parse 'HEAD^{commit}')"
 
 "$repo_root/scripts/apply-patches.sh" "$worktree"
-"$repo_root/scripts/check-no-pr-issue-refs.sh" "$repo_root"
+PATCH_BASE_REPO="$worktree" EXPECTED_BASE_SHA="$base_sha" \
+  "$repo_root/scripts/check-no-pr-issue-refs.sh" "$repo_root"
 
 cd "$worktree"
 

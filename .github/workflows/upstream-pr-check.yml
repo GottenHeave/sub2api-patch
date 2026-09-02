@@ -67,7 +67,9 @@ jobs:
         run: sub2api-patch/scripts/apply-patches.sh worktree
 
       - name: Sanitize patch references
-        run: sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
+        run: |
+          PATCH_BASE_REPO=worktree EXPECTED_BASE_SHA="$VALIDATED_CANDIDATE" \
+            sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
 
       - name: Backend tests
         run: go test ./...

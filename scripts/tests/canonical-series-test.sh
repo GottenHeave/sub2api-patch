@@ -16,17 +16,22 @@ fi
 
 for patch in "${patches[@]}"; do
   grep -q '^---$' "$patch"
-  python3 "$repo_root/scripts/sanitize-patches.py" --check "$patch"
 done
+python3 "$repo_root/scripts/sanitize-patches.py" \
+  --check \
+  --repo "$repo_root" \
+  --base-ref "$base_sha" \
+  "${patches[@]}"
 
 replay_selection() {
   local name="$1"
   shift
   local replay="$tmp/$name"
-  git clone --quiet --shared --no-checkout "$repo_root" "$replay"
+  git init -q "$replay"
   git -C "$replay" config user.name test
   git -C "$replay" config user.email test@example.com
-  git -C "$replay" checkout --quiet --detach "$base_sha"
+  git -C "$replay" fetch --quiet --no-tags --depth=1 "$repo_root" "$base_sha"
+  git -C "$replay" checkout --quiet --detach FETCH_HEAD
   git -C "$replay" am --quiet "$@"
 }
 
@@ -44,11 +49,7 @@ replay_selection integrated_realtime \
   "${patches[8]}" "${patches[9]}"
 replay_selection codex "${patches[10]}"
 
-git clone --quiet --shared --no-checkout "$repo_root" "$tmp/replay"
-git -C "$tmp/replay" config user.name test
-git -C "$tmp/replay" config user.email test@example.com
-git -C "$tmp/replay" checkout --quiet --detach "$base_sha"
-git -C "$tmp/replay" am --quiet "${patches[@]}"
+replay_selection replay "${patches[@]}"
 actual_tree="$(git -C "$tmp/replay" rev-parse 'HEAD^{tree}')"
 if [ "$actual_tree" != "$expected_tree" ]; then
   echo "canonical series tree mismatch: expected $expected_tree, got $actual_tree" >&2

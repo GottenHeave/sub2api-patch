@@ -143,6 +143,7 @@ jobs:
               upstream_commit="$(git -C worktree rev-parse HEAD^)"
               ;;
           esac
+          echo "PATCH_BASE_SHA=$checked_out_head" >> "$GITHUB_ENV"
           echo "UPSTREAM_COMMIT=$upstream_commit" >> "$GITHUB_ENV"
           echo "UPSTREAM_COMMIT_SHORT=$(git -C worktree rev-parse --short=12 "$upstream_commit")" >> "$GITHUB_ENV"
 
@@ -154,7 +155,8 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
+          PATCH_BASE_REPO=worktree EXPECTED_BASE_SHA="$PATCH_BASE_SHA" \
+            sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
           (cd worktree/backend && go test ./...)
           pnpm --dir worktree/frontend install --frozen-lockfile
           pnpm --dir worktree/frontend run typecheck
@@ -207,7 +209,8 @@ jobs:
           - connect realtime REST moderation protocol
           - preserve caller Codex system prompts
           EOF
-          sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
+          PATCH_BASE_REPO=worktree EXPECTED_BASE_SHA="$PATCH_BASE_SHA" \
+            sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
           if grep -E '#[0-9]+|/issues/[0-9]+|/pull/[0-9]+' release-notes.md; then
             echo "blocked reference found in release notes" >&2
             exit 1

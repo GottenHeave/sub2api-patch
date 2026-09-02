@@ -9,6 +9,7 @@ new_metadata_repo() {
   local root="$1"
   mkdir -p "$root/scripts" "$root/patches/cur"
   cp "$source_root/scripts/refresh-patches.sh" "$root/scripts/"
+  cp "$source_root/scripts/format-patch-series.py" "$root/scripts/"
   cp "$source_root/scripts/sanitize-patches.py" "$root/scripts/"
   cp "$source_root/scripts/check-no-pr-issue-refs.sh" "$root/scripts/"
   printf 'existing patch series\n' > "$root/patches/cur/existing.patch"
@@ -23,6 +24,38 @@ new_worktree() {
   printf '%s\n' "$base_line" > "$root/file.txt"
   git -C "$root" add file.txt
   git -C "$root" commit -qm base
+}
+
+set_conflicting_format_config() {
+  local root="$1"
+  git -C "$root" config diff.algorithm histogram
+  git -C "$root" config diff.indentHeuristic true
+  git -C "$root" config core.quotePath false
+  git -C "$root" config format.subjectPrefix CONFLICT
+  git -C "$root" config format.thread deep
+  git -C "$root" config format.useAutoBase true
+  git -C "$root" config format.suffix .email
+  git -C "$root" config format.coverLetter auto
+  git -C "$root" config format.filenameMaxLength 32
+  git -C "$root" config format.to local-to@example.invalid
+  git -C "$root" config format.cc local-cc@example.invalid
+  git -C "$root" config format.headers 'X-Local-Header: injected'
+}
+
+refresh_with_conflicting_environment() {
+  local metadata_root="$1"
+  local worktree="$2"
+  local base_ref="$3"
+  GIT_CONFIG_COUNT=4 \
+    GIT_CONFIG_KEY_0=format.filenameMaxLength \
+    GIT_CONFIG_VALUE_0=24 \
+    GIT_CONFIG_KEY_1=format.to \
+    GIT_CONFIG_VALUE_1=environment-to@example.invalid \
+    GIT_CONFIG_KEY_2=format.cc \
+    GIT_CONFIG_VALUE_2=environment-cc@example.invalid \
+    GIT_CONFIG_KEY_3=format.headers \
+    GIT_CONFIG_VALUE_3='X-Environment-Header: injected' \
+    "$metadata_root/scripts/refresh-patches.sh" "$worktree" "$base_ref"
 }
 
 context_metadata="$tmp/context-metadata"
@@ -65,6 +98,7 @@ git -C "$malformed_worktree" commit -qam capability
 mkdir -p "$fake_bin"
 real_git="$(command -v git)"
 sed \
+  -e 's|if \[ "${PWD}" = "@TARGET_REPO@" \] && \[ "${1:-}" = "format-patch" \]; then|if [[ " $* " == *" format-patch "* ]]; then|' \
   -e "s|@REAL_GIT@|$real_git|g" \
   -e "s|@TARGET_REPO@|$malformed_worktree|g" \
   "$source_root/scripts/tests/fixtures/corrupt-format-patch-git.sh" \
@@ -101,5 +135,45 @@ grep -q 'blocked pull request, issue, or mention reference found' \
 diff -ru "$tmp/post-swap-original-series" "$post_swap_metadata/patches/cur"
 test -z "$(find "$post_swap_metadata/patches" -maxdepth 1 -type d -name '.*' -print)"
 test -z "$(find "$post_swap_metadata" -maxdepth 1 -type d -name '.cur-backup.*' -print)"
+
+canonical_base="5097b31457e6dc9f49e5f5c9c72b925ce79543b3"
+real_patches=("$source_root"/patches/cur/*.patch)
+if [ "${#real_patches[@]}" -ne 11 ]; then
+  echo "expected 11 canonical patches, found ${#real_patches[@]}" >&2
+  exit 1
+fi
+
+idempotent_source="$tmp/idempotent-source"
+first_metadata="$tmp/first-metadata"
+second_metadata="$tmp/second-metadata"
+second_worktree="$tmp/second-worktree"
+git init -q "$idempotent_source"
+git -C "$idempotent_source" config user.name test
+git -C "$idempotent_source" config user.email test@example.com
+set_conflicting_format_config "$idempotent_source"
+git -C "$idempotent_source" fetch --quiet --no-tags --depth=1 \
+  "$source_root" "$canonical_base"
+git -C "$idempotent_source" checkout --quiet --detach FETCH_HEAD
+git -C "$idempotent_source" am --quiet --no-3way "${real_patches[@]}"
+
+new_metadata_repo "$first_metadata"
+refresh_with_conflicting_environment "$first_metadata" \
+  "$idempotent_source" "$canonical_base"
+diff -ru "$source_root/patches/cur" "$first_metadata/patches/cur"
+
+git init -q "$second_worktree"
+git -C "$second_worktree" config user.name test
+git -C "$second_worktree" config user.email test@example.com
+set_conflicting_format_config "$second_worktree"
+git -C "$second_worktree" fetch --quiet --no-tags --depth=1 \
+  "$source_root" "$canonical_base"
+git -C "$second_worktree" checkout --quiet --detach FETCH_HEAD
+git -C "$second_worktree" am --quiet --no-3way \
+  "$first_metadata"/patches/cur/*.patch
+
+new_metadata_repo "$second_metadata"
+refresh_with_conflicting_environment "$second_metadata" \
+  "$second_worktree" "$canonical_base"
+diff -ru "$first_metadata/patches/cur" "$second_metadata/patches/cur"
 
 echo 'refresh patch regressions passed'

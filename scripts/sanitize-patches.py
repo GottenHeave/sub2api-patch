@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import re
 import subprocess
 import sys
-from email import policy
-from email.parser import Parser
+import tempfile
 from pathlib import Path
 
 subject_ref = re.compile(r"\s*\(#[0-9]+\)")
@@ -17,219 +17,215 @@ body_patterns = [
     re.compile(r"/issues/[0-9]+"),
     re.compile(r"/pull/[0-9]+"),
 ]
+hunk_header = re.compile(
+    r"^@@ -[0-9]+(?:,([0-9]+))? \+[0-9]+(?:,([0-9]+))? @@"
+)
 
 
 def sanitize(lines: list[str]) -> list[str]:
-    out: list[str] = []
+    output: list[str] = []
     for line in lines:
         if line.startswith("Subject: "):
             line = subject_ref.sub("", line)
         if line.lower().startswith("co-authored-by:"):
             continue
-        out.append(line)
-    return out
+        output.append(line)
+    return output
 
 
-def prefixed_path(path: str, prefix: str) -> str:
-    if path.startswith('"'):
-        return f'"{prefix}{path[1:]}'
-    return prefix + path
-
-
-def replaced_prefix(path: str, old: str, new: str) -> str:
-    quoted_old = f'"{old}'
-    if path.startswith(quoted_old):
-        return f'"{new}{path[len(quoted_old):]}'
-    if path.startswith(old):
-        return new + path[len(old) :]
-    raise SystemExit("invalid Git diff path prefix")
-
-
-def validate_diff_header_paths(lines: list[str]) -> None:
-    payload: str | None = None
-    old_path: str | None = None
-    new_path: str | None = None
-    rename_from: str | None = None
-    rename_to: str | None = None
-    copy_from: str | None = None
-    copy_to: str | None = None
-    in_headers = False
-
-    def validate_block() -> None:
-        if payload is None:
-            return
-        expected: str | None = None
-        if old_path is not None and new_path is not None:
-            source = (
-                replaced_prefix(new_path, "b/", "a/")
-                if old_path == "/dev/null"
-                else old_path
-            )
-            destination = (
-                replaced_prefix(old_path, "a/", "b/")
-                if new_path == "/dev/null"
-                else new_path
-            )
-            expected = f"{source} {destination}"
-        elif rename_from is not None and rename_to is not None:
-            expected = (
-                f"{prefixed_path(rename_from, 'a/')} "
-                f"{prefixed_path(rename_to, 'b/')}"
-            )
-        elif copy_from is not None and copy_to is not None:
-            expected = (
-                f"{prefixed_path(copy_from, 'a/')} "
-                f"{prefixed_path(copy_to, 'b/')}"
-            )
-        elif not payload.startswith('"') and payload.count(" b/") != 1:
-            raise SystemExit("invalid Git diff destination header")
-        if expected is not None and payload != expected:
-            raise SystemExit("invalid Git diff destination header")
-
-    for line in lines:
-        if line.startswith("diff --git "):
-            validate_block()
-            payload = line.removeprefix("diff --git ").rstrip("\r\n")
-            old_path = None
-            new_path = None
-            rename_from = None
-            rename_to = None
-            copy_from = None
-            copy_to = None
-            in_headers = True
-        elif in_headers and line.startswith("--- "):
-            old_path = line.removeprefix("--- ").rstrip("\r\n\t")
-        elif in_headers and line.startswith("+++ "):
-            new_path = line.removeprefix("+++ ").rstrip("\r\n\t")
-        elif in_headers and line.startswith("rename from "):
-            rename_from = line.removeprefix("rename from ").rstrip("\r\n")
-        elif in_headers and line.startswith("rename to "):
-            rename_to = line.removeprefix("rename to ").rstrip("\r\n")
-        elif in_headers and line.startswith("copy from "):
-            copy_from = line.removeprefix("copy from ").rstrip("\r\n")
-        elif in_headers and line.startswith("copy to "):
-            copy_to = line.removeprefix("copy to ").rstrip("\r\n")
-        elif line.startswith(("@@ ", "GIT binary patch")):
-            in_headers = False
-    validate_block()
-
-
-def added_patch_text(lines: list[str]) -> str:
-    selected: list[str] = []
-    in_hunk = False
-    for line in lines:
-        if line.startswith("diff --git "):
-            in_hunk = False
-        elif line.startswith("@@ "):
-            in_hunk = True
-        elif in_hunk and line.startswith("+"):
-            selected.append(line[1:])
-        elif in_hunk and not line.startswith(("-", " ", "\\ No newline")):
-            in_hunk = False
-        elif not in_hunk and line.startswith(("+++ ", "rename to ", "copy to ")):
-            selected.append(line)
-    return "".join(selected)
-
-
-def validated_destination_paths(patch: str) -> list[str]:
-    if not re.search(r"(?m)^diff --git ", patch):
-        raise SystemExit("canonical format-patch message contains no Git diff")
-    patch_lines = patch.splitlines(keepends=True)
-    validate_diff_header_paths(patch_lines)
+def git(repo: Path, *arguments: str) -> bytes:
     result = subprocess.run(
-        ["git", "apply", "--numstat", "-z", "--"],
-        input=patch.encode("utf-8"),
+        ["git", "-C", str(repo), *arguments],
         capture_output=True,
         check=False,
     )
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise SystemExit(f"invalid Git patch structure: {detail or 'git apply failed'}")
+        raise SystemExit(f"git {' '.join(arguments)} failed: {detail or 'unknown error'}")
+    return result.stdout
 
-    fields = result.stdout.split(b"\0")
+
+def check_text(path: Path, text: str) -> None:
+    for pattern in body_patterns:
+        if pattern.search(text):
+            raise SystemExit(f"blocked pull request or issue reference in {path}")
+
+
+def destination_paths(repo: Path, parent: str, commit: str) -> list[str]:
+    fields = git(
+        repo,
+        "diff-tree",
+        "--no-commit-id",
+        "--name-status",
+        "-r",
+        "-z",
+        "-M",
+        "-C",
+        parent,
+        commit,
+    ).split(b"\0")
     if fields and not fields[-1]:
         fields.pop()
     destinations: list[str] = []
-    deleted_blocks: list[bool] = []
-    for line in patch_lines:
-        if line.startswith("diff --git "):
-            deleted_blocks.append(False)
-        elif deleted_blocks and (
-            line.startswith("deleted file mode ")
-            or line.rstrip("\r\n") == "+++ /dev/null"
-        ):
-            deleted_blocks[-1] = True
     index = 0
-    record_index = 0
     while index < len(fields):
-        record = fields[index]
+        status = fields[index].decode("ascii")
         index += 1
-        parts = record.split(b"\t", 2)
-        if len(parts) != 3:
-            raise SystemExit("invalid Git numstat record")
-        path = parts[2]
-        if path:
-            destination = path
-        else:
-            if index + 1 >= len(fields):
-                raise SystemExit("invalid Git rename numstat record")
-            index += 1
-            destination = fields[index]
-            index += 1
-        if record_index >= len(deleted_blocks):
-            raise SystemExit("Git numstat contains an unmatched path")
-        if not deleted_blocks[record_index]:
+        path_count = 2 if status.startswith(("R", "C")) else 1
+        if index + path_count > len(fields):
+            raise SystemExit("invalid git diff-tree name-status output")
+        paths = fields[index : index + path_count]
+        index += path_count
+        if not status.startswith("D"):
             try:
-                destinations.append(destination.decode("utf-8"))
+                destinations.append(paths[-1].decode("utf-8"))
             except UnicodeDecodeError as error:
                 raise SystemExit("Git destination path is not UTF-8") from error
-        record_index += 1
-    if record_index != len(deleted_blocks):
-        raise SystemExit("Git diff contains a path missing from numstat")
-    if not deleted_blocks:
-        raise SystemExit("canonical format-patch message contains no changed paths")
     return destinations
 
 
-def downstream_text(text: str) -> str:
-    message = Parser(policy=policy.default).parsestr(text)
-    if message.is_multipart():
-        raise SystemExit("could not parse multipart format-patch message")
-    payload = message.get_payload()
-    if not isinstance(payload, str):
-        raise SystemExit("could not decode format-patch message")
+def added_content(repo: Path, parent: str, commit: str) -> str:
+    lines = git(
+        repo,
+        "diff",
+        "--unified=0",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        parent,
+        commit,
+        "--",
+    ).decode("utf-8").splitlines(keepends=True)
+    added: list[str] = []
+    old_remaining = 0
+    new_remaining = 0
+    for line in lines:
+        match = hunk_header.match(line)
+        if match:
+            old_remaining = int(match.group(1) or "1")
+            new_remaining = int(match.group(2) or "1")
+            continue
+        if old_remaining == 0 and new_remaining == 0:
+            continue
+        if line.startswith("+"):
+            added.append(line[1:])
+            new_remaining -= 1
+        elif line.startswith("-"):
+            old_remaining -= 1
+        elif line.startswith(" "):
+            old_remaining -= 1
+            new_remaining -= 1
+        elif line.startswith("\\ No newline at end of file"):
+            continue
+        else:
+            raise SystemExit("invalid git diff hunk output")
+        if old_remaining < 0 or new_remaining < 0:
+            raise SystemExit("invalid git diff hunk counts")
+    if old_remaining != 0 or new_remaining != 0:
+        raise SystemExit("incomplete git diff hunk output")
+    return "".join(added)
 
-    separators = list(re.finditer(r"(?m)^---\r?\n", payload))
-    if not separators:
-        raise SystemExit("format-patch message lacks canonical format-patch separator")
-    separator = separators[-1]
-    metadata = "\n".join(f"{name}: {value}" for name, value in message.raw_items())
-    metadata += "\n" + payload[: separator.start()]
-    patch = payload[separator.end() :]
-    destinations = validated_destination_paths(patch)
-    return "\n".join(
-        [metadata, added_patch_text(patch.splitlines(keepends=True)), *destinations]
+
+def reject_binary_changes(repo: Path, parent: str, commit: str) -> None:
+    records = git(
+        repo,
+        "diff",
+        "--numstat",
+        "--no-renames",
+        "-z",
+        parent,
+        commit,
+        "--",
+    ).split(b"\0")
+    if any(record.startswith(b"-\t-\t") for record in records if record):
+        raise SystemExit("binary patch content cannot be reference-scanned")
+
+
+def generate_canonical_series(
+    repo: Path, base_sha: str, output: Path
+) -> list[Path]:
+    generator = Path(__file__).with_name("format-patch-series.py")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(generator),
+            "--repo",
+            str(repo),
+            "--base-ref",
+            base_sha,
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        check=False,
     )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise SystemExit(f"canonical patch generation failed: {detail or 'unknown error'}")
+    return sorted(output.glob("*.patch"))
 
 
-check_only = False
-args = sys.argv[1:]
-if args and args[0] == "--check":
-    check_only = True
-    args = args[1:]
+def verify_series(repo: Path, base_ref: str, patches: list[Path]) -> None:
+    base_sha = git(repo, "rev-parse", f"{base_ref}^{{commit}}").decode().strip()
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        replay = root / "replay"
+        result = subprocess.run(
+            ["git", "clone", "--quiet", "--no-checkout", str(repo), str(replay)],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise SystemExit(f"could not clone patch base repository: {detail}")
+        git(replay, "config", "user.name", "patch replay validation")
+        git(replay, "config", "user.email", "patch-replay@example.invalid")
+        git(replay, "config", "core.hooksPath", "/dev/null")
+        git(replay, "checkout", "--quiet", "--detach", base_sha)
 
-for arg in args:
-    path = Path(arg)
-    if not path.exists():
-        continue
-    original = path.read_text(encoding="utf-8")
-    lines = sanitize(original.splitlines(keepends=True))
-    text = "".join(lines)
-    if check_only and text != original:
-        raise SystemExit(f"patch requires sanitization: {path}")
-    added_text = downstream_text(text)
-    for pattern in body_patterns:
-        if pattern.search(added_text):
-            raise SystemExit(f"blocked pull request or issue reference in {path}")
-    if not check_only:
-        path.write_text(text, encoding="utf-8")
+        for patch in patches:
+            parent = git(replay, "rev-parse", "HEAD").decode().strip()
+            git(
+                replay,
+                "-c",
+                "core.hooksPath=/dev/null",
+                "am",
+                "--quiet",
+                "--no-3way",
+                str(patch.resolve()),
+            )
+            commit = git(replay, "rev-parse", "HEAD").decode().strip()
+            metadata = git(replay, "show", "-s", "--format=%s%n%b", commit).decode(
+                "utf-8"
+            )
+            paths = destination_paths(replay, parent, commit)
+            reject_binary_changes(replay, parent, commit)
+            additions = added_content(replay, parent, commit)
+            check_text(patch, "\n".join([metadata, additions, *paths]))
+
+        canonical = root / "canonical"
+        canonical.mkdir()
+        generated = generate_canonical_series(replay, base_sha, canonical)
+        if len(generated) != len(patches):
+            raise SystemExit("canonical patch count differs from input series")
+        for supplied, expected in zip(patches, generated, strict=True):
+            if supplied.name != expected.name or supplied.read_bytes() != expected.read_bytes():
+                raise SystemExit(f"patch is not canonical for applied commit: {supplied}")
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--check", action="store_true")
+parser.add_argument("--repo", required=True, type=Path)
+parser.add_argument("--base-ref", required=True)
+parser.add_argument("patches", nargs="+", type=Path)
+arguments = parser.parse_args()
+
+for patch_path in arguments.patches:
+    original = patch_path.read_text(encoding="utf-8")
+    sanitized = "".join(sanitize(original.splitlines(keepends=True)))
+    if arguments.check and sanitized != original:
+        raise SystemExit(f"patch requires sanitization: {patch_path}")
+    if not arguments.check:
+        patch_path.write_text(sanitized, encoding="utf-8")
+
+verify_series(arguments.repo.resolve(), arguments.base_ref, arguments.patches)
