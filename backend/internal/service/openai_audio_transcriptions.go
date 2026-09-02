@@ -1,0 +1,644 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"net/textproto"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+)
+
+const (
+	openAIAudioTranscriptionsEndpoint = "/v1/audio/transcriptions"
+	openAITranscribeAliasEndpoint     = "/transcribe"
+	openAIAudioTranscriptionsURL      = "https://api.openai.com/v1/audio/transcriptions"
+	chatgptTranscribeURL              = "https://chatgpt.com/backend-api/transcribe"
+
+	OpenAIAudioTranscriptionsDefaultModel         = "gpt-4o-mini-transcribe"
+	openAIAudioTranscriptionsModelRateLimitPrefix = "openai_audio_transcriptions:"
+	openAIAudioTranscriptionsMaxFieldSize         = 1 << 20
+	OpenAIAudioTranscriptionsRequiredAccountTypes = AccountTypeAPIKey + "," + AccountTypeOAuth
+)
+
+var (
+	openAIAudioTranscriptionDiagnosticURLPattern = regexp.MustCompile(`(?i)\b(?:https?|wss?)://[^\s<>"']+`)
+	openAIAudioTranscriptionBearerPattern        = regexp.MustCompile(`(?i)\bbearer\s+[^\s,;]+`)
+	openAIAudioTranscriptionOAuthPattern         = regexp.MustCompile(`(?i)\boauth\s+[^\s,;]+`)
+	openAIAudioTranscriptionSecretPattern        = regexp.MustCompile(`(?i)\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|secret|password)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+`)
+)
+
+type OpenAIAudioTranscriptionsRequest struct {
+	Endpoint        string
+	ContentType     string
+	Body            []byte
+	Model           string
+	ExplicitModel   bool
+	Language        string
+	FileName        string
+	FileSizeBytes   int64
+	FileContentType string
+}
+
+func (r *OpenAIAudioTranscriptionsRequest) IsTranscribeAlias() bool {
+	return r != nil && r.Endpoint == openAITranscribeAliasEndpoint
+}
+
+func (r *OpenAIAudioTranscriptionsRequest) StickySessionSeed() string {
+	if r == nil {
+		return ""
+	}
+	return strings.Join([]string{
+		"openai-audio-transcriptions",
+		strings.TrimSpace(r.Endpoint),
+		strings.TrimSpace(r.Model),
+		strings.TrimSpace(r.Language),
+		strings.TrimSpace(r.FileName),
+	}, "|")
+}
+
+func OpenAIAudioTranscriptionsModelRateLimitScope(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		model = OpenAIAudioTranscriptionsDefaultModel
+	}
+	return openAIAudioTranscriptionsModelRateLimitPrefix + model
+}
+
+func OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	return OpenAIAudioTranscriptionsModelRateLimitScope(model)
+}
+
+func OpenAIAudioTranscriptionsAccountSelectionModel(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case model == OpenAIAudioTranscriptionsDefaultModel,
+		model == "gpt-4o-transcribe",
+		model == "gpt-4o-transcribe-diarize",
+		model == "whisper-1",
+		strings.HasPrefix(model, "gpt-4o-transcribe-"),
+		strings.HasPrefix(model, "gpt-4o-mini-transcribe-"):
+		return OpenAIAudioTranscriptionsDefaultModel
+	default:
+		return ""
+	}
+}
+
+func (s *OpenAIGatewayService) ParseOpenAIAudioTranscriptionsRequest(c *gin.Context, body []byte) (*OpenAIAudioTranscriptionsRequest, error) {
+	if c == nil || c.Request == nil {
+		return nil, fmt.Errorf("missing request context")
+	}
+	endpoint := normalizeOpenAIAudioTranscriptionsEndpointPath(c.Request.URL.Path)
+	if endpoint == "" {
+		return nil, fmt.Errorf("unsupported audio transcriptions endpoint")
+	}
+
+	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
+	decodedBody := body
+	if strings.EqualFold(strings.TrimSpace(c.GetHeader("X-Codex-Base64")), "1") {
+		var err error
+		decodedBody, err = decodeOpenAICodexBase64MultipartBody(body)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	req := &OpenAIAudioTranscriptionsRequest{
+		Endpoint:    endpoint,
+		ContentType: contentType,
+		Body:        decodedBody,
+	}
+	if err := parseOpenAIAudioTranscriptionsMultipartRequest(decodedBody, contentType, req); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		if req.IsTranscribeAlias() {
+			req.Model = OpenAIAudioTranscriptionsDefaultModel
+		} else {
+			return nil, fmt.Errorf("model is required")
+		}
+	}
+	req.Model = strings.TrimSpace(req.Model)
+	return req, nil
+}
+
+func decodeOpenAICodexBase64MultipartBody(body []byte) ([]byte, error) {
+	raw := strings.TrimSpace(string(body))
+	if raw == "" {
+		return nil, fmt.Errorf("base64 multipart body is empty")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err == nil {
+		return decoded, nil
+	}
+	decoded, rawErr := base64.RawStdEncoding.DecodeString(raw)
+	if rawErr == nil {
+		return decoded, nil
+	}
+	return nil, fmt.Errorf("invalid base64 multipart body")
+}
+
+func parseOpenAIAudioTranscriptionsMultipartRequest(body []byte, contentType string, req *OpenAIAudioTranscriptionsRequest) error {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.EqualFold(mediaType, "multipart/form-data") {
+		return fmt.Errorf("audio transcriptions endpoint requires multipart/form-data")
+	}
+	boundary := strings.TrimSpace(params["boundary"])
+	if boundary == "" {
+		return fmt.Errorf("multipart boundary is required")
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	hasFile := false
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read multipart body: %w", err)
+		}
+
+		name := strings.TrimSpace(part.FormName())
+		if name == "" {
+			_ = part.Close()
+			continue
+		}
+		if name == "file" {
+			hasFile = true
+			req.FileName = strings.TrimSpace(part.FileName())
+			req.FileContentType = strings.TrimSpace(part.Header.Get("Content-Type"))
+			fileSize, copyErr := io.Copy(io.Discard, part)
+			_ = part.Close()
+			if copyErr != nil {
+				return fmt.Errorf("read multipart file: %w", copyErr)
+			}
+			req.FileSizeBytes = fileSize
+			continue
+		}
+
+		data, err := io.ReadAll(io.LimitReader(part, openAIAudioTranscriptionsMaxFieldSize))
+		_ = part.Close()
+		if err != nil {
+			return fmt.Errorf("read multipart field %s: %w", name, err)
+		}
+		value := strings.TrimSpace(string(data))
+		switch name {
+		case "model":
+			req.Model = value
+			req.ExplicitModel = value != ""
+		case "language":
+			req.Language = value
+		}
+	}
+	if !hasFile {
+		return fmt.Errorf("file is required")
+	}
+	return nil
+}
+
+func normalizeOpenAIAudioTranscriptionsEndpointPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	switch {
+	case strings.Contains(trimmed, "/audio/transcriptions"):
+		return openAIAudioTranscriptionsEndpoint
+	case trimmed == openAITranscribeAliasEndpoint:
+		return openAITranscribeAliasEndpoint
+	default:
+		return ""
+	}
+}
+
+func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	parsed *OpenAIAudioTranscriptionsRequest,
+	channelMappedModel string,
+) (*OpenAIForwardResult, error) {
+	if parsed == nil {
+		return nil, fmt.Errorf("parsed audio transcriptions request is required")
+	}
+	if account == nil {
+		return nil, fmt.Errorf("account is required")
+	}
+	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
+		return nil, fmt.Errorf("audio transcriptions endpoint requires an OpenAI API key or OAuth account")
+	}
+
+	startTime := time.Now()
+	requestModel := strings.TrimSpace(parsed.Model)
+	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
+		requestModel = mapped
+	}
+	upstreamModel := account.GetMappedModel(requestModel)
+	if strings.TrimSpace(upstreamModel) == "" {
+		upstreamModel = requestModel
+	}
+	logger.LegacyPrintf(
+		"service.openai_gateway",
+		"[OpenAI] Audio transcriptions request routing request_model=%s upstream_model=%s account_type=%s",
+		strings.TrimSpace(parsed.Model),
+		upstreamModel,
+		account.Type,
+	)
+
+	forwardBody := parsed.Body
+	forwardContentType := parsed.ContentType
+	var err error
+	if account.Type == AccountTypeAPIKey || parsed.ExplicitModel {
+		forwardBody, forwardContentType, err = rewriteOpenAIAudioTranscriptionsMultipartModel(parsed.Body, parsed.ContentType, upstreamModel)
+		if err != nil {
+			return nil, err
+		}
+	}
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	upstreamReq, err := s.buildOpenAIAudioTranscriptionsRequest(ctx, c, account, forwardBody, forwardContentType, token)
+	if err != nil {
+		return nil, err
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	upstreamStart := time.Now()
+	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+	if err != nil {
+		safeErr := sanitizeOpenAIAudioTranscriptionDiagnostic(err.Error())
+		setOpsUpstreamError(c, 0, safeErr, "")
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: 0,
+			UpstreamURL:        safeOpenAIAudioTranscriptionURL(upstreamReq),
+			Kind:               "request_error",
+			Message:            safeErr,
+		})
+		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if resp.StatusCode >= 400 {
+		var respBody []byte
+		if resp.Body == nil {
+			logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, upstreamReq, resp, errors.New("upstream response body is nil"))
+		} else {
+			respBody, _ = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				UpstreamURL:        safeOpenAIAudioTranscriptionURL(upstreamReq),
+				Kind:               "failover",
+				Message:            "upstream transcription request failed",
+			})
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           respBody,
+				ResponseHeaders:        resp.Header.Clone(),
+				RetryableOnSameAccount: isOpenAIAudioTranscriptionSameAccountRetryable(account, resp.StatusCode),
+			}
+		}
+		return s.handleOpenAIAudioTranscriptionTerminalError(resp, c, respBody)
+	}
+	if resp.Body == nil {
+		readErr := errors.New("upstream response body is nil")
+		logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, upstreamReq, resp, readErr)
+		return nil, &UpstreamFailoverError{
+			StatusCode:             resp.StatusCode,
+			ResponseBody:           []byte(`{"error":{"message":"upstream response body is nil"}}`),
+			ResponseHeaders:        resp.Header.Clone(),
+			RetryableOnSameAccount: isOpenAIAudioTranscriptionSameAccountRetryable(account, resp.StatusCode),
+			RequestScopedTransient: true,
+		}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	if err != nil {
+		logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, upstreamReq, resp, err)
+		return nil, err
+	}
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	c.Data(resp.StatusCode, contentType, body)
+
+	usage, ok := extractOpenAIUsageFromJSONBytes(body)
+	if !ok {
+		usage = estimateOpenAIAudioTranscriptionUsage(parsed, body)
+	}
+	return &OpenAIForwardResult{
+		RequestID:       resp.Header.Get("x-request-id"),
+		Usage:           usage,
+		Model:           requestModel,
+		UpstreamModel:   upstreamModel,
+		Stream:          false,
+		ResponseHeaders: resp.Header.Clone(),
+		Duration:        time.Since(startTime),
+	}, nil
+}
+
+func (s *OpenAIGatewayService) handleOpenAIAudioTranscriptionTerminalError(resp *http.Response, c *gin.Context, body []byte) (*OpenAIForwardResult, error) {
+	if resp == nil {
+		return nil, errors.New("upstream response is nil")
+	}
+	if c != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		c.Data(resp.StatusCode, contentType, body)
+	}
+	return nil, fmt.Errorf("upstream transcription returned status %d", resp.StatusCode)
+}
+
+func sanitizeOpenAIAudioTranscriptionDiagnostic(value string) string {
+	value = openAIAudioTranscriptionDiagnosticURLPattern.ReplaceAllStringFunc(value, redactOpenAIAudioTranscriptionDiagnosticURL)
+	value = openAIAudioTranscriptionBearerPattern.ReplaceAllString(value, "Bearer ***")
+	value = openAIAudioTranscriptionOAuthPattern.ReplaceAllString(value, "OAuth ***")
+	value = openAIAudioTranscriptionSecretPattern.ReplaceAllString(value, "$1***")
+	return truncateString(sanitizeUpstreamErrorMessage(strings.TrimSpace(value)), 2048)
+}
+
+func redactOpenAIAudioTranscriptionDiagnosticURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "***"
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
+}
+
+func safeOpenAIAudioTranscriptionURL(req *http.Request) string {
+	if req == nil || req.URL == nil {
+		return ""
+	}
+	u := *req.URL
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.Scheme + "://" + u.Host + u.EscapedPath()
+}
+
+func logOpenAIAudioTranscriptionResponseReadFailure(ctx context.Context, account *Account, req *http.Request, resp *http.Response, err error) {
+	if account == nil || resp == nil || err == nil {
+		return
+	}
+	logger.FromContext(ctx).Error("openai.audio_transcriptions.upstream_response_read_failed",
+		zap.Int64("account_id", account.ID),
+		zap.Int("upstream_status_code", resp.StatusCode),
+		zap.String("upstream_request_id", strings.TrimSpace(resp.Header.Get("x-request-id"))),
+		zap.String("upstream_url", safeOpenAIAudioTranscriptionURL(req)),
+		zap.String("error", sanitizeOpenAIAudioTranscriptionDiagnostic(err.Error())),
+	)
+}
+
+// FinalizeOpenAIAudioTranscriptionFailover applies account state after
+// same-account retries have exhausted.
+func (s *OpenAIGatewayService) FinalizeOpenAIAudioTranscriptionFailover(ctx context.Context, account *Account, requestModel string, failoverErr *UpstreamFailoverError) {
+	if s == nil || account == nil || failoverErr == nil || ctx == nil || ctx.Err() != nil || s.rateLimitService == nil {
+		return
+	}
+	resp := &http.Response{
+		StatusCode: failoverErr.StatusCode,
+		Header:     failoverErr.ResponseHeaders,
+		Body:       io.NopCloser(bytes.NewReader(failoverErr.ResponseBody)),
+	}
+	s.handleOpenAIAudioTranscriptionFailoverSideEffects(ctx, resp, account, requestModel, failoverErr.ResponseBody)
+}
+
+func (s *OpenAIGatewayService) handleOpenAIAudioTranscriptionFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account, requestModel string, respBody []byte) {
+	if s == nil || s.rateLimitService == nil || resp == nil || account == nil {
+		return
+	}
+	if account.Type == AccountTypeOAuth && resp.StatusCode == http.StatusTooManyRequests {
+		if resetAt := parseOpenAIAudioTranscriptionRetryAfterSeconds(respBody); resetAt != nil && s.accountRepo != nil {
+			scope := OpenAIAudioTranscriptionsModelRateLimitScope(requestModel)
+			resetTime := time.Unix(*resetAt, 0)
+			if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, scope, resetTime); err != nil {
+				logger.L().Warn("openai.audio_transcriptions.model_rate_limit_set_failed",
+					zap.Int64("account_id", account.ID),
+					zap.String("scope", scope),
+					zap.Error(err),
+				)
+			}
+			return
+		}
+	}
+	s.handleFailoverSideEffects(ctx, resp, account, respBody, requestModel)
+}
+
+func parseOpenAIAudioTranscriptionRetryAfterSeconds(body []byte) *int64 {
+	seconds := gjson.GetBytes(body, "detail.retry_after_seconds").Int()
+	if seconds <= 0 {
+		seconds = gjson.GetBytes(body, "retry_after_seconds").Int()
+	}
+	if seconds <= 0 {
+		return nil
+	}
+	resetAt := time.Now().Add(time.Duration(seconds) * time.Second).Unix()
+	return &resetAt
+}
+
+func isOpenAIAudioTranscriptionSameAccountRetryable(account *Account, _ int) bool {
+	return account != nil
+}
+
+func estimateOpenAIAudioTranscriptionUsage(parsed *OpenAIAudioTranscriptionsRequest, responseBody []byte) OpenAIUsage {
+	usage := OpenAIUsage{}
+	text := strings.TrimSpace(gjson.GetBytes(responseBody, "text").String())
+	if text != "" {
+		usage.OutputTokens = estimateOpenAIAudioTranscriptionTextTokens(text)
+	}
+	return usage
+}
+
+func estimateOpenAIAudioTranscriptionTextTokens(text string) int {
+	runeCount := len([]rune(strings.TrimSpace(text)))
+	if runeCount == 0 {
+		return 0
+	}
+	tokens := int(math.Ceil(float64(runeCount) / 4))
+	if tokens < 1 {
+		return 1
+	}
+	return tokens
+}
+
+func (s *OpenAIGatewayService) buildOpenAIAudioTranscriptionsRequest(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	contentType string,
+	token string,
+) (*http.Request, error) {
+	targetURL := openAIAudioTranscriptionsURL
+	if account.Type == AccountTypeOAuth {
+		targetURL = chatgptTranscribeURL
+	} else if baseURL := account.GetOpenAIBaseURL(); baseURL != "" {
+		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+		if err != nil {
+			return nil, err
+		}
+		targetURL = buildOpenAIAudioTranscriptionsURL(validatedURL)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if c != nil && c.Request != nil {
+		for key, values := range c.Request.Header {
+			lowerKey := strings.ToLower(key)
+			if lowerKey == "x-codex-base64" || !openaiPassthroughAllowedHeaders[lowerKey] {
+				continue
+			}
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
+		}
+	}
+	req.Header.Del("Authorization")
+	req.Header.Del("X-Api-Key")
+	req.Header.Del("X-Goog-Api-Key")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if account.Type == AccountTypeOAuth {
+		req.Host = "chatgpt.com"
+		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
+			req.Header.Set("chatgpt-account-id", chatgptAccountID)
+		}
+		isCodexOfficialClient := false
+		if c != nil {
+			isCodexOfficialClient = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
+		}
+		req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexOfficialClient))
+	}
+	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
+		req.Header.Set("User-Agent", customUA)
+	} else if account.Type == AccountTypeOAuth {
+		req.Header.Set("User-Agent", codexCLIUserAgent)
+	}
+	if strings.TrimSpace(contentType) != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	return req, nil
+}
+
+func buildOpenAIAudioTranscriptionsURL(base string) string {
+	return buildOpenAIEndpointURL(base, openAIAudioTranscriptionsEndpoint)
+}
+
+func rewriteOpenAIAudioTranscriptionsMultipartModel(body []byte, contentType string, model string) ([]byte, string, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return body, contentType, nil
+	}
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse multipart content-type: %w", err)
+	}
+	boundary := strings.TrimSpace(params["boundary"])
+	if boundary == "" {
+		return nil, "", fmt.Errorf("multipart boundary is required")
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+	modelWritten := false
+
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("read multipart body: %w", err)
+		}
+
+		formName := strings.TrimSpace(part.FormName())
+		partHeader := cloneOpenAIAudioMultipartHeader(part.Header)
+		target, err := writer.CreatePart(partHeader)
+		if err != nil {
+			_ = part.Close()
+			return nil, "", fmt.Errorf("create multipart part: %w", err)
+		}
+		if formName == "model" && part.FileName() == "" {
+			if _, err := target.Write([]byte(model)); err != nil {
+				_ = part.Close()
+				return nil, "", fmt.Errorf("rewrite multipart model: %w", err)
+			}
+			modelWritten = true
+			_ = part.Close()
+			continue
+		}
+		if _, err := io.Copy(target, part); err != nil {
+			_ = part.Close()
+			return nil, "", fmt.Errorf("copy multipart part: %w", err)
+		}
+		_ = part.Close()
+	}
+
+	if !modelWritten {
+		if err := writer.WriteField("model", model); err != nil {
+			return nil, "", fmt.Errorf("append multipart model field: %w", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("finalize multipart body: %w", err)
+	}
+	return buffer.Bytes(), writer.FormDataContentType(), nil
+}
+
+func cloneOpenAIAudioMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
+	dst := make(textproto.MIMEHeader, len(src))
+	for key, values := range src {
+		copied := make([]string, len(values))
+		copy(copied, values)
+		dst[key] = copied
+	}
+	return dst
+}
