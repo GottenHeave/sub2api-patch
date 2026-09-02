@@ -1264,8 +1264,8 @@ func getNormalizedCodexModel(modelID string) string {
 	return ""
 }
 
-// extractTextFromContent extracts plain text from a content value that is either
-// a Go string or a []any of text-like content-part maps.
+// extractTextFromContent extracts plain text from string, array, and object
+// content values. Object values may expose text directly or nest it in content.
 func extractTextFromContent(content any) string {
 	switch v := content.(type) {
 	case string:
@@ -1273,18 +1273,16 @@ func extractTextFromContent(content any) string {
 	case []any:
 		var parts []string
 		for _, part := range v {
-			m, ok := part.(map[string]any)
-			if !ok {
-				continue
-			}
-			switch t, _ := m["type"].(string); t {
-			case "text", "input_text", "output_text":
-				if text, ok := m["text"].(string); ok {
-					parts = append(parts, text)
-				}
+			if text := extractTextFromContent(part); text != "" {
+				parts = append(parts, text)
 			}
 		}
 		return strings.Join(parts, "")
+	case map[string]any:
+		if text := extractTextFromContent(v["text"]); strings.TrimSpace(text) != "" {
+			return text
+		}
+		return extractTextFromContent(v["content"])
 	default:
 		return ""
 	}
@@ -1478,12 +1476,41 @@ func applyCodexClientMetadata(reqBody map[string]any, account *Account) bool {
 
 // applyInstructions 处理 instructions 字段：仅在 instructions 为空时填充默认值。
 func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
-	if !isInstructionsEmpty(reqBody) {
+	if !isInstructionsEmpty(reqBody) || hasOpenAICodexExplicitSystemPrompt(reqBody) {
 		return false
 	}
 	model, _ := reqBody["model"].(string)
 	reqBody["instructions"] = defaultCodexSynthInstructions(model)
 	return true
+}
+
+// hasOpenAICodexExplicitSystemPrompt recognizes caller-owned prompt text in
+// the legacy top-level system_prompt field or a Responses input item with
+// role=system or role=developer. Detection does not rewrite the caller's value.
+func hasOpenAICodexExplicitSystemPrompt(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	if strings.TrimSpace(extractTextFromContent(reqBody["system_prompt"])) != "" {
+		return true
+	}
+	input, ok := reqBody["input"].([]any)
+	if !ok {
+		return false
+	}
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := item["role"].(string)
+		role = strings.TrimSpace(role)
+		if (strings.EqualFold(role, "system") || strings.EqualFold(role, "developer")) &&
+			strings.TrimSpace(extractTextFromContent(item["content"])) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // isInstructionsEmpty 检查 instructions 字段是否为空

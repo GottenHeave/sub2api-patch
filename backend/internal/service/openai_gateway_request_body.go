@@ -1333,6 +1333,48 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
 	return ""
 }
 
+// hasOpenAICodexExplicitSystemPromptBody is the raw-body counterpart of
+// hasOpenAICodexExplicitSystemPrompt. It prevents a default instruction from
+// being added before the request reaches the decoded Codex transform.
+func hasOpenAICodexExplicitSystemPromptBody(body []byte) bool {
+	if openAIJSONValueHasText(gjson.GetBytes(body, "system_prompt")) {
+		return true
+	}
+	for _, item := range gjson.GetBytes(body, "input").Array() {
+		role := strings.TrimSpace(item.Get("role").String())
+		if !strings.EqualFold(role, "system") && !strings.EqualFold(role, "developer") {
+			continue
+		}
+		if openAIJSONValueHasText(item.Get("content")) {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIJSONValueHasText(value gjson.Result) bool {
+	if !value.Exists() || value.Type == gjson.Null {
+		return false
+	}
+	switch value.Type {
+	case gjson.String:
+		return strings.TrimSpace(value.String()) != ""
+	case gjson.JSON:
+		if value.IsArray() {
+			for _, item := range value.Array() {
+				if openAIJSONValueHasText(item.Get("text")) || openAIJSONValueHasText(item) {
+					return true
+				}
+			}
+			return false
+		}
+		if value.IsObject() {
+			return openAIJSONValueHasText(value.Get("text")) || openAIJSONValueHasText(value.Get("content"))
+		}
+	}
+	return false
+}
+
 func isOpenAICodexModel(model string) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex")
 }
