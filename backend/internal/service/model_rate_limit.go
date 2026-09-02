@@ -18,6 +18,45 @@ const (
 	anthropicFableRateLimitKey = "claude-fable-5"
 )
 
+type modelRateLimitExtraScopesContextKey struct{}
+
+// WithModelRateLimitExtraScopes adds request-specific scopes without replacing
+// the account's mapped-model scope.
+func WithModelRateLimitExtraScopes(ctx context.Context, scopes ...string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	unique := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		scope = strings.TrimSpace(scope)
+		if scope == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range unique {
+			if existing == scope {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			unique = append(unique, scope)
+		}
+	}
+	if len(unique) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, modelRateLimitExtraScopesContextKey{}, unique)
+}
+
+func modelRateLimitExtraScopesFromContext(ctx context.Context) []string {
+	if ctx == nil {
+		return nil
+	}
+	scopes, _ := ctx.Value(modelRateLimitExtraScopesContextKey{}).([]string)
+	return scopes
+}
+
 // isRateLimitActiveForKey 检查指定 key 的限流是否生效
 func (a *Account) isRateLimitActiveForKey(key string) bool {
 	resetAt := a.modelRateLimitResetAt(key)
@@ -77,14 +116,17 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 	}
 
 	keys := []string{modelKey}
+	for _, scope := range modelRateLimitExtraScopesFromContext(ctx) {
+		keys = appendModelRateLimitKey(keys, scope)
+	}
 	switch a.Platform {
 	case PlatformAntigravity:
-		if isAntigravityGeminiModel(modelKey) && modelKey != antigravityGeminiModelRateLimitKey {
-			keys = append(keys, antigravityGeminiModelRateLimitKey)
+		if isAntigravityGeminiModel(modelKey) {
+			keys = appendModelRateLimitKey(keys, antigravityGeminiModelRateLimitKey)
 		}
 	case PlatformOpenAI:
-		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) && modelKey != openAIImageGenerationRateLimitKey {
-			keys = append(keys, openAIImageGenerationRateLimitKey)
+		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) {
+			keys = appendModelRateLimitKey(keys, openAIImageGenerationRateLimitKey)
 		}
 	case PlatformAnthropic:
 		if isAnthropicFableModel(modelKey) && modelKey != anthropicFableRateLimitKey {
@@ -92,6 +134,19 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 		}
 	}
 	return keys
+}
+
+func appendModelRateLimitKey(keys []string, key string) []string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return keys
+	}
+	for _, existing := range keys {
+		if existing == key {
+			return keys
+		}
+	}
+	return append(keys, key)
 }
 
 // isAnthropicFableModel 判断是否为 Fable 模型家族（claude-fable-5、claude-fable-5[1m] 等变体）

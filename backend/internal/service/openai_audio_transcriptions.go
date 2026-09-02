@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -82,7 +83,8 @@ func OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(model string) string {
 func OpenAIAudioTranscriptionsAccountSelectionModel(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
 	switch {
-	case model == "gpt-4o-transcribe",
+	case model == OpenAIAudioTranscriptionsDefaultModel,
+		model == "gpt-4o-transcribe",
 		model == "gpt-4o-transcribe-diarize",
 		model == "whisper-1",
 		strings.HasPrefix(model, "gpt-4o-transcribe-"),
@@ -278,22 +280,27 @@ func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		safeErr := sanitizeOpenAIAudioTranscriptionDiagnostic(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			AccountName:        account.Name,
 			UpstreamStatusCode: 0,
-			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+			UpstreamURL:        safeOpenAIAudioTranscriptionURL(upstreamReq),
 			Kind:               "request_error",
 			Message:            safeErr,
 		})
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		_ = resp.Body.Close()
+		var respBody []byte
+		if resp.Body == nil {
+			logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, upstreamReq, resp, errors.New("upstream response body is nil"))
+		} else {
+			respBody, _ = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+		}
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -304,25 +311,29 @@ func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
 				AccountName:        account.Name,
 				UpstreamStatusCode: resp.StatusCode,
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+				UpstreamURL:        safeOpenAIAudioTranscriptionURL(upstreamReq),
 				Kind:               "failover",
-				Message:            upstreamMsg,
+				Message:            "upstream transcription request failed",
 			})
-			if s.rateLimitService != nil {
-				s.handleOpenAIAudioTranscriptionFailoverSideEffects(ctx, resp, account, requestModel, respBody)
-			}
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
+				ResponseHeaders:        resp.Header.Clone(),
 				RetryableOnSameAccount: isOpenAIAudioTranscriptionSameAccountRetryable(account, resp.StatusCode),
 			}
 		}
-		return s.handleErrorResponse(ctx, resp, c, account, forwardBody)
+		return s.handleOpenAIAudioTranscriptionTerminalError(resp, c, respBody)
+	}
+	if resp.Body == nil {
+		readErr := errors.New("upstream response body is nil")
+		logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, upstreamReq, resp, readErr)
+		return nil, readErr
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
+		logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, upstreamReq, resp, err)
 		return nil, err
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -347,6 +358,65 @@ func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
 	}, nil
 }
 
+func (s *OpenAIGatewayService) handleOpenAIAudioTranscriptionTerminalError(resp *http.Response, c *gin.Context, body []byte) (*OpenAIForwardResult, error) {
+	if resp == nil {
+		return nil, errors.New("upstream response is nil")
+	}
+	if c != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		c.Data(resp.StatusCode, contentType, body)
+	}
+	return nil, fmt.Errorf("upstream transcription returned status %d", resp.StatusCode)
+}
+
+func sanitizeOpenAIAudioTranscriptionDiagnostic(value string) string {
+	return truncateString(sanitizeUpstreamErrorMessage(strings.TrimSpace(value)), 2048)
+}
+
+func safeOpenAIAudioTranscriptionURL(req *http.Request) string {
+	if req == nil || req.URL == nil {
+		return ""
+	}
+	u := *req.URL
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.Scheme + "://" + u.Host + u.EscapedPath()
+}
+
+func logOpenAIAudioTranscriptionResponseReadFailure(ctx context.Context, account *Account, req *http.Request, resp *http.Response, err error) {
+	if account == nil || resp == nil || err == nil {
+		return
+	}
+	logger.FromContext(ctx).Error("openai.audio_transcriptions.upstream_response_read_failed",
+		zap.Int64("account_id", account.ID),
+		zap.Int("upstream_status_code", resp.StatusCode),
+		zap.String("upstream_request_id", strings.TrimSpace(resp.Header.Get("x-request-id"))),
+		zap.String("upstream_url", safeOpenAIAudioTranscriptionURL(req)),
+		zap.String("error", sanitizeOpenAIAudioTranscriptionDiagnostic(err.Error())),
+	)
+}
+
+// FinalizeOpenAIAudioTranscriptionFailover applies account state only after
+// same-account retries have exhausted and the account slot has been released.
+func (s *OpenAIGatewayService) FinalizeOpenAIAudioTranscriptionFailover(ctx context.Context, account *Account, requestModel string, failoverErr *UpstreamFailoverError) {
+	if s == nil || account == nil || failoverErr == nil || ctx == nil || ctx.Err() != nil || s.rateLimitService == nil {
+		return
+	}
+	resp := &http.Response{
+		StatusCode: failoverErr.StatusCode,
+		Header:     failoverErr.ResponseHeaders,
+		Body:       io.NopCloser(bytes.NewReader(failoverErr.ResponseBody)),
+	}
+	s.handleOpenAIAudioTranscriptionFailoverSideEffects(ctx, resp, account, requestModel, failoverErr.ResponseBody)
+}
+
 func (s *OpenAIGatewayService) handleOpenAIAudioTranscriptionFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account, requestModel string, respBody []byte) {
 	if s == nil || s.rateLimitService == nil || resp == nil || account == nil {
 		return
@@ -365,37 +435,27 @@ func (s *OpenAIGatewayService) handleOpenAIAudioTranscriptionFailoverSideEffects
 			return
 		}
 	}
-	s.handleFailoverSideEffects(ctx, resp, account)
+	s.handleFailoverSideEffects(ctx, resp, account, respBody, requestModel)
 }
 
 func parseOpenAIAudioTranscriptionRetryAfterSeconds(body []byte) *int64 {
-	return parseOpenAIRetryAfterSecondsFromBody(body)
+	seconds := gjson.GetBytes(body, "detail.retry_after_seconds").Int()
+	if seconds <= 0 {
+		seconds = gjson.GetBytes(body, "retry_after_seconds").Int()
+	}
+	if seconds <= 0 {
+		return nil
+	}
+	resetAt := time.Now().Add(time.Duration(seconds) * time.Second).Unix()
+	return &resetAt
 }
 
-func isOpenAIAudioTranscriptionSameAccountRetryable(account *Account, statusCode int) bool {
-	if account == nil {
-		return false
-	}
-	if account.Type == AccountTypeOAuth && statusCode >= 500 {
-		return true
-	}
-	return account.IsPoolMode() && isPoolModeRetryableStatus(statusCode)
+func isOpenAIAudioTranscriptionSameAccountRetryable(account *Account, _ int) bool {
+	return account != nil
 }
 
 func estimateOpenAIAudioTranscriptionUsage(parsed *OpenAIAudioTranscriptionsRequest, responseBody []byte) OpenAIUsage {
 	usage := OpenAIUsage{}
-	if parsed != nil && parsed.FileSizeBytes > 0 {
-		// Fallback for ChatGPT transcribe responses that return text without usage.
-		// Estimate duration as 16 kHz 16-bit mono PCM, then use 50 audio tokens/sec.
-		const bytesPerSecond = 16000 * 2
-		const audioTokensPerSecond = 50
-		seconds := math.Ceil(float64(parsed.FileSizeBytes) / float64(bytesPerSecond))
-		if seconds < 1 {
-			seconds = 1
-		}
-		usage.InputAudioTokens = int(seconds * audioTokensPerSecond)
-	}
-
 	text := strings.TrimSpace(gjson.GetBytes(responseBody, "text").String())
 	if text != "" {
 		usage.OutputTokens = estimateOpenAIAudioTranscriptionTextTokens(text)
