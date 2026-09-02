@@ -864,6 +864,20 @@ func TestPolicyModelFromSessionFrame_OnlySessionUpdate(t *testing.T) {
 	require.Empty(t, openAIWSPassthroughPolicyModelFromSessionFrame(account, noModel))
 }
 
+func TestRewriteOpenAIRealtimeSessionModelForAccountUsesMappedModel(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"client-realtime": "gpt-realtime"},
+		},
+	}
+	payload := []byte(`{"type":"session.update","session":{"model":"client-realtime"}}`)
+
+	updated := rewriteOpenAIRealtimeSessionModelForAccount(account, payload, "client-realtime")
+
+	require.Equal(t, "gpt-realtime", gjson.GetBytes(updated, "session.model").String())
+}
+
 // --- Fix2: native /responses normalize "fast" → "priority" on pass ---
 
 // TestApplyOpenAIFastPolicyToBody_PassNormalizesFastAlias is the fix2
