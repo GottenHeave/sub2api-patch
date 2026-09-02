@@ -1,28 +1,33 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 13:09:56 +0000
-Subject: [PATCH] feat: moderate OpenAI realtime client events
+Date: Wed, 2 Sep 2026 14:02:58 +0000
+Subject: [PATCH 09/11] feat: moderate OpenAI realtime client events
 
 
 diff --git a/backend/internal/handler/openai_live.go b/backend/internal/handler/openai_live.go
 index 1f6b6c49a..9c21c31e1 100644
 --- a/backend/internal/handler/openai_live.go
 +++ b/backend/internal/handler/openai_live.go
-@@ -70,3 +70,3 @@ func (h *OpenAIGatewayHandler) Live(c *gin.Context) {
+@@ -69,5 +69,5 @@ func (h *OpenAIGatewayHandler) Live(c *gin.Context) {
+ 		apiKey,
  		subject,
 -		service.ContentModerationProtocolOpenAIResponses,
 +		service.ContentModerationProtocolOpenAIRealtime,
  		model,
+ 		request.Session,
 diff --git a/backend/internal/handler/openai_live_test.go b/backend/internal/handler/openai_live_test.go
 index 93fc10fff..451b63d64 100644
 --- a/backend/internal/handler/openai_live_test.go
 +++ b/backend/internal/handler/openai_live_test.go
-@@ -10,2 +10,4 @@ import (
+@@ -9,4 +9,6 @@ import (
+ 	"testing"
  
 +	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 +	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
  	"github.com/Wei-Shaw/sub2api/internal/service"
-@@ -94,2 +96,27 @@ func TestLiveEnabledForAPIKey(t *testing.T) {
+ 	"github.com/gin-gonic/gin"
+@@ -93,4 +95,29 @@ func TestLiveEnabledForAPIKey(t *testing.T) {
+ }
  
 +func TestLiveSecurityAuditUsesRealtimeProtocol(t *testing.T) {
 +	gin.SetMode(gin.TestMode)
@@ -50,11 +55,13 @@ index 93fc10fff..451b63d64 100644
 +}
 +
  func TestLiveAttestationErrorIsExplicit(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
 diff --git a/backend/internal/securityaudit/coordinator_test.go b/backend/internal/securityaudit/coordinator_test.go
 index 936f2a7c1..4ab31a144 100644
 --- a/backend/internal/securityaudit/coordinator_test.go
 +++ b/backend/internal/securityaudit/coordinator_test.go
-@@ -42,2 +42,67 @@ func (f *fakePromptEngine) Evaluate(context.Context, Request) (*PromptDecision,
+@@ -41,4 +41,69 @@ func (f *fakePromptEngine) Evaluate(context.Context, Request) (*PromptDecision,
+ }
  
 +type snapshotPromptEngine struct {
 +	mode     Mode
@@ -122,22 +129,28 @@ index 936f2a7c1..4ab31a144 100644
 +}
 +
  func TestCoordinatorModesAndPriority(t *testing.T) {
+ 	tests := []struct {
 diff --git a/backend/internal/securityaudit/prompt_snapshot.go b/backend/internal/securityaudit/prompt_snapshot.go
 index b47e84674..2f77d4c3a 100644
 --- a/backend/internal/securityaudit/prompt_snapshot.go
 +++ b/backend/internal/securityaudit/prompt_snapshot.go
-@@ -94,2 +94,5 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
+@@ -93,4 +93,7 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
+ 	case "openai_responses", "responses", "responses_websocket":
  		if frameType := stringValue(root["type"]); frameType != "" || protocol == "responses_websocket" {
 +			if realtime := extractOpenAIRealtimeSegments(root); len(realtime) > 0 {
 +				return realtime
 +			}
  			if frameType != "response.create" {
-@@ -106,2 +109,4 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
+ 				return nil
+@@ -105,4 +108,6 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
+ 		}
  		return append(extractInstructions(root["instructions"]), extractResponses(root["input"])...)
 +	case "openai_realtime", "realtime":
 +		return extractOpenAIRealtimeSegments(root)
  	case "openai_images", "grok_media", "media", "images":
-@@ -122,2 +127,23 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
+ 		return userPromptSegments(extractMediaPrompts(root))
+@@ -121,4 +126,25 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
+ }
  
 +func extractOpenAIRealtimeSegments(root map[string]any) []promptSegment {
 +	if root == nil {
@@ -161,15 +174,25 @@ index b47e84674..2f77d4c3a 100644
 +}
 +
  // clientInstructionRoles are roles a client may freely populate. Attackers can
+ // place jailbreak/PII text in assistant/tool turns, so blocking audit must scan
 diff --git a/backend/internal/service/content_moderation.go b/backend/internal/service/content_moderation.go
-index a8cd4b93d..e8015ba40 100644
+index b25f5ec4d..e8015ba40 100644
 --- a/backend/internal/service/content_moderation.go
 +++ b/backend/internal/service/content_moderation.go
-@@ -816,2 +816,3 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
+@@ -54,4 +54,5 @@ const (
+ 	ContentModerationProtocolAnthropicMessages = "anthropic_messages"
+ 	ContentModerationProtocolOpenAIResponses   = "openai_responses"
++	ContentModerationProtocolOpenAIRealtime    = "openai_realtime"
+ 	ContentModerationProtocolOpenAIChat        = "openai_chat_completions"
+ 	ContentModerationProtocolGemini            = "gemini"
+@@ -814,4 +815,5 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
+ func (s *ContentModerationService) Check(ctx context.Context, input ContentModerationCheckInput) (*ContentModerationDecision, error) {
  	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
 +	input.Protocol = normalizeContentModerationProtocol(input.Protocol, input.Endpoint)
  	if s == nil || s.settingRepo == nil || s.repo == nil {
-@@ -1047,2 +1048,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
+ 		slog.Info("content_moderation.skip_unavailable",
+@@ -1045,4 +1047,11 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
+ }
  
 +func normalizeContentModerationProtocol(protocol string, endpoint string) string {
 +	if protocol == ContentModerationProtocolOpenAIResponses && strings.EqualFold(strings.TrimSpace(endpoint), "/v1/realtime") {
@@ -179,16 +202,20 @@ index a8cd4b93d..e8015ba40 100644
 +}
 +
  func (s *ContentModerationService) checkSync(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) *ContentModerationDecision {
+ 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
 diff --git a/backend/internal/service/content_moderation_input.go b/backend/internal/service/content_moderation_input.go
 index 73d5b6973..1e9dff174 100644
 --- a/backend/internal/service/content_moderation_input.go
 +++ b/backend/internal/service/content_moderation_input.go
-@@ -28,2 +28,4 @@ func ExtractContentModerationInput(protocol string, body []byte) ContentModerati
+@@ -27,4 +27,6 @@ func ExtractContentModerationInput(protocol string, body []byte) ContentModerati
+ 	case ContentModerationProtocolOpenAIResponses:
  		collectLastResponsesInput(gjson.GetBytes(body, "input"), &parts, &images)
 +	case ContentModerationProtocolOpenAIRealtime:
 +		collectRealtimeEventInput(gjson.ParseBytes(body), &parts, &images)
  	case ContentModerationProtocolGemini:
-@@ -173,2 +175,64 @@ func responseItemHasModerationText(item gjson.Result) bool {
+ 		collectLastGeminiContent(gjson.GetBytes(body, "contents"), &parts, &images)
+@@ -172,4 +174,66 @@ func responseItemHasModerationText(item gjson.Result) bool {
+ }
  
 +func collectRealtimeEventInput(event gjson.Result, parts *[]string, images *[]string) {
 +	eventType := strings.ToLower(strings.TrimSpace(event.Get("type").String()))
@@ -253,11 +280,13 @@ index 73d5b6973..1e9dff174 100644
 +}
 +
  func collectLastGeminiContent(contents gjson.Result, parts *[]string, images *[]string) {
+ 	if !contents.IsArray() {
 diff --git a/backend/internal/service/content_moderation_test.go b/backend/internal/service/content_moderation_test.go
 index 1cacc6747..e0ee4340c 100644
 --- a/backend/internal/service/content_moderation_test.go
 +++ b/backend/internal/service/content_moderation_test.go
-@@ -1012,2 +1012,53 @@ func TestExtractContentModerationInput_OpenAIResponsesCodexPayloadUsesLastUserMe
+@@ -1011,4 +1011,55 @@ func TestExtractContentModerationInput_OpenAIResponsesCodexPayloadUsesLastUserMe
+ }
  
 +func TestExtractContentModerationInput_OpenAIRealtimeSessionUpdateExtractsInstructions(t *testing.T) {
 +	body := []byte(`{
@@ -311,3 +340,4 @@ index 1cacc6747..e0ee4340c 100644
 +}
 +
  func TestContentModerationCheck_OpenAIResponsesRecordsNonHitForCodexPayload(t *testing.T) {
+ 	var moderationRequest moderationAPIRequest

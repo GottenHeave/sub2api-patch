@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 13:10:16 +0000
-Subject: [PATCH] feat: expose OpenAI audio transcription transport
+Date: Wed, 2 Sep 2026 14:03:17 +0000
+Subject: [PATCH 06/11] feat: expose OpenAI audio transcription transport
 
 
 diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
@@ -1013,10 +1013,11 @@ index 000000000..787c5233f
 +	}
 +}
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index 6da33c207..8f7af707d 100644
+index fe753b238..deed8d2c8 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -304,2 +304,10 @@ func RegisterGatewayRoutes(
+@@ -251,4 +251,12 @@ func RegisterGatewayRoutes(
+ 			h.OpenAIGateway.Embeddings(c)
  		})
 +		gateway.POST("/audio/transcriptions", func(c *gin.Context) {
 +			if !isOpenAIOnlyEndpointGatewayPlatform(c) {
@@ -1027,7 +1028,9 @@ index 6da33c207..8f7af707d 100644
 +			h.OpenAIGateway.AudioTranscriptions(c)
 +		})
  		gateway.POST("/images/generations", imagesHandler)
-@@ -446,2 +454,10 @@ func RegisterGatewayRoutes(
+ 		gateway.POST("/images/edits", imagesHandler)
+@@ -401,4 +409,12 @@ func RegisterGatewayRoutes(
+ 		h.OpenAIGateway.Embeddings(c)
  	})
 +	r.POST("/transcribe", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, func(c *gin.Context) {
 +		if !isOpenAIOnlyEndpointGatewayPlatform(c) {
@@ -1038,3 +1041,20 @@ index 6da33c207..8f7af707d 100644
 +		h.OpenAIGateway.AudioTranscriptions(c)
 +	})
  	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, imagesHandler)
+ 	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, imagesHandler)
+diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
+index af4272cb8..9ec69cf8c 100644
+--- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
++++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
+@@ -53,6 +53,8 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
+ 	excluded := map[string]string{
+-		"/messages/count_tokens":     "tokenization only; it does not execute a model request",
+-		"/images/batches/:id/cancel": "control-plane cancellation with no user prompt",
+-		"/stt":                       "speech transcription is not a text-generation prompt",
++		"/messages/count_tokens":                "tokenization only; it does not execute a model request",
++		"/images/batches/:id/cancel":            "control-plane cancellation with no user prompt",
++		"/stt":                                  "speech transcription is not a text-generation prompt",
++		"/audio/transcriptions":                 "speech transcription is forwarded outside the Codex Chat and Responses transformers",
++		"/transcribe":                           "speech transcription is forwarded outside the Codex Chat and Responses transformers",
+ 		"/custom-voices":             "voice profile management has no model prompt",
+ 	}

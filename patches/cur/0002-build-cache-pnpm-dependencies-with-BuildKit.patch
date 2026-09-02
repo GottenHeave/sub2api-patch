@@ -1,15 +1,17 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 12:27:03 +0000
-Subject: [PATCH] build: cache pnpm dependencies with BuildKit
+Subject: [PATCH 02/11] build: cache pnpm dependencies with BuildKit
 
 
 diff --git a/Dockerfile b/Dockerfile
 index adfa4d470..c3d792874 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -43,3 +43,3 @@ COPY frontend/ ./
+@@ -42,5 +42,5 @@ RUN --mount=type=cache,id=sub2api-pnpm-store,target=/root/.local/share/pnpm/stor
+ COPY frontend/ ./
  COPY docs/legal/ /app/docs/legal/
 -RUN pnpm run build
 +RUN --mount=type=cache,id=sub2api-pnpm-store,target=/root/.local/share/pnpm/store pnpm run build
  
+ # -----------------------------------------------------------------------------

@@ -1,14 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 12:52:55 +0000
-Subject: [PATCH] feat: add shared endpoint account scheduling context
+Date: Wed, 2 Sep 2026 14:00:07 +0000
+Subject: [PATCH 04/11] feat: add shared endpoint account scheduling context
 
 
 diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
-index 2986f6abe..9bd95b3ff 100644
+index 2986f6abe..4bfec7300 100644
 --- a/backend/internal/service/openai_account_scheduler.go
 +++ b/backend/internal/service/openai_account_scheduler.go
-@@ -93,2 +93,59 @@ type OpenAIAccountScheduleRequest struct {
+@@ -92,4 +92,61 @@ type OpenAIAccountScheduleRequest struct {
+ }
  
 +type openAIAudioTranscriptionSelectionContextKey struct{}
 +type openAIAudioTranscriptionKnownModelSelectionContextKey struct{}
@@ -68,7 +69,9 @@ index 2986f6abe..9bd95b3ff 100644
 +}
 +
  type OpenAIAccountScheduleDecision struct {
-@@ -1768,2 +1825,8 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 	Layer               string
+@@ -1767,4 +1824,10 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 		return false, "account_nil"
  	}
 +	if (openAIAudioTranscriptionSelectionFromContext(ctx) || openAIRealtimeRESTSelectionFromContext(ctx)) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
 +		return false, "audio_transcription_account_type"
@@ -77,22 +80,74 @@ index 2986f6abe..9bd95b3ff 100644
 +		return false, "audio_transcription_model_not_supported"
 +	}
  	if req.RequirePrivacySet && !account.IsPrivacySet() {
-@@ -1799,3 +1862,3 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 		return false, "privacy_not_set"
+@@ -1798,5 +1861,5 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 		return false, "shadow_parent_unhealthy"
  	}
 -	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
 +	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
  		return false, "model_not_supported"
-@@ -2139,2 +2202,5 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
+ 	}
+@@ -2138,4 +2201,53 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
+ }
  
-+// audio transcription scheduler selector is inserted here.
++func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
++	ctx context.Context,
++	groupID *int64,
++	sessionHash string,
++	requestedModel string,
++	excludedIDs map[int64]struct{},
++) (*AccountSelectionResult, OpenAIAccountScheduleDecision, string, error) {
++	selectionCtx := withOpenAIAudioTranscriptionSelection(ctx, false)
++	selection, decision, err := s.selectAccountWithScheduler(
++		selectionCtx,
++		groupID,
++		"",
++		sessionHash,
++		requestedModel,
++		excludedIDs,
++		OpenAIUpstreamTransportHTTPSSE,
++		"",
++		"",
++		false,
++		PlatformOpenAI,
++		false,
++		false,
++	)
++	return selection, decision, requestedModel, err
++}
 +
-+// realtime REST scheduler selector is inserted here.
++func (s *OpenAIGatewayService) SelectAccountWithSchedulerForRealtimeREST(
++	ctx context.Context,
++	groupID *int64,
++	sessionHash string,
++	excludedIDs map[int64]struct{},
++) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
++	return s.selectAccountWithScheduler(
++		withOpenAIRealtimeRESTSelection(ctx),
++		groupID,
++		"",
++		sessionHash,
++		"",
++		excludedIDs,
++		OpenAIUpstreamTransportHTTPSSE,
++		"",
++		"",
++		false,
++		PlatformOpenAI,
++		false,
++		true,
++	)
++}
++
  // selectAccountWithScheduler wraps selectAccountWithSchedulerOnce with a
+ // fail-open second pass for the proxy stream circuit (#5056): when the only
 diff --git a/backend/internal/service/openai_gateway_scheduling.go b/backend/internal/service/openai_gateway_scheduling.go
 index a90bad3e2..a3e3e00f5 100644
 --- a/backend/internal/service/openai_gateway_scheduling.go
 +++ b/backend/internal/service/openai_gateway_scheduling.go
-@@ -397,2 +397,8 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+@@ -396,4 +396,10 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+ 		return "platform_mismatch"
  	}
 +	if (openAIAudioTranscriptionSelectionFromContext(ctx) || openAIRealtimeRESTSelectionFromContext(ctx)) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
 +		return "endpoint_account_type"
@@ -101,8 +156,11 @@ index a90bad3e2..a3e3e00f5 100644
 +		return "audio_transcription_model_not_supported"
 +	}
  	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
-@@ -433,3 +439,3 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+ 		if account.IsSchedulable() {
+@@ -432,5 +438,5 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+ 		}
  	}
 -	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 +	if requestedModel != "" && !account.IsModelSupported(requestedModel) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
  		return "model_not_supported"
+ 	}

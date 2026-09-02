@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 13:10:16 +0000
-Subject: [PATCH] fix: preserve caller Codex system prompts
+Date: Wed, 2 Sep 2026 14:03:18 +0000
+Subject: [PATCH 11/11] fix: preserve caller Codex system prompts
 
 
 diff --git a/backend/internal/service/openai_codex_prompt_injection_test.go b/backend/internal/service/openai_codex_prompt_injection_test.go
@@ -214,14 +214,17 @@ diff --git a/backend/internal/service/openai_codex_transform.go b/backend/intern
 index fbd14ba96..6e14b812e 100644
 --- a/backend/internal/service/openai_codex_transform.go
 +++ b/backend/internal/service/openai_codex_transform.go
-@@ -1259,4 +1259,4 @@ func getNormalizedCodexModel(modelID string) string {
+@@ -1258,6 +1258,6 @@ func getNormalizedCodexModel(modelID string) string {
+ }
  
 -// extractTextFromContent extracts plain text from a content value that is either
 -// a Go string or a []any of text-like content-part maps.
 +// extractTextFromContent extracts plain text from string, array, and object
 +// content values. Object values may expose text directly or nest it in content.
  func extractTextFromContent(content any) string {
-@@ -1268,11 +1268,4 @@ func extractTextFromContent(content any) string {
+ 	switch v := content.(type) {
+@@ -1267,16 +1267,14 @@ func extractTextFromContent(content any) string {
+ 		var parts []string
  		for _, part := range v {
 -			m, ok := part.(map[string]any)
 -			if !ok {
@@ -235,7 +238,7 @@ index fbd14ba96..6e14b812e 100644
 +			if text := extractTextFromContent(part); text != "" {
 +				parts = append(parts, text)
  			}
-@@ -1280,2 +1273,7 @@ func extractTextFromContent(content any) string {
+ 		}
  		return strings.Join(parts, "")
 +	case map[string]any:
 +		if text := extractTextFromContent(v["text"]); strings.TrimSpace(text) != "" {
@@ -243,12 +246,16 @@ index fbd14ba96..6e14b812e 100644
 +		}
 +		return extractTextFromContent(v["content"])
  	default:
-@@ -1474,3 +1472,3 @@ func applyCodexClientMetadata(reqBody map[string]any, account *Account) bool {
+ 		return ""
+@@ -1473,5 +1471,5 @@ func applyCodexClientMetadata(reqBody map[string]any, account *Account) bool {
+ // applyInstructions 处理 instructions 字段：仅在 instructions 为空时填充默认值。
  func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
 -	if !isInstructionsEmpty(reqBody) {
 +	if !isInstructionsEmpty(reqBody) || hasOpenAICodexExplicitSystemPrompt(reqBody) {
  		return false
-@@ -1482,2 +1480,30 @@ func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
+ 	}
+@@ -1481,4 +1479,32 @@ func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
+ }
  
 +// hasOpenAICodexExplicitSystemPrompt recognizes caller-owned prompt text in
 +// the legacy top-level system_prompt field or a Responses input item with
@@ -279,29 +286,35 @@ index fbd14ba96..6e14b812e 100644
 +}
 +
  // isInstructionsEmpty 检查 instructions 字段是否为空
+ // 处理以下情况：字段不存在、nil、空字符串、纯空白字符串
 diff --git a/backend/internal/service/openai_gateway_forward.go b/backend/internal/service/openai_gateway_forward.go
 index 18b5aff28..d53380dfc 100644
 --- a/backend/internal/service/openai_gateway_forward.go
 +++ b/backend/internal/service/openai_gateway_forward.go
-@@ -362,3 +362,3 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
+@@ -361,5 +361,5 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
+ 	instructions := gjson.GetBytes(body, "instructions")
  	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
 -	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses {
 +	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses && !hasOpenAICodexExplicitSystemPromptBody(body) {
  		markPatchSet("instructions", defaultCodexSynthInstructions(reqModel))
+ 	}
 diff --git a/backend/internal/service/openai_gateway_passthrough.go b/backend/internal/service/openai_gateway_passthrough.go
 index ecca15478..57bd6c2dd 100644
 --- a/backend/internal/service/openai_gateway_passthrough.go
 +++ b/backend/internal/service/openai_gateway_passthrough.go
-@@ -165,3 +165,3 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
+@@ -164,5 +164,5 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
+ 			return nil, fmt.Errorf("openai passthrough rejected before upstream: %s", rejectReason)
  		}
 -		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() {
 +		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() && !hasOpenAICodexExplicitSystemPromptBody(body) {
  			nextBody, setErr := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(reqModel))
+ 			if setErr != nil {
 diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
 index 46f69b54d..8ab207bce 100644
 --- a/backend/internal/service/openai_gateway_request_body.go
 +++ b/backend/internal/service/openai_gateway_request_body.go
-@@ -1324,2 +1324,43 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
+@@ -1323,4 +1323,45 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
+ }
  
 +// hasOpenAICodexExplicitSystemPromptBody is the raw-body counterpart of
 +// hasOpenAICodexExplicitSystemPrompt. It prevents a default instruction from
@@ -345,3 +358,4 @@ index 46f69b54d..8ab207bce 100644
 +}
 +
  func isOpenAICodexModel(model string) bool {
+ 	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "codex")

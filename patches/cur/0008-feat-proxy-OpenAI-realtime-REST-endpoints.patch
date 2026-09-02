@@ -1,29 +1,36 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 13:09:56 +0000
-Subject: [PATCH] feat: proxy OpenAI realtime REST endpoints
+Date: Wed, 2 Sep 2026 14:00:48 +0000
+Subject: [PATCH 08/11] feat: proxy OpenAI realtime REST endpoints
 
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
 index 8ee8928b2..80ad3e686 100644
 --- a/backend/internal/handler/endpoint.go
 +++ b/backend/internal/handler/endpoint.go
-@@ -33,2 +33,3 @@ const (
+@@ -32,4 +32,5 @@ const (
+ 	EndpointGeminiModels         = "/v1beta/models"
  	EndpointRealtime             = "/v1/realtime"
 +	EndpointRealtimeREST         = "/v1/realtime/rest"
  )
-@@ -112,2 +113,4 @@ func NormalizeInboundEndpoint(path string) string {
+ 
+@@ -111,4 +112,6 @@ func NormalizeInboundEndpoint(path string) string {
+ 	case strings.Contains(path, EndpointResponses) || isResponsesRootAliasPath(path):
  		return EndpointResponses
 +	case isRealtimeRESTEndpoint(path):
 +		return EndpointRealtimeREST
  	case strings.Contains(path, EndpointRealtime):
-@@ -208,2 +211,5 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
+ 		return EndpointRealtime
+@@ -207,4 +210,7 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
+ 			return EndpointRealtime
  		}
 +		if inbound == EndpointRealtimeREST {
 +			return realtimeRESTUpstreamPath(rawRequestPath)
 +		}
  		// OpenAI forwards everything to the Responses API.
-@@ -262,2 +268,37 @@ func responsesSubpathSuffix(rawPath string) string {
+ 		// Preserve subresource suffix (e.g. /v1/responses/compact,
+@@ -261,4 +267,39 @@ func responsesSubpathSuffix(rawPath string) string {
+ }
  
 +func isRealtimeRESTEndpoint(path string) bool {
 +	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
@@ -61,9 +68,10 @@ index 8ee8928b2..80ad3e686 100644
 +}
 +
  // ──────────────────────────────────────────────────────────
+ // Middleware
 diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
 new file mode 100644
-index 000000000..0d19030d6
+index 000000000..4485f3301
 --- /dev/null
 +++ b/backend/internal/handler/openai_realtime_calls.go
 @@ -0,0 +1,229 @@
@@ -134,7 +142,7 @@ index 000000000..0d19030d6
 +	setOpsRequestContext(c, parsed.Model, false)
 +	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
 +
-+	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIRealtime, parsed.Model, body); decision != nil && !decision.AllowNextStage {
++	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, "openai_realtime", parsed.Model, body); decision != nil && !decision.AllowNextStage {
 +		h.openAISecurityAuditError(c, decision)
 +		return
 +	}
@@ -605,10 +613,11 @@ index 000000000..d3cf895ba
 +	}
 +}
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index e077e521a..6da33c207 100644
+index cace97ea8..8f7af707d 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -261,2 +261,24 @@ func RegisterGatewayRoutes(
+@@ -260,4 +260,26 @@ func RegisterGatewayRoutes(
+ 			h.OpenAIGateway.RealtimeTranslationWebSocket(c)
  		})
 +		realtimeRESTHandler := func(c *gin.Context) {
 +			if getGroupPlatform(c) != service.PlatformOpenAI {
@@ -633,11 +642,13 @@ index e077e521a..6da33c207 100644
 +		gateway.POST("/realtime/sessions", realtimeRESTHandler)
 +		gateway.POST("/realtime/transcription_sessions", realtimeRESTHandler)
  		// OpenAI Chat Completions API: auto-route based on group platform
+ 		gateway.POST("/chat/completions", func(c *gin.Context) {
 diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
 index 03f4b97fc..3f545b22e 100644
 --- a/backend/internal/server/routes/gateway_test.go
 +++ b/backend/internal/server/routes/gateway_test.go
-@@ -153,2 +153,31 @@ func TestGatewayRoutesRealtimeDispatchMatrix(t *testing.T) {
+@@ -152,4 +152,33 @@ func TestGatewayRoutesRealtimeDispatchMatrix(t *testing.T) {
+ }
  
 +func TestGatewayRoutesRealtimeRESTPathsAreRegistered(t *testing.T) {
 +	router := newGatewayRoutesTestRouter(service.PlatformOpenAI)
@@ -669,45 +680,25 @@ index 03f4b97fc..3f545b22e 100644
 +}
 +
  func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
-diff --git a/backend/internal/service/content_moderation.go b/backend/internal/service/content_moderation.go
-index b25f5ec4d..a8cd4b93d 100644
---- a/backend/internal/service/content_moderation.go
-+++ b/backend/internal/service/content_moderation.go
-@@ -55,2 +55,3 @@ const (
- 	ContentModerationProtocolOpenAIResponses   = "openai_responses"
-+	ContentModerationProtocolOpenAIRealtime    = "openai_realtime"
- 	ContentModerationProtocolOpenAIChat        = "openai_chat_completions"
-diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
-index 9bd95b3ff..31c5888c1 100644
---- a/backend/internal/service/openai_account_scheduler.go
-+++ b/backend/internal/service/openai_account_scheduler.go
-@@ -2204,3 +2204,25 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
- 
--// realtime REST scheduler selector is inserted here.
-+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForRealtimeREST(
-+	ctx context.Context,
-+	groupID *int64,
-+	sessionHash string,
-+	excludedIDs map[int64]struct{},
-+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-+	return s.selectAccountWithScheduler(
-+		withOpenAIRealtimeRESTSelection(ctx),
-+		groupID,
-+		"",
-+		sessionHash,
-+		"",
-+		excludedIDs,
-+		OpenAIUpstreamTransportHTTPSSE,
-+		"",
-+		"",
-+		false,
-+		PlatformOpenAI,
-+		false,
-+		true,
-+	)
-+}
-+
- // selectAccountWithScheduler wraps selectAccountWithSchedulerOnce with a
+ 	router := newGatewayRoutesTestRouter()
+diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
+index 97953c5fb..e1cf21da6 100644
+--- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
++++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
+@@ -59,2 +59,12 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
++		"/realtime/client_secrets":              "realtime control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/translations/client_secrets": "realtime translation control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls":                       "realtime call request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/translations/calls":          "realtime translation call request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/accept":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/hangup":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/refer":        "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/reject":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/sessions":                    "realtime session request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/transcription_sessions":      "realtime transcription session request is forwarded outside the Codex Chat and Responses transformers",
+-		"/custom-voices":             "voice profile management has no model prompt",
++		"/custom-voices":                        "voice profile management has no model prompt",
+ 	}
 diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
 new file mode 100644
 index 000000000..9844270d2

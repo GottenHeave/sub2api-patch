@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 12:27:03 +0000
-Subject: [PATCH] ci: publish downstream Docker images
+Subject: [PATCH 01/11] ci: publish downstream Docker images
 
 
 diff --git a/.github/workflows/docker-ghcr.yml b/.github/workflows/docker-ghcr.yml

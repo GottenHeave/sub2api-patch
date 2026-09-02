@@ -1,17 +1,19 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 12:27:03 +0000
-Subject: [PATCH] fix: parse singular OpenAI cached token details
+Subject: [PATCH 03/11] fix: parse singular OpenAI cached token details
 
 
 diff --git a/backend/internal/service/openai_gateway_response_handling.go b/backend/internal/service/openai_gateway_response_handling.go
 index 104f319dc..9b55c87ce 100644
 --- a/backend/internal/service/openai_gateway_response_handling.go
 +++ b/backend/internal/service/openai_gateway_response_handling.go
-@@ -1524,2 +1524,3 @@ func openAICacheReadTokensFromUsage(value gjson.Result) int {
+@@ -1523,4 +1523,5 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
+ func openAICacheReadTokensFromUsage(value gjson.Result) int {
  	for _, nested := range []gjson.Result{
 +		value.Get("input_token_details.cached_tokens"),
  		value.Get("input_tokens_details.cached_tokens"),
+ 		value.Get("prompt_tokens_details.cached_tokens"),
 diff --git a/backend/internal/service/openai_gateway_response_handling_usage_test.go b/backend/internal/service/openai_gateway_response_handling_usage_test.go
 new file mode 100644
 index 000000000..22dd1d778

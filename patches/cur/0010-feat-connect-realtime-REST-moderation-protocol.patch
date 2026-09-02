@@ -1,0 +1,17 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Wed, 2 Sep 2026 14:02:58 +0000
+Subject: [PATCH 10/11] feat: connect realtime REST moderation protocol
+
+
+diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
+index 4485f3301..0d19030d6 100644
+--- a/backend/internal/handler/openai_realtime_calls.go
++++ b/backend/internal/handler/openai_realtime_calls.go
+@@ -66,5 +66,5 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
+ 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
+ 
+-	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, "openai_realtime", parsed.Model, body); decision != nil && !decision.AllowNextStage {
++	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIRealtime, parsed.Model, body); decision != nil && !decision.AllowNextStage {
+ 		h.openAISecurityAuditError(c, decision)
+ 		return

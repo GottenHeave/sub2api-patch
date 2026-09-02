@@ -1,14 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 12:54:53 +0000
-Subject: [PATCH] feat: schedule resilient OpenAI audio transcriptions
+Date: Wed, 2 Sep 2026 14:03:17 +0000
+Subject: [PATCH 05/11] feat: schedule resilient OpenAI audio transcriptions
 
 
 diff --git a/backend/internal/service/model_rate_limit.go b/backend/internal/service/model_rate_limit.go
 index d76bc423f..2fdf19766 100644
 --- a/backend/internal/service/model_rate_limit.go
 +++ b/backend/internal/service/model_rate_limit.go
-@@ -20,2 +20,41 @@ const (
+@@ -19,4 +19,43 @@ const (
+ )
  
 +type modelRateLimitExtraScopesContextKey struct{}
 +
@@ -50,7 +51,9 @@ index d76bc423f..2fdf19766 100644
 +}
 +
  // isRateLimitActiveForKey 检查指定 key 的限流是否生效
-@@ -79,10 +118,13 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
+ func (a *Account) isRateLimitActiveForKey(key string) bool {
+@@ -78,12 +117,15 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
+ 
  	keys := []string{modelKey}
 +	for _, scope := range modelRateLimitExtraScopesFromContext(ctx) {
 +		keys = appendModelRateLimitKey(keys, scope)
@@ -68,7 +71,9 @@ index d76bc423f..2fdf19766 100644
 +		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) {
 +			keys = appendModelRateLimitKey(keys, openAIImageGenerationRateLimitKey)
  		}
-@@ -96,2 +138,15 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
+ 	case PlatformAnthropic:
+@@ -95,4 +137,17 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
+ }
  
 +func appendModelRateLimitKey(keys []string, key string) []string {
 +	key = strings.TrimSpace(key)
@@ -84,39 +89,18 @@ index d76bc423f..2fdf19766 100644
 +}
 +
  // isAnthropicFableModel 判断是否为 Fable 模型家族（claude-fable-5、claude-fable-5[1m] 等变体）
+ func isAnthropicFableModel(model string) bool {
 diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
-index 9bd95b3ff..24e77d594 100644
+index 4bfec7300..1a94a6614 100644
 --- a/backend/internal/service/openai_account_scheduler.go
 +++ b/backend/internal/service/openai_account_scheduler.go
-@@ -2202,3 +2202,27 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
- 
--// audio transcription scheduler selector is inserted here.
-+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
-+	ctx context.Context,
-+	groupID *int64,
-+	sessionHash string,
-+	requestedModel string,
-+	excludedIDs map[int64]struct{},
-+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, string, error) {
+@@ -2208,5 +2208,5 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
+ 	excludedIDs map[int64]struct{},
+ ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, string, error) {
+-	selectionCtx := withOpenAIAudioTranscriptionSelection(ctx, false)
 +	selectionCtx := withOpenAIAudioTranscriptionSelection(ctx, OpenAIAudioTranscriptionsAccountSelectionModel(requestedModel) != "")
-+	selection, decision, err := s.selectAccountWithScheduler(
-+		selectionCtx,
-+		groupID,
-+		"",
-+		sessionHash,
-+		requestedModel,
-+		excludedIDs,
-+		OpenAIUpstreamTransportHTTPSSE,
-+		"",
-+		"",
-+		false,
-+		PlatformOpenAI,
-+		false,
-+		false,
-+	)
-+	return selection, decision, requestedModel, err
-+}
- 
+ 	selection, decision, err := s.selectAccountWithScheduler(
+ 		selectionCtx,
 diff --git a/backend/internal/service/openai_audio_transcriptions.go b/backend/internal/service/openai_audio_transcriptions.go
 new file mode 100644
 index 000000000..28d123a48
@@ -1792,7 +1776,8 @@ diff --git a/backend/internal/service/openai_gateway_usage.go b/backend/internal
 index cb998b55f..9fe160e04 100644
 --- a/backend/internal/service/openai_gateway_usage.go
 +++ b/backend/internal/service/openai_gateway_usage.go
-@@ -48,2 +48,56 @@ type OpenAIRecordUsageInput struct {
+@@ -47,4 +47,58 @@ type OpenAIRecordUsageInput struct {
+ }
  
 +type OpenAIAudioTranscriptionUsageInput struct {
 +	Result           *OpenAIForwardResult
@@ -1849,3 +1834,4 @@ index cb998b55f..9fe160e04 100644
 +}
 +
  // CyberPolicyUsageInput 是 cyber 拒绝、未走正常 RecordUsage 的请求记录用量的入参。
+ // 用量按上游真实 token 计费，与 WS cyber 及正常请求口径一致（InputTokens/OutputTokens
