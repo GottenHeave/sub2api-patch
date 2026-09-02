@@ -31,6 +31,7 @@ const (
 	EndpointVideos               = "/v1/videos"
 	EndpointSeedanceTasks        = "/api/v3/contents/generations/tasks"
 	EndpointGeminiModels         = "/v1beta/models"
+	EndpointRealtime             = "/v1/realtime"
 )
 
 const EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
@@ -112,6 +113,8 @@ func NormalizeInboundEndpoint(path string) string {
 		return EndpointResponsesCompact
 	case strings.Contains(path, EndpointResponses) || isResponsesRootAliasPath(path):
 		return EndpointResponses
+	case strings.Contains(path, EndpointRealtime):
+		return EndpointRealtime
 	case strings.Contains(path, EndpointGeminiModels):
 		return EndpointGeminiModels
 	default:
@@ -202,6 +205,9 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 	case service.PlatformOpenAI, service.PlatformGrok:
 		if inbound == EndpointEmbeddings || inbound == EndpointAlphaSearch || inbound == EndpointResponsesInputTokens || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits || inbound == EndpointVideosGenerations || inbound == EndpointVideosEdits || inbound == EndpointVideosExtensions || inbound == EndpointVideos {
 			return inbound
+		}
+		if inbound == EndpointRealtime {
+			return EndpointRealtime
 		}
 		// OpenAI forwards everything to the Responses API.
 		// Preserve subresource suffix (e.g. /v1/responses/compact,
