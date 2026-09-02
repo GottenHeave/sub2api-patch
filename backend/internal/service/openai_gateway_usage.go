@@ -46,6 +46,60 @@ type OpenAIRecordUsageInput struct {
 	ChannelUsageFields
 }
 
+type OpenAIAudioTranscriptionUsageInput struct {
+	Result           *OpenAIForwardResult
+	APIKey           *APIKey
+	Account          *Account
+	InboundEndpoint  string
+	UpstreamEndpoint string
+	UserAgent        string
+	IPAddress        string
+	ChannelUsageFields
+}
+
+// RecordAudioTranscriptionUsage writes the generic success row without
+// invoking pricing, balance, subscription, quota, or account billing commands.
+func (s *OpenAIGatewayService) RecordAudioTranscriptionUsage(ctx context.Context, input *OpenAIAudioTranscriptionUsageInput) error {
+	if input == nil || input.Result == nil || input.APIKey == nil || input.APIKey.User == nil || input.Account == nil {
+		return errors.New("audio transcription usage input is incomplete")
+	}
+	durationMs := int(input.Result.Duration.Milliseconds())
+	billingMode := string(BillingModeToken)
+	usageLog := &UsageLog{
+		UserID:            input.APIKey.User.ID,
+		APIKeyID:          input.APIKey.ID,
+		AccountID:         input.Account.ID,
+		RequestID:         resolveUsageBillingRequestID(ctx, input.Result.RequestID),
+		Model:             input.Result.Model,
+		RequestedModel:    input.Result.Model,
+		UpstreamModel:     optionalTrimmedStringPtr(input.Result.UpstreamModel),
+		InboundEndpoint:   optionalTrimmedStringPtr(input.InboundEndpoint),
+		UpstreamEndpoint:  optionalTrimmedStringPtr(input.UpstreamEndpoint),
+		RateMultiplier:    1,
+		BillingMode:       &billingMode,
+		BillingType:       BillingTypeBalance,
+		RequestType:       RequestTypeSync,
+		DurationMs:        &durationMs,
+		CreatedAt:         time.Now(),
+		ChannelID:         optionalInt64Ptr(input.ChannelID),
+		ModelMappingChain: optionalTrimmedStringPtr(input.ModelMappingChain),
+	}
+	if input.APIKey.GroupID != nil {
+		usageLog.GroupID = input.APIKey.GroupID
+	}
+	if input.UserAgent != "" {
+		usageLog.UserAgent = &input.UserAgent
+	}
+	if input.IPAddress != "" {
+		usageLog.IPAddress = &input.IPAddress
+	}
+	if s.usageLogRepo == nil {
+		return nil
+	}
+	_, err := s.usageLogRepo.Create(ctx, usageLog)
+	return err
+}
+
 // CyberPolicyUsageInput 是 cyber 拒绝、未走正常 RecordUsage 的请求记录用量的入参。
 // 用量按上游真实 token 计费，与 WS cyber 及正常请求口径一致（InputTokens/OutputTokens
 // 取自上游 response.failed 报告的 usage，即 mark.UpstreamInTok/OutTok）。
