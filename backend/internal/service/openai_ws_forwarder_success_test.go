@@ -172,6 +172,34 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
 	require.Equal(t, "resp_new_1", gjson.GetBytes(responseBody, "id").String())
 }
 
+func TestOpenAIGatewayServiceBuildOpenAIRealtimeWSURL(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "sk-test",
+		},
+	}
+
+	url, err := svc.buildOpenAIRealtimeWSURL(account, "gpt-realtime")
+	require.NoError(t, err)
+	require.Equal(t, "wss://api.openai.com/v1/realtime?model=gpt-realtime", url)
+
+	url, err = svc.buildOpenAIRealtimeTranslationWSURL(account, "gpt-realtime-translate")
+	require.NoError(t, err)
+	require.Equal(t, "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate", url)
+}
+
+func TestOpenAIGatewayServiceBuildOpenAIRealtimeWSURLRejectsUnsupportedAccount(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeSetupToken}
+
+	_, err := svc.buildOpenAIRealtimeWSURL(account, "gpt-realtime")
+	require.ErrorContains(t, err, "OpenAI API key or OAuth account")
+}
+
 func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
