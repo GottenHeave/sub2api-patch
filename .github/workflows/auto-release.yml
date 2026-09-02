@@ -152,6 +152,14 @@ jobs:
           pnpm --dir worktree/frontend run typecheck
           pnpm --dir worktree/frontend run lint:check
 
+      - name: Backend lint and format checks
+        if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+          args: --timeout=30m
+          working-directory: worktree/backend
+
       - name: Compute version
         if: github.event_name != 'workflow_dispatch' || steps.resolve_manual.outputs.skip != 'true'
         id: version

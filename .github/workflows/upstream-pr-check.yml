@@ -73,6 +73,13 @@ jobs:
         run: go test ./...
         working-directory: worktree/backend
 
+      - name: Backend lint and format checks
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+          args: --timeout=30m
+          working-directory: worktree/backend
+
       - name: Frontend checks
         working-directory: worktree
         run: |

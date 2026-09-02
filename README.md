@@ -32,6 +32,13 @@ the parent commit as the authoritative upstream commit SHA.
 scripts/check-patches.sh /path/to/sub2api-worktree
 ```
 
+Patch application rejects worktrees with tracked or untracked changes. For a
+fixed-base replay, require an exact starting commit:
+
+```sh
+EXPECTED_BASE_SHA=<commit> scripts/apply-patches.sh /path/to/sub2api-worktree
+```
+
 ## Patch refresh
 
 After resolving conflicts in a worktree based on upstream/main:
@@ -39,3 +46,6 @@ After resolving conflicts in a worktree based on upstream/main:
 ```sh
 scripts/refresh-patches.sh /path/to/sub2api-worktree
 ```
+
+Refresh also rejects uncommitted changes. Set `EXPECTED_BASE_SHA` to require
+the resolved base ref to match a specific commit before replacing patch files.

@@ -21,7 +21,7 @@ Required gates:
 
 1. Upstream commit CI is complete and passing before mirror sync.
 2. Patchset applies with three-way `git am`.
-3. Backend checks pass.
+3. Backend tests and the patched tree's configured Go lint and format checks pass.
 4. Frontend typecheck and lint pass.
 5. Reference sanitizer passes.
 6. Docker build or release build passes.
