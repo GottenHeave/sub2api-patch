@@ -1,65 +1,49 @@
 # Patchset
 
-The current downstream delta is stored as replayable topic patches under `patches/cur`.
+The current downstream delta is stored as replayable capability patches under
+`patches/cur`.
 
-The current patchset is based on upstream `main` at commit
-`0d27f45ead1b58908548ec21afd923ecaf7339bc` (`v0.1.185`).
+The patchset is based on upstream `0.2.0` at commit
+`5097b31457e6dc9f49e5f5c9c72b925ce79543b3`.
 
-Patch topics:
+Patch topics, in replay order:
 
-1. downstream Docker image publishing
-2. proxy probing and transient network test hardening
-3. OpenAI realtime websocket and gateway routing
-4. OpenAI audio transcription endpoint support
-5. OpenAI realtime REST endpoint support
-6. audio usage accounting, billing, persistence, and UI display
-7. moderation and settings compatibility
-8. remaining proxy repository alignment
-9. OpenAI audio transcription retry failure isolation
-10. Codex instruction injection control
-11. v0.1.179 compatibility alignment
-12. structured Codex system-prompt preservation
-13. v0.1.185 compatibility and lint alignment
-14. OpenAI audio transcription upstream diagnostics
-15. OpenAI audio transcription model selection
-16. OpenAI audio transcription model-mapping bypass
+1. downstream Docker image publication
+2. pnpm dependency caching in the Docker BuildKit build
+3. singular `input_token_details.cached_tokens` parsing
+4. OpenAI realtime WebSocket sessions and translations
+5. OpenAI realtime REST sessions, translations, and calls
+6. moderation of OpenAI realtime client events
+7. OpenAI audio transcription HTTP transport and routes
+8. audio transcription scheduling, retry, diagnostics, and zero-cost usage logging
+9. caller-provided Codex system-prompt preservation
 
-These patches are synthetic topic patches rebuilt from the final downstream tree, not a raw replay of the original downstream commit history. This is intentional: some original commits predate the latest upstream sync and do not replay cleanly one by one, while the final downstream tree is valid.
+These patches are synthetic capability patches rebuilt from the approved final
+tree. Each changed file belongs to one topic patch, so later compatibility
+patches do not repeatedly modify earlier capabilities.
 
-The audio transcription topic defers account and model failure side effects until
-same-account failover retries are exhausted. A retry that succeeds does not
-pollute shared OpenAI account scheduling state.
+The Docker topics preserve the complete downstream publication workflow and
+the pnpm BuildKit cache. The cache-token parser accepts the singular OpenAI
+usage field without adding audio-token accounting fields.
 
-The Codex instruction topic makes base-prompt injection opt-in through
-`enable_codex_instructions_injection`, which defaults to disabled. When
-enabled, caller-provided system instructions in Responses, Chat Completions,
-or OAuth passthrough suppress the default Codex prompt so supplied prompts are
-not duplicated and can retain their provider cache prefix.
+The realtime topics provide `/v1/realtime` WebSocket and REST behavior while
+preserving Grok behavior on the shared route. The root `/realtime` route remains
+Grok-only. Realtime moderation covers live-handler and coordinator relay paths.
+Realtime usage retains text and cached-token totals and ignores audio-token
+counters.
 
-The v0.1.179 compatibility topic keeps the downstream tree aligned with the
-release's long-context pricing gate, where enabling the group applies the
-long-context multipliers. The v0.1.185 compatibility topics preserve upstream
-usage-log field ordering, scheduler API signatures, realtime model mapping,
-and the release's formatting and lint requirements.
+The transcription topics provide multipart forwarding, account selection,
+model mapping, rate-limit handling, retry and failover, redacted diagnostics,
+and one best-effort zero-token, zero-cost usage row. They do not add balance or
+quota deductions, audio-token schema, pricing, billing, analytics, DTO, Ent,
+SQL migration, or frontend changes.
 
-The structured Codex system-prompt topic keeps raw and decoded request checks
-consistent for string and structured prompt values. A caller-provided system
-prompt therefore suppresses the optional default prompt before and after OAuth
-request transformation, preserving the caller's prompt prefix for caching.
+The Codex topic suppresses default prompt injection only when the caller has
+already supplied a system prompt. It does not add a setting, admin API, or
+frontend control.
 
-The audio transcription diagnostics topic records failover-eligible upstream
-HTTP responses and transport/read failures with account, model, status, request
-ID, and sanitized response details. It does not log uploaded audio or
-authorization headers, and does not change VoiceInk request or response
-protocol behavior.
+Future downstream work should be added as a capability-scoped patch after
+applying and validating this series.
 
-The audio transcription model selection topic allows known transcription
-models to use an otherwise eligible OpenAI account even when its mapping lists
-only chat models. The bypass applies on the first selection and account
-switches, while account type, schedulability, model rate limits, channel
-restrictions, endpoint capabilities, and profit controls remain enforced.
-Unknown audio models and other endpoints keep their model allowlists.
-
-Future downstream work should be added as new logical patches after applying and validating the current patchset.
-
-Patch subjects and generated release notes intentionally avoid pull request and issue references.
+Patch subjects and generated release notes intentionally avoid pull request and
+issue references.

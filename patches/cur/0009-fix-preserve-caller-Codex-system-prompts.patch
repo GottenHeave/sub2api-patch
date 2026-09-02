@@ -1,0 +1,347 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Wed, 2 Sep 2026 11:26:08 +0000
+Subject: [PATCH] fix: preserve caller Codex system prompts
+
+
+diff --git a/backend/internal/service/openai_codex_prompt_injection_test.go b/backend/internal/service/openai_codex_prompt_injection_test.go
+new file mode 100644
+index 000000000..00a0c708d
+--- /dev/null
++++ b/backend/internal/service/openai_codex_prompt_injection_test.go
+@@ -0,0 +1,200 @@
++package service
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/gin-gonic/gin"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++func TestOpenAICodexPromptPresenceTable(t *testing.T) {
++	const prompt = "Follow the caller's instructions."
++	tests := []struct {
++		name string
++		body string
++		want bool
++	}{
++		{name: "non-empty top-level string", body: `{"system_prompt":"` + prompt + `"}`, want: true},
++		{name: "non-empty top-level array", body: `{"system_prompt":[{"type":"text","text":"` + prompt + `"}]}`, want: true},
++		{name: "non-empty top-level structured object", body: `{"system_prompt":{"type":"text","text":"` + prompt + `"}}`, want: true},
++		{name: "nested structured object", body: `{"system_prompt":{"content":[{"type":"text","text":"` + prompt + `"}]}}`, want: true},
++		{name: "system input string", body: `{"input":[{"type":"message","role":"system","content":"` + prompt + `"}]}`, want: true},
++		{name: "system input array", body: `{"input":[{"type":"message","role":"system","content":[{"type":"input_text","text":"` + prompt + `"}]}]}`, want: true},
++		{name: "system input structured object", body: `{"input":[{"type":"message","role":"system","content":{"type":"text","text":"` + prompt + `"}}]}`, want: true},
++		{name: "missing", body: `{}`, want: false},
++		{name: "null", body: `{"system_prompt":null}`, want: false},
++		{name: "whitespace-only string", body: `{"system_prompt":"  \t\n"}`, want: false},
++		{name: "empty array", body: `{"system_prompt":[]}`, want: false},
++		{name: "empty object", body: `{"system_prompt":{}}`, want: false},
++		{name: "empty system input content", body: `{"input":[{"type":"message","role":"system","content":[]}]}`, want: false},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			body := []byte(tt.body)
++			original := append([]byte(nil), body...)
++			require.Equal(t, tt.want, hasOpenAICodexExplicitSystemPromptBody(body))
++			require.Equal(t, original, body)
++		})
++	}
++}
++
++func TestApplyInstructionsUsesPromptPresenceTable(t *testing.T) {
++	const prompt = "Follow the caller's instructions."
++	tests := []struct {
++		name       string
++		reqBody    map[string]any
++		wantInject bool
++	}{
++		{name: "missing", reqBody: map[string]any{"model": "gpt-5.4"}, wantInject: true},
++		{name: "string", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": prompt}, wantInject: false},
++		{name: "array", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": []any{map[string]any{"type": "text", "text": prompt}}}, wantInject: false},
++		{name: "structured object", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": map[string]any{"type": "text", "text": prompt}}, wantInject: false},
++		{name: "responses system input", reqBody: map[string]any{"model": "gpt-5.4", "input": []any{map[string]any{"type": "message", "role": "system", "content": prompt}}}, wantInject: false},
++		{name: "null", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": nil}, wantInject: true},
++		{name: "whitespace", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": "  "}, wantInject: true},
++		{name: "empty array", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": []any{}}, wantInject: true},
++		{name: "empty object", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": map[string]any{}}, wantInject: true},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			before, err := json.Marshal(tt.reqBody)
++			require.NoError(t, err)
++
++			modified := applyInstructions(tt.reqBody, false)
++			if tt.wantInject {
++				require.True(t, modified)
++				require.NotEmpty(t, tt.reqBody["instructions"])
++				return
++			}
++
++			require.False(t, modified)
++			require.NotContains(t, tt.reqBody, "instructions")
++			after, err := json.Marshal(tt.reqBody)
++			require.NoError(t, err)
++			require.JSONEq(t, string(before), string(after))
++		})
++	}
++}
++
++func TestApplyCodexOAuthTransformPreservesStructuredSystemInput(t *testing.T) {
++	const prompt = "Follow the caller's structured instructions."
++	reqBody := map[string]any{
++		"model": "gpt-5.4",
++		"input": []any{map[string]any{
++			"type": "message",
++			"role": "system",
++			"content": map[string]any{
++				"type": "text",
++				"text": prompt,
++			},
++		}},
++	}
++
++	result := applyCodexOAuthTransformWithOptions(reqBody, codexOAuthTransformOptions{})
++	require.NoError(t, result.Error)
++	require.Equal(t, prompt, reqBody["instructions"])
++	input, ok := reqBody["input"].([]any)
++	require.True(t, ok)
++	require.Len(t, input, 1)
++	message, ok := input[0].(map[string]any)
++	require.True(t, ok)
++	require.Equal(t, "developer", message["role"])
++}
++
++func TestOpenAIGatewayForwardPreservesRawSystemPrompt(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	const prompt = "Use the caller's raw system prompt."
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}},
++		Body:       io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":1,"output_tokens":1}}`)),
++	}}
++	cfg := &config.Config{}
++	cfg.Security.URLAllowlist.Enabled = false
++	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
++	account := &Account{
++		ID: 1, Name: "openai-apikey", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1,
++		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com"},
++		Extra:       map[string]any{"use_responses_api": true},
++	}
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
++	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
++
++	body := []byte(`{"model":"gpt-5.4","stream":false,"system_prompt":{"type":"text","text":"` + prompt + `"},"input":[{"type":"message","content":"hi"}]}`)
++	result, err := svc.Forward(context.Background(), c, account, body)
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, prompt, gjson.GetBytes(upstream.lastBody, "system_prompt.text").String())
++	require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
++}
++
++func TestOpenAIGatewayPassthroughPreservesRawSystemPrompt(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	const prompt = "Use the caller's passthrough prompt."
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
++		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
++			`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
++			"", "data: [DONE]", "",
++		}, "\n"))),
++	}}
++	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
++	account := &Account{
++		ID: 2, Name: "openai-oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
++		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
++		Extra:       map[string]any{"openai_passthrough": true, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
++		Status:      StatusActive, Schedulable: true, RateMultiplier: f64p(1),
++	}
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
++	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
++
++	body := []byte(`{"model":"gpt-5.4","stream":true,"system_prompt":[{"type":"text","text":"` + prompt + `"}],"input":[{"type":"text","text":"hi"}]}`)
++	result, err := svc.Forward(context.Background(), c, account, body)
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, prompt, gjson.GetBytes(upstream.lastBody, "system_prompt.0.text").String())
++	require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
++}
++
++func TestForwardAsChatCompletionsPreservesResponsesShapeSystemPrompt(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	const prompt = "Use the caller's Responses-shaped prompt."
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusBadRequest,
++		Header:     http.Header{"Content-Type": []string{"application/json"}},
++		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"test stop"}}`)),
++	}}
++	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
++	account := &Account{
++		ID: 3, Name: "openai-oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
++		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
++	}
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(nil))
++
++	body := []byte(`{"model":"gpt-5.4","stream":false,"system_prompt":{"content":[{"type":"text","text":"` + prompt + `"}]},"input":[{"type":"message","role":"system","content":{"type":"text","text":"` + prompt + `"}},{"type":"message","role":"user","content":"hi"}]}`)
++	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
++	require.Error(t, err)
++	require.Nil(t, result)
++	require.Equal(t, prompt, gjson.GetBytes(upstream.lastBody, "system_prompt.content.0.text").String())
++	require.Equal(t, prompt, gjson.GetBytes(upstream.lastBody, "instructions").String())
++	require.Equal(t, "developer", gjson.GetBytes(upstream.lastBody, "input.0.role").String())
++	require.Equal(t, prompt, gjson.GetBytes(upstream.lastBody, "input.0.content.text").String())
++}
+diff --git a/backend/internal/service/openai_codex_transform.go b/backend/internal/service/openai_codex_transform.go
+index fbd14ba96..6e14b812e 100644
+--- a/backend/internal/service/openai_codex_transform.go
++++ b/backend/internal/service/openai_codex_transform.go
+@@ -1259,4 +1259,4 @@ func getNormalizedCodexModel(modelID string) string {
+ 
+-// extractTextFromContent extracts plain text from a content value that is either
+-// a Go string or a []any of text-like content-part maps.
++// extractTextFromContent extracts plain text from string, array, and object
++// content values. Object values may expose text directly or nest it in content.
+ func extractTextFromContent(content any) string {
+@@ -1268,11 +1268,4 @@ func extractTextFromContent(content any) string {
+ 		for _, part := range v {
+-			m, ok := part.(map[string]any)
+-			if !ok {
+-				continue
+-			}
+-			switch t, _ := m["type"].(string); t {
+-			case "text", "input_text", "output_text":
+-				if text, ok := m["text"].(string); ok {
+-					parts = append(parts, text)
+-				}
++			if text := extractTextFromContent(part); text != "" {
++				parts = append(parts, text)
+ 			}
+@@ -1280,2 +1273,7 @@ func extractTextFromContent(content any) string {
+ 		return strings.Join(parts, "")
++	case map[string]any:
++		if text := extractTextFromContent(v["text"]); strings.TrimSpace(text) != "" {
++			return text
++		}
++		return extractTextFromContent(v["content"])
+ 	default:
+@@ -1474,3 +1472,3 @@ func applyCodexClientMetadata(reqBody map[string]any, account *Account) bool {
+ func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
+-	if !isInstructionsEmpty(reqBody) {
++	if !isInstructionsEmpty(reqBody) || hasOpenAICodexExplicitSystemPrompt(reqBody) {
+ 		return false
+@@ -1482,2 +1480,30 @@ func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
+ 
++// hasOpenAICodexExplicitSystemPrompt recognizes caller-owned prompt text in
++// the legacy top-level system_prompt field or a Responses input item with
++// role=system. Detection does not rewrite the caller's value.
++func hasOpenAICodexExplicitSystemPrompt(reqBody map[string]any) bool {
++	if reqBody == nil {
++		return false
++	}
++	if strings.TrimSpace(extractTextFromContent(reqBody["system_prompt"])) != "" {
++		return true
++	}
++	input, ok := reqBody["input"].([]any)
++	if !ok {
++		return false
++	}
++	for _, rawItem := range input {
++		item, ok := rawItem.(map[string]any)
++		if !ok {
++			continue
++		}
++		role, _ := item["role"].(string)
++		if strings.EqualFold(strings.TrimSpace(role), "system") &&
++			strings.TrimSpace(extractTextFromContent(item["content"])) != "" {
++			return true
++		}
++	}
++	return false
++}
++
+ // isInstructionsEmpty 检查 instructions 字段是否为空
+diff --git a/backend/internal/service/openai_gateway_forward.go b/backend/internal/service/openai_gateway_forward.go
+index 18b5aff28..d53380dfc 100644
+--- a/backend/internal/service/openai_gateway_forward.go
++++ b/backend/internal/service/openai_gateway_forward.go
+@@ -362,3 +362,3 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
+ 	instructionsEmpty := !instructions.Exists() || instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == ""
+-	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses {
++	if instructionsEmpty && account.UsesOpenAICodexProtocol() && !compatMessagesBridge && !nativeCNResponses && !hasOpenAICodexExplicitSystemPromptBody(body) {
+ 		markPatchSet("instructions", defaultCodexSynthInstructions(reqModel))
+diff --git a/backend/internal/service/openai_gateway_passthrough.go b/backend/internal/service/openai_gateway_passthrough.go
+index ecca15478..57bd6c2dd 100644
+--- a/backend/internal/service/openai_gateway_passthrough.go
++++ b/backend/internal/service/openai_gateway_passthrough.go
+@@ -165,3 +165,3 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
+ 		}
+-		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() {
++		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() && !hasOpenAICodexExplicitSystemPromptBody(body) {
+ 			nextBody, setErr := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(reqModel))
+diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
+index 46f69b54d..8ab207bce 100644
+--- a/backend/internal/service/openai_gateway_request_body.go
++++ b/backend/internal/service/openai_gateway_request_body.go
+@@ -1324,2 +1324,43 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
+ 
++// hasOpenAICodexExplicitSystemPromptBody is the raw-body counterpart of
++// hasOpenAICodexExplicitSystemPrompt. It prevents a default instruction from
++// being added before the request reaches the decoded Codex transform.
++func hasOpenAICodexExplicitSystemPromptBody(body []byte) bool {
++	if openAIJSONValueHasText(gjson.GetBytes(body, "system_prompt")) {
++		return true
++	}
++	for _, item := range gjson.GetBytes(body, "input").Array() {
++		if !strings.EqualFold(strings.TrimSpace(item.Get("role").String()), "system") {
++			continue
++		}
++		if openAIJSONValueHasText(item.Get("content")) {
++			return true
++		}
++	}
++	return false
++}
++
++func openAIJSONValueHasText(value gjson.Result) bool {
++	if !value.Exists() || value.Type == gjson.Null {
++		return false
++	}
++	switch value.Type {
++	case gjson.String:
++		return strings.TrimSpace(value.String()) != ""
++	case gjson.JSON:
++		if value.IsArray() {
++			for _, item := range value.Array() {
++				if openAIJSONValueHasText(item.Get("text")) || openAIJSONValueHasText(item) {
++					return true
++				}
++			}
++			return false
++		}
++		if value.IsObject() {
++			return openAIJSONValueHasText(value.Get("text")) || openAIJSONValueHasText(value.Get("content"))
++		}
++	}
++	return false
++}
++
+ func isOpenAICodexModel(model string) bool {

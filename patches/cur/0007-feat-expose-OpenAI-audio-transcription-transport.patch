@@ -1,0 +1,1200 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Wed, 2 Sep 2026 11:26:08 +0000
+Subject: [PATCH] feat: expose OpenAI audio transcription transport
+
+
+diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
+new file mode 100644
+index 000000000..c1abce7d9
+--- /dev/null
++++ b/backend/internal/handler/openai_audio_transcriptions.go
+@@ -0,0 +1,298 @@
++package handler
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"time"
++
++	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
++	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/gin-gonic/gin"
++	"go.uber.org/zap"
++)
++
++// AudioTranscriptions handles OpenAI audio transcription requests.
++// POST /v1/audio/transcriptions
++// POST /transcribe
++func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
++	streamStarted := false
++	defer h.recoverResponsesPanic(c, &streamStarted)
++	setOpenAIClientTransportHTTP(c)
++
++	requestStart := time.Now()
++	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
++	if !ok {
++		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
++		return
++	}
++	subject, ok := middleware2.GetAuthSubjectFromContext(c)
++	if !ok {
++		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
++		return
++	}
++	reqLog := requestLogger(
++		c,
++		"handler.openai_gateway.audio_transcriptions",
++		zap.Int64("user_id", subject.UserID),
++		zap.Int64("api_key_id", apiKey.ID),
++		zap.Any("group_id", apiKey.GroupID),
++	)
++	if !h.ensureResponsesDependencies(c, reqLog) {
++		return
++	}
++
++	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
++	if err != nil {
++		if maxErr, ok := extractMaxBytesError(err); ok {
++			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
++			return
++		}
++		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
++		return
++	}
++	if len(body) == 0 {
++		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
++		return
++	}
++
++	setOpsRequestContext(c, "", false)
++	parsed, err := h.gatewayService.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	if err != nil {
++		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
++		return
++	}
++	reqLog = reqLog.With(zap.String("model", parsed.Model), zap.String("endpoint", parsed.Endpoint))
++	setOpsRequestContext(c, parsed.Model, false)
++	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
++
++	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, parsed.Model)
++	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
++	routingStart := time.Now()
++	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, false, &streamStarted, reqLog)
++	if !acquired {
++		return
++	}
++	if userReleaseFunc != nil {
++		defer userReleaseFunc()
++	}
++
++	sessionHash := parsed.StickySessionSeed()
++	routingCtx := service.WithModelRateLimitExtraScopes(
++		c.Request.Context(),
++		service.OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(channelMapping.MappedModel),
++		service.OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(parsed.Model),
++		service.OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(service.OpenAIAudioTranscriptionsAccountSelectionModel(parsed.Model)),
++	)
++	maxAccountSwitches := h.maxAccountSwitches
++	switchCount := 0
++	failedAccountIDs := make(map[int64]struct{})
++	sameAccountRetryCount := make(map[int64]int)
++	var lastFailoverErr *service.UpstreamFailoverError
++	var selection *service.AccountSelectionResult
++	var scheduleDecision service.OpenAIAccountScheduleDecision
++	var selectionModel string
++	var retryAccountReleaseFunc func()
++	requestModel := channelMapping.MappedModel
++	if requestModel == "" {
++		requestModel = parsed.Model
++	}
++
++	for {
++		if failoverClientGone(c) {
++			if retryAccountReleaseFunc != nil {
++				retryAccountReleaseFunc()
++			}
++			return
++		}
++		if selection == nil {
++			var selectionErr error
++			selection, scheduleDecision, selectionModel, selectionErr = h.gatewayService.SelectAccountWithSchedulerForAudioTranscriptions(
++				routingCtx, apiKey.GroupID, sessionHash, parsed.Model, failedAccountIDs,
++			)
++			if selectionErr != nil {
++				if failoverClientGone(c) {
++					return
++				}
++				reqLog.Warn("openai.audio_transcriptions.account_select_failed", zap.Error(selectionErr), zap.Int("excluded_account_count", len(failedAccountIDs)))
++				if len(failedAccountIDs) == 0 {
++					markOpsRoutingCapacityLimitedIfNoAvailable(c, selectionErr)
++					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
++					return
++				}
++				if lastFailoverErr != nil {
++					h.handleAudioTranscriptionFailoverExhausted(c, lastFailoverErr, streamStarted)
++				} else {
++					h.handleFailoverExhaustedSimple(c, 502, streamStarted)
++				}
++				return
++			}
++		}
++		if selection == nil || selection.Account == nil {
++			markOpsRoutingCapacityLimited(c)
++			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
++			return
++		}
++		reqLog.Debug("openai.audio_transcriptions.account_schedule_decision",
++			zap.String("layer", scheduleDecision.Layer),
++			zap.Bool("sticky_session_hit", scheduleDecision.StickySessionHit),
++			zap.Int("candidate_count", scheduleDecision.CandidateCount),
++			zap.Int("top_k", scheduleDecision.TopK),
++			zap.Int64("latency_ms", scheduleDecision.LatencyMs),
++			zap.Float64("load_skew", scheduleDecision.LoadSkew),
++			zap.String("selection_model", selectionModel),
++		)
++
++		account := selection.Account
++		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
++		setOpsSelectedAccount(c, account.ID, account.Platform)
++
++		accountReleaseFunc := retryAccountReleaseFunc
++		retryAccountReleaseFunc = nil
++		if accountReleaseFunc == nil {
++			var acquired openAISlotAcquireResult
++			accountReleaseFunc, acquired = h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
++			if acquired != openAISlotAcquireOK {
++				return
++			}
++		}
++
++		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
++		forwardStart := time.Now()
++		result, err := h.gatewayService.ForwardAudioTranscriptions(routingCtx, c, account, parsed, channelMapping.MappedModel)
++		forwardDurationMs := time.Since(forwardStart).Milliseconds()
++		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
++		responseLatencyMs := forwardDurationMs
++		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {
++			responseLatencyMs = forwardDurationMs - upstreamLatencyMs
++		}
++		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
++
++		if err != nil {
++			var failoverErr *service.UpstreamFailoverError
++			if errors.As(err, &failoverErr) {
++				if failoverClientGone(c) {
++					if accountReleaseFunc != nil {
++						accountReleaseFunc()
++					}
++					return
++				}
++				if failoverErr.RetryableOnSameAccount {
++					retryLimit := account.GetPoolModeRetryCount()
++					if sameAccountRetryCount[account.ID] < retryLimit {
++						sameAccountRetryCount[account.ID]++
++						reqLog.Warn("openai.audio_transcriptions.pool_mode_same_account_retry",
++							zap.Int64("account_id", account.ID),
++							zap.Int("upstream_status", failoverErr.StatusCode),
++							zap.Int("retry_limit", retryLimit),
++							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
++						)
++						retryAccountReleaseFunc = accountReleaseFunc
++						select {
++						case <-c.Request.Context().Done():
++							if retryAccountReleaseFunc != nil {
++								retryAccountReleaseFunc()
++							}
++							return
++						case <-time.After(sameAccountRetryDelay):
++						}
++						continue
++					}
++				}
++				if failoverClientGone(c) {
++					if accountReleaseFunc != nil {
++						accountReleaseFunc()
++					}
++					return
++				}
++				h.gatewayService.FinalizeOpenAIAudioTranscriptionFailover(routingCtx, account, requestModel, failoverErr)
++				h.gatewayService.ReportOpenAIAccountScheduleResult(account, selectionModel, false, nil)
++				if accountReleaseFunc != nil {
++					accountReleaseFunc()
++				}
++				h.gatewayService.RecordOpenAIAccountSwitch()
++				failedAccountIDs[account.ID] = struct{}{}
++				lastFailoverErr = failoverErr
++				selection = nil
++				if switchCount >= maxAccountSwitches {
++					h.handleAudioTranscriptionFailoverExhausted(c, failoverErr, streamStarted)
++					return
++				}
++				switchCount++
++				continue
++			}
++			if accountReleaseFunc != nil {
++				accountReleaseFunc()
++			}
++			if failoverClientGone(c) {
++				return
++			}
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account, selectionModel, false, nil, err)
++			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
++			fields := []zap.Field{
++				zap.Int64("account_id", account.ID),
++				zap.Bool("fallback_error_response_written", wroteFallback),
++				zap.Error(err),
++			}
++			if shouldLogOpenAIForwardFailureAsWarn(c, wroteFallback) {
++				reqLog.Warn("openai.audio_transcriptions.forward_failed", fields...)
++				return
++			}
++			reqLog.Error("openai.audio_transcriptions.forward_failed", fields...)
++			return
++		}
++
++		if result != nil {
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account, selectionModel, true, result.FirstTokenMs)
++		} else {
++			h.gatewayService.ReportOpenAIAccountScheduleResult(account, selectionModel, true, nil)
++		}
++		if accountReleaseFunc != nil {
++			accountReleaseFunc()
++		}
++
++		userAgent := c.GetHeader("User-Agent")
++		clientIP := ip.GetClientIP(c)
++		inboundEndpoint := GetInboundEndpoint(c)
++		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
++		upstreamModel := ""
++		if result != nil {
++			upstreamModel = result.UpstreamModel
++		}
++		h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
++			if err := h.gatewayService.RecordAudioTranscriptionUsage(ctx, &service.OpenAIAudioTranscriptionUsageInput{
++				Result:             result,
++				APIKey:             apiKey,
++				Account:            account,
++				InboundEndpoint:    inboundEndpoint,
++				UpstreamEndpoint:   upstreamEndpoint,
++				UserAgent:          userAgent,
++				IPAddress:          clientIP,
++				ChannelUsageFields: channelMapping.ToUsageFields(parsed.Model, upstreamModel),
++			}); err != nil {
++				logger.L().With(
++					zap.String("component", "handler.openai_gateway.audio_transcriptions"),
++					zap.Int64("user_id", subject.UserID),
++					zap.Int64("api_key_id", apiKey.ID),
++					zap.Any("group_id", apiKey.GroupID),
++					zap.String("model", parsed.Model),
++					zap.Int64("account_id", account.ID),
++				).Error("openai.audio_transcriptions.record_usage_failed")
++			}
++		})
++		return
++	}
++}
++
++func (h *OpenAIGatewayHandler) handleAudioTranscriptionFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
++	statusCode := http.StatusBadGateway
++	if failoverErr != nil && failoverErr.StatusCode > 0 {
++		statusCode = failoverErr.StatusCode
++	}
++	status, errType, message := h.mapUpstreamError(statusCode)
++	service.SetOpsUpstreamError(c, statusCode, message, "")
++	h.handleStreamingAwareError(c, status, errType, message, streamStarted)
++}
+diff --git a/backend/internal/handler/openai_audio_transcriptions_test.go b/backend/internal/handler/openai_audio_transcriptions_test.go
+new file mode 100644
+index 000000000..787c5233f
+--- /dev/null
++++ b/backend/internal/handler/openai_audio_transcriptions_test.go
+@@ -0,0 +1,698 @@
++package handler
++
++import (
++	"bytes"
++	"context"
++	"io"
++	"mime/multipart"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
++	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/gin-gonic/gin"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++type audioTranscriptionHandlerAccountRepo struct {
++	service.AccountRepository
++	accounts []service.Account
++	events   *[]string
++}
++
++func (r *audioTranscriptionHandlerAccountRepo) ListSchedulableByPlatform(_ context.Context, platform string) ([]service.Account, error) {
++	out := make([]service.Account, 0, len(r.accounts))
++	for _, account := range r.accounts {
++		if account.Platform == platform && account.IsSchedulable() {
++			out = append(out, account)
++		}
++	}
++	return out, nil
++}
++
++func (r *audioTranscriptionHandlerAccountRepo) BatchUpdateLastUsed(context.Context, map[int64]time.Time) error {
++	return nil
++}
++
++func (r *audioTranscriptionHandlerAccountRepo) SetModelRateLimit(context.Context, int64, string, time.Time, ...string) error {
++	if r.events != nil {
++		*r.events = append(*r.events, "finalize")
++	}
++	return nil
++}
++
++type audioTranscriptionHandlerUsageLogRepo struct {
++	service.UsageLogRepository
++	logs []service.UsageLog
++}
++
++func (r *audioTranscriptionHandlerUsageLogRepo) Create(_ context.Context, log *service.UsageLog) (bool, error) {
++	if log != nil {
++		r.logs = append(r.logs, *log)
++	}
++	return true, nil
++}
++
++type audioTranscriptionHandlerUpstream struct {
++	statuses       []int
++	responseBodies []string
++	nilBodyAt      map[int]bool
++	accountIDs     []int64
++	urls           []string
++	bodies         [][]byte
++	onRequest      func()
++}
++
++func (u *audioTranscriptionHandlerUpstream) Do(req *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
++	u.accountIDs = append(u.accountIDs, accountID)
++	if req != nil && req.URL != nil {
++		u.urls = append(u.urls, req.URL.String())
++	}
++	if req != nil && req.Body != nil {
++		body, err := io.ReadAll(req.Body)
++		if err != nil {
++			return nil, err
++		}
++		u.bodies = append(u.bodies, body)
++		req.Body = io.NopCloser(bytes.NewReader(body))
++	}
++	if u.onRequest != nil {
++		u.onRequest()
++	}
++	attempt := len(u.accountIDs) - 1
++	status := http.StatusOK
++	if idx := attempt; idx < len(u.statuses) {
++		status = u.statuses[idx]
++	}
++	body := `{"text":"ok"}`
++	if status >= 400 {
++		body = `{"error":{"message":"temporary upstream failure"}}`
++	}
++	if attempt < len(u.responseBodies) {
++		body = u.responseBodies[attempt]
++	}
++	if u.nilBodyAt[attempt] {
++		return &http.Response{
++			StatusCode: status,
++			Header: http.Header{
++				"Content-Type": []string{"application/json"},
++				"X-Request-Id": []string{"rid-audio-handler"},
++			},
++			Request: req,
++		}, nil
++	}
++	return &http.Response{
++		StatusCode: status,
++		Header: http.Header{
++			"Content-Type": []string{"application/json"},
++			"X-Request-Id": []string{"rid-audio-handler"},
++		},
++		Body:    io.NopCloser(bytes.NewBufferString(body)),
++		Request: req,
++	}, nil
++}
++
++func (u *audioTranscriptionHandlerUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
++	return u.Do(req, proxyURL, accountID, accountConcurrency)
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_DispatchesOAuthAccount(t *testing.T) {
++	upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK}}
++	handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{
++		newAudioTranscriptionHandlerOAuthAccount(9),
++	})
++	c, rec := newAudioTranscriptionHandlerContext(t, "/transcribe")
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{9}, upstream.accountIDs)
++	require.Equal(t, []string{"https://chatgpt.com/backend-api/transcribe"}, upstream.urls)
++	require.JSONEq(t, `{"text":"ok"}`, rec.Body.String())
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_FallbackSelectionStillForwardsRequestedModel(t *testing.T) {
++	tests := []struct {
++		model string
++	}{
++		{model: "gpt-4o-transcribe"},
++		{model: "whisper-1"},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.model, func(t *testing.T) {
++			upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK}}
++			account := newAudioTranscriptionHandlerAccount(1)
++			account.Credentials["model_mapping"] = map[string]any{
++				service.OpenAIAudioTranscriptionsDefaultModel: service.OpenAIAudioTranscriptionsDefaultModel,
++			}
++			handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{account})
++			c, rec := newAudioTranscriptionHandlerContextWithModel(t, "/v1/audio/transcriptions", tt.model)
++
++			handler.AudioTranscriptions(c)
++
++			require.Equal(t, http.StatusOK, rec.Code)
++			require.Equal(t, []int64{1}, upstream.accountIDs)
++			require.Len(t, upstream.bodies, 1)
++			require.Contains(t, string(upstream.bodies[0]), tt.model)
++			require.NotContains(t, string(upstream.bodies[0]), service.OpenAIAudioTranscriptionsDefaultModel)
++		})
++	}
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_UnknownModelSkipsUnsupportedAccountType(t *testing.T) {
++	upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK}}
++	unsupported := newAudioTranscriptionHandlerAccount(1)
++	unsupported.Type = service.AccountTypeSetupToken
++	unsupported.Credentials = map[string]any{
++		"access_token": "setup-token",
++		"model_mapping": map[string]any{
++			"custom-transcription-model": "custom-transcription-model",
++		},
++	}
++	supported := newAudioTranscriptionHandlerAccount(2)
++	supported.Credentials["model_mapping"] = map[string]any{
++		"custom-transcription-model": "custom-transcription-model",
++	}
++	handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{unsupported, supported})
++	c, rec := newAudioTranscriptionHandlerContextWithModel(t, "/v1/audio/transcriptions", "custom-transcription-model")
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{2}, upstream.accountIDs)
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_UnknownModelRequiresExplicitMapping(t *testing.T) {
++	upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK}}
++	explicit := newAudioTranscriptionHandlerAccount(2)
++	explicit.Credentials["model_mapping"] = map[string]any{
++		"custom-transcription-model": "custom-transcription-model",
++	}
++	handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{newAudioTranscriptionHandlerAccount(1), explicit})
++	c, rec := newAudioTranscriptionHandlerContextWithModel(t, "/v1/audio/transcriptions", "custom-transcription-model")
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{2}, upstream.accountIDs)
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_FallbackModelRateLimitScopeSkipsCoolingAccount(t *testing.T) {
++	upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK}}
++	cooling := newAudioTranscriptionHandlerAccount(1)
++	fallbackScope := service.OpenAIAudioTranscriptionsModelRateLimitScope(service.OpenAIAudioTranscriptionsDefaultModel)
++	cooling.Extra = map[string]any{
++		"model_rate_limits": map[string]any{
++			fallbackScope: map[string]any{"rate_limit_reset_at": time.Now().Add(time.Minute).Format(time.RFC3339)},
++		},
++	}
++	handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{cooling, newAudioTranscriptionHandlerAccount(2)})
++	c, rec := newAudioTranscriptionHandlerContextWithModel(t, "/v1/audio/transcriptions", "gpt-4o-transcribe")
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{2}, upstream.accountIDs)
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_SameAccountRetry(t *testing.T) {
++	tests := []struct {
++		name   string
++		status int
++	}{
++		{name: "401", status: http.StatusUnauthorized},
++		{name: "403", status: http.StatusForbidden},
++		{name: "429", status: http.StatusTooManyRequests},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			account := newAudioTranscriptionHandlerAccount(1)
++			account.Credentials["pool_mode"] = true
++			account.Credentials["pool_mode_retry_count"] = 1
++			upstream := &audioTranscriptionHandlerUpstream{statuses: []int{tt.status, http.StatusOK}}
++			handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{account})
++			c, rec := newAudioTranscriptionHandlerContext(t, "/v1/audio/transcriptions")
++
++			handler.AudioTranscriptions(c)
++
++			require.Equal(t, http.StatusOK, rec.Code)
++			require.Equal(t, []int64{1, 1}, upstream.accountIDs)
++			require.JSONEq(t, `{"text":"ok"}`, rec.Body.String())
++		})
++	}
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_OAuthServerErrorSameAccountRetry(t *testing.T) {
++	upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusInternalServerError, http.StatusOK}}
++	handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{
++		newAudioTranscriptionHandlerOAuthAccount(9),
++	})
++	c, rec := newAudioTranscriptionHandlerContext(t, "/transcribe")
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{9, 9}, upstream.accountIDs)
++	require.Equal(t, []string{
++		"https://chatgpt.com/backend-api/transcribe",
++		"https://chatgpt.com/backend-api/transcribe",
++	}, upstream.urls)
++	require.JSONEq(t, `{"text":"ok"}`, rec.Body.String())
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_AccountSwitch(t *testing.T) {
++	tests := []struct {
++		name   string
++		status int
++	}{
++		{name: "401", status: http.StatusUnauthorized},
++		{name: "403", status: http.StatusForbidden},
++		{name: "429", status: http.StatusTooManyRequests},
++		{name: "500", status: http.StatusInternalServerError},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			upstream := &audioTranscriptionHandlerUpstream{statuses: []int{tt.status, http.StatusOK}}
++			firstAccount := newAudioTranscriptionHandlerAccount(1)
++			firstAccount.Credentials["pool_mode"] = true
++			firstAccount.Credentials["pool_mode_retry_count"] = 0
++			handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{
++				firstAccount,
++				newAudioTranscriptionHandlerAccount(2),
++			})
++			c, rec := newAudioTranscriptionHandlerContext(t, "/v1/audio/transcriptions")
++
++			handler.AudioTranscriptions(c)
++
++			require.Equal(t, http.StatusOK, rec.Code)
++			require.Equal(t, []int64{1, 2}, upstream.accountIDs)
++			require.JSONEq(t, `{"text":"ok"}`, rec.Body.String())
++		})
++	}
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_ExhaustedFailure(t *testing.T) {
++	tests := []struct {
++		name       string
++		status     int
++		wantStatus int
++		wantType   string
++	}{
++		{name: "401", status: http.StatusUnauthorized, wantStatus: http.StatusBadGateway, wantType: "upstream_error"},
++		{name: "403", status: http.StatusForbidden, wantStatus: http.StatusBadGateway, wantType: "upstream_error"},
++		{name: "429", status: http.StatusTooManyRequests, wantStatus: http.StatusTooManyRequests, wantType: "rate_limit_error"},
++		{name: "500", status: http.StatusInternalServerError, wantStatus: http.StatusBadGateway, wantType: "upstream_error"},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			upstream := &audioTranscriptionHandlerUpstream{statuses: []int{tt.status}}
++			account := newAudioTranscriptionHandlerAccount(1)
++			account.Credentials["pool_mode"] = true
++			account.Credentials["pool_mode_retry_count"] = 0
++			handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{
++				account,
++			})
++			c, rec := newAudioTranscriptionHandlerContext(t, "/v1/audio/transcriptions")
++
++			handler.AudioTranscriptions(c)
++
++			require.Equal(t, tt.wantStatus, rec.Code)
++			require.Equal(t, []int64{1}, upstream.accountIDs)
++			require.Equal(t, tt.wantType, gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
++		})
++	}
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_NilSuccessBodyRetriesSameAccount(t *testing.T) {
++	account := newAudioTranscriptionHandlerAccount(1)
++	account.Credentials["pool_mode"] = true
++	account.Credentials["pool_mode_retry_count"] = 1
++	upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK, http.StatusOK}, nilBodyAt: map[int]bool{0: true}}
++	handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{account})
++	c, rec := newAudioTranscriptionHandlerContext(t, "/v1/audio/transcriptions")
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{1, 1}, upstream.accountIDs)
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_NilSuccessBodySwitchesAccount(t *testing.T) {
++	first := newAudioTranscriptionHandlerAccount(1)
++	first.Credentials["pool_mode"] = true
++	first.Credentials["pool_mode_retry_count"] = 0
++	upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK, http.StatusOK}, nilBodyAt: map[int]bool{0: true}}
++	handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{first, newAudioTranscriptionHandlerAccount(2)})
++	c, rec := newAudioTranscriptionHandlerContext(t, "/v1/audio/transcriptions")
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{1, 2}, upstream.accountIDs)
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_NilSuccessBodyExhaustsFailover(t *testing.T) {
++	account := newAudioTranscriptionHandlerAccount(1)
++	account.Credentials["pool_mode"] = true
++	account.Credentials["pool_mode_retry_count"] = -1
++	upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK}, nilBodyAt: map[int]bool{0: true}}
++	handler := newAudioTranscriptionHandlerForTest(t, upstream, []service.Account{account})
++	c, rec := newAudioTranscriptionHandlerContext(t, "/v1/audio/transcriptions")
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusBadGateway, rec.Code)
++	require.Equal(t, []int64{1}, upstream.accountIDs)
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_FinalizesBeforeReleasingAccountSlot(t *testing.T) {
++	events := make([]string, 0, 3)
++	cache := &audioTranscriptionTrackingConcurrencyCache{events: &events}
++	concurrency := service.NewConcurrencyService(cache)
++	account := newAudioTranscriptionHandlerOAuthAccount(1)
++	account.Concurrency = 1
++	account.Credentials["pool_mode"] = true
++	account.Credentials["pool_mode_retry_count"] = -1
++	upstream := &audioTranscriptionHandlerUpstream{
++		statuses:       []int{http.StatusTooManyRequests, http.StatusTooManyRequests, http.StatusTooManyRequests, http.StatusTooManyRequests},
++		responseBodies: []string{`{"retry_after_seconds":30}`, `{"retry_after_seconds":30}`, `{"retry_after_seconds":30}`, `{"retry_after_seconds":30}`},
++	}
++	handler, _ := newAudioTranscriptionHandlerHarnessWithRateLimit(t, upstream, []service.Account{account}, concurrency, &events)
++	handler.maxAccountSwitches = 0
++	c, rec := newAudioTranscriptionHandlerContext(t, "/v1/audio/transcriptions")
++	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42, Concurrency: 1})
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusTooManyRequests, rec.Code)
++	require.Equal(t, []string{"finalize", "account_release", "user_release"}, events)
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_ReleasesSlotsAndWritesZeroTokenUsage(t *testing.T) {
++	cache := &audioTranscriptionTrackingConcurrencyCache{}
++	concurrency := service.NewConcurrencyService(cache)
++	upstream := &audioTranscriptionHandlerUpstream{statuses: []int{http.StatusOK}}
++	account := newAudioTranscriptionHandlerAccount(1)
++	account.Concurrency = 1
++	handler, usageRepo := newAudioTranscriptionHandlerHarness(t, upstream, []service.Account{account}, concurrency)
++	c, rec := newAudioTranscriptionHandlerContext(t, "/v1/audio/transcriptions")
++	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42, Concurrency: 1})
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, 1, cache.userAcquires)
++	require.Equal(t, 1, cache.userReleases)
++	require.Equal(t, 1, cache.accountAcquires)
++	require.Equal(t, 1, cache.accountReleases)
++	require.Len(t, usageRepo.logs, 1)
++	require.Zero(t, usageRepo.logs[0].InputTokens)
++	require.Zero(t, usageRepo.logs[0].OutputTokens)
++	require.Zero(t, usageRepo.logs[0].CacheReadTokens)
++	require.Zero(t, usageRepo.logs[0].TotalCost)
++}
++
++func TestOpenAIGatewayHandlerAudioTranscriptions_CancellationDuringRetryReleasesSlotsWithoutUsage(t *testing.T) {
++	cache := &audioTranscriptionTrackingConcurrencyCache{}
++	concurrency := service.NewConcurrencyService(cache)
++	cancelled := false
++	ctx, cancel := context.WithCancel(context.Background())
++	upstream := &audioTranscriptionHandlerUpstream{
++		statuses: []int{http.StatusInternalServerError, http.StatusOK},
++		onRequest: func() {
++			if !cancelled {
++				cancelled = true
++				cancel()
++			}
++		},
++	}
++	account := newAudioTranscriptionHandlerAccount(1)
++	account.Concurrency = 1
++	account.Credentials["pool_mode"] = true
++	account.Credentials["pool_mode_retry_count"] = 1
++	handler, usageRepo := newAudioTranscriptionHandlerHarness(t, upstream, []service.Account{account}, concurrency)
++	c, _ := newAudioTranscriptionHandlerContext(t, "/v1/audio/transcriptions")
++	c.Request = c.Request.WithContext(ctx)
++	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42, Concurrency: 1})
++
++	handler.AudioTranscriptions(c)
++
++	require.Equal(t, []int64{1}, upstream.accountIDs)
++	require.Equal(t, 1, cache.userAcquires)
++	require.Equal(t, 1, cache.userReleases)
++	require.Equal(t, 1, cache.accountAcquires)
++	require.Equal(t, 1, cache.accountReleases)
++	require.Empty(t, usageRepo.logs)
++}
++
++func newAudioTranscriptionHandlerForTest(t *testing.T, upstream service.HTTPUpstream, accounts []service.Account) *OpenAIGatewayHandler {
++	handler, _ := newAudioTranscriptionHandlerHarness(t, upstream, accounts, nil)
++	return handler
++}
++
++func newAudioTranscriptionHandlerHarness(t *testing.T, upstream service.HTTPUpstream, accounts []service.Account, concurrencyService *service.ConcurrencyService) (*OpenAIGatewayHandler, *audioTranscriptionHandlerUsageLogRepo) {
++	return newAudioTranscriptionHandlerHarnessWithRateLimit(t, upstream, accounts, concurrencyService, nil)
++}
++
++func newAudioTranscriptionHandlerHarnessWithRateLimit(t *testing.T, upstream service.HTTPUpstream, accounts []service.Account, concurrencyService *service.ConcurrencyService, events *[]string) (*OpenAIGatewayHandler, *audioTranscriptionHandlerUsageLogRepo) {
++	t.Helper()
++	cfg := &config.Config{RunMode: config.RunModeSimple}
++	cfg.Default.RateMultiplier = 1
++	cfg.Gateway.Scheduling.LoadBatchEnabled = false
++
++	accountRepo := &audioTranscriptionHandlerAccountRepo{accounts: accounts, events: events}
++	usageRepo := &audioTranscriptionHandlerUsageLogRepo{}
++	if concurrencyService == nil {
++		concurrencyService = service.NewConcurrencyService(nil)
++	}
++	var rateLimitService *service.RateLimitService
++	if events != nil {
++		rateLimitService = service.NewRateLimitService(accountRepo, nil, cfg, nil, nil)
++	}
++	billingCacheService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
++	billingService := service.NewBillingService(cfg, nil)
++	deferredService := service.NewDeferredService(accountRepo, nil, time.Minute)
++	gatewayService := service.NewOpenAIGatewayService(
++		accountRepo,
++		usageRepo,
++		nil,
++		nil,
++		nil,
++		nil,
++		nil,
++		cfg,
++		nil,
++		concurrencyService,
++		billingService,
++		rateLimitService,
++		billingCacheService,
++		upstream,
++		deferredService,
++		nil,
++		nil,
++		nil,
++		nil,
++		nil,
++		nil,
++		nil,
++	)
++
++	return NewOpenAIGatewayHandler(
++		gatewayService,
++		concurrencyService,
++		billingCacheService,
++		&service.APIKeyService{},
++		nil,
++		nil,
++		nil,
++		nil,
++		cfg,
++	), usageRepo
++}
++
++type audioTranscriptionTrackingConcurrencyCache struct {
++	userAcquires    int
++	userReleases    int
++	accountAcquires int
++	accountReleases int
++	events          *[]string
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) AcquireAccountSlot(context.Context, int64, int, string) (bool, error) {
++	c.accountAcquires++
++	return true, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) ReleaseAccountSlot(context.Context, int64, string) error {
++	c.accountReleases++
++	if c.events != nil {
++		*c.events = append(*c.events, "account_release")
++	}
++	return nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) GetAccountConcurrency(context.Context, int64) (int, error) {
++	return 0, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) GetAccountConcurrencyBatch(context.Context, []int64) (map[int64]int, error) {
++	return map[int64]int{}, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) IncrementAccountWaitCount(context.Context, int64, int) (bool, error) {
++	return true, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) DecrementAccountWaitCount(context.Context, int64) error {
++	return nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) GetAccountWaitingCount(context.Context, int64) (int, error) {
++	return 0, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) AcquireUserSlot(context.Context, int64, int, string) (bool, error) {
++	c.userAcquires++
++	return true, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) ReleaseUserSlot(context.Context, int64, string) error {
++	c.userReleases++
++	if c.events != nil {
++		*c.events = append(*c.events, "user_release")
++	}
++	return nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) GetUserConcurrency(context.Context, int64) (int, error) {
++	return 0, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) TrackAPIKeySlot(context.Context, int64, string) error {
++	return nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) ReleaseAPIKeySlot(context.Context, int64, string) error {
++	return nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) GetAPIKeyConcurrencyBatch(context.Context, []int64) (map[int64]int, error) {
++	return map[int64]int{}, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) IncrementWaitCount(context.Context, int64, int) (bool, error) {
++	return true, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) DecrementWaitCount(context.Context, int64) error {
++	return nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) GetAccountsLoadBatch(context.Context, []service.AccountWithConcurrency) (map[int64]*service.AccountLoadInfo, error) {
++	return map[int64]*service.AccountLoadInfo{}, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) GetUsersLoadBatch(context.Context, []service.UserWithConcurrency) (map[int64]*service.UserLoadInfo, error) {
++	return map[int64]*service.UserLoadInfo{}, nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) CleanupExpiredAccountSlots(context.Context, int64) error {
++	return nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) CleanupExpiredAccountSlotKeys(context.Context) error {
++	return nil
++}
++
++func (c *audioTranscriptionTrackingConcurrencyCache) CleanupStaleProcessSlots(context.Context, string) error {
++	return nil
++}
++
++func newAudioTranscriptionHandlerContext(t *testing.T, path string) (*gin.Context, *httptest.ResponseRecorder) {
++	t.Helper()
++	return newAudioTranscriptionHandlerContextWithModel(t, path, service.OpenAIAudioTranscriptionsDefaultModel)
++}
++
++func newAudioTranscriptionHandlerContextWithModel(t *testing.T, path string, model string) (*gin.Context, *httptest.ResponseRecorder) {
++	t.Helper()
++	gin.SetMode(gin.TestMode)
++	body, contentType := buildAudioTranscriptionHandlerMultipartWithModel(t, model)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
++	c.Request.Header.Set("Content-Type", contentType)
++
++	groupID := int64(10)
++	user := &service.User{ID: 42, Status: service.StatusActive, Balance: 100}
++	group := &service.Group{
++		ID:             groupID,
++		Name:           "openai",
++		Platform:       service.PlatformOpenAI,
++		RateMultiplier: 1,
++		Status:         service.StatusActive,
++	}
++	apiKey := &service.APIKey{
++		ID:      77,
++		UserID:  user.ID,
++		Status:  service.StatusActive,
++		User:    user,
++		GroupID: &groupID,
++		Group:   group,
++	}
++	c.Set(string(middleware.ContextKeyAPIKey), apiKey)
++	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: user.ID})
++	c.Set(string(middleware.ContextKeyUserRole), service.RoleUser)
++	return c, rec
++}
++
++func buildAudioTranscriptionHandlerMultipartWithModel(t *testing.T, model string) ([]byte, string) {
++	t.Helper()
++	var body bytes.Buffer
++	writer := multipart.NewWriter(&body)
++	part, err := writer.CreateFormFile("file", "sample.wav")
++	require.NoError(t, err)
++	_, err = part.Write([]byte("fake-audio"))
++	require.NoError(t, err)
++	require.NoError(t, writer.WriteField("model", model))
++	require.NoError(t, writer.Close())
++	return body.Bytes(), writer.FormDataContentType()
++}
++
++func newAudioTranscriptionHandlerAccount(id int64) service.Account {
++	return service.Account{
++		ID:          id,
++		Name:        "openai-audio",
++		Platform:    service.PlatformOpenAI,
++		Type:        service.AccountTypeAPIKey,
++		Status:      service.StatusActive,
++		Schedulable: true,
++		Concurrency: 0,
++		Priority:    int(id),
++		Credentials: map[string]any{"api_key": "sk-test"},
++	}
++}
++
++func newAudioTranscriptionHandlerOAuthAccount(id int64) service.Account {
++	return service.Account{
++		ID:          id,
++		Name:        "openai-oauth-audio",
++		Platform:    service.PlatformOpenAI,
++		Type:        service.AccountTypeOAuth,
++		Status:      service.StatusActive,
++		Schedulable: true,
++		Concurrency: 0,
++		Priority:    int(id),
++		Credentials: map[string]any{
++			"access_token": "oauth-test-token",
++		},
++	}
++}
+diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
+index fe753b238..8f7af707d 100644
+--- a/backend/internal/server/routes/gateway.go
++++ b/backend/internal/server/routes/gateway.go
+@@ -231,2 +231,54 @@ func RegisterGatewayRoutes(
+ 		})
++		gateway.GET("/realtime", func(c *gin.Context) {
++			platform := getGroupPlatform(c)
++			if platform == service.PlatformGrok {
++				h.OpenAIGateway.GrokRealtime(c)
++				return
++			}
++			if platform != service.PlatformOpenAI {
++				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeWebSocket(c)
++		})
++		gateway.GET("/realtime/translations", func(c *gin.Context) {
++			if getGroupPlatform(c) != service.PlatformOpenAI {
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeTranslationWebSocket(c)
++		})
++		realtimeRESTHandler := func(c *gin.Context) {
++			if getGroupPlatform(c) != service.PlatformOpenAI {
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeREST(c)
++		}
++		gateway.POST("/realtime/client_secrets", realtimeRESTHandler)
++		gateway.POST("/realtime/translations/client_secrets", realtimeRESTHandler)
++		gateway.POST("/realtime/calls", realtimeRESTHandler)
++		gateway.POST("/realtime/translations/calls", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/accept", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/hangup", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/refer", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/reject", realtimeRESTHandler)
++		gateway.POST("/realtime/sessions", realtimeRESTHandler)
++		gateway.POST("/realtime/transcription_sessions", realtimeRESTHandler)
+ 		// OpenAI Chat Completions API: auto-route based on group platform
+@@ -252,2 +304,10 @@ func RegisterGatewayRoutes(
+ 		})
++		gateway.POST("/audio/transcriptions", func(c *gin.Context) {
++			if !isOpenAIOnlyEndpointGatewayPlatform(c) {
++				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
++				c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Audio transcriptions API is not supported for this platform"}})
++				return
++			}
++			h.OpenAIGateway.AudioTranscriptions(c)
++		})
+ 		gateway.POST("/images/generations", imagesHandler)
+@@ -310,10 +370,2 @@ func RegisterGatewayRoutes(
+ 		gateway.DELETE("/custom-voices/:voice_id", customVoicePathHandler)
+-		gateway.GET("/realtime", func(c *gin.Context) {
+-			if getGroupPlatform(c) != service.PlatformGrok {
+-				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+-				c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Realtime API is not supported for this platform"}})
+-				return
+-			}
+-			h.OpenAIGateway.GrokRealtime(c)
+-		})
+ 		gateway.POST("/web_search", func(c *gin.Context) {
+@@ -402,2 +454,10 @@ func RegisterGatewayRoutes(
+ 	})
++	r.POST("/transcribe", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, func(c *gin.Context) {
++		if !isOpenAIOnlyEndpointGatewayPlatform(c) {
++			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
++			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Audio transcriptions API is not supported for this platform"}})
++			return
++		}
++		h.OpenAIGateway.AudioTranscriptions(c)
++	})
+ 	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, imagesHandler)
+@@ -419,3 +479,2 @@ func RegisterGatewayRoutes(
+ 	r.GET("/videos/:request_id/content", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, videoContentHandler)
+-
+ 	rootVoiceHandler := func(endpoint string) gin.HandlerFunc {
+diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
+index 9ab241bdf..3f545b22e 100644
+--- a/backend/internal/server/routes/gateway_test.go
++++ b/backend/internal/server/routes/gateway_test.go
+@@ -126,2 +126,58 @@ func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
+ 
++func TestGatewayRoutesRealtimeDispatchMatrix(t *testing.T) {
++	openAIRouter := newGatewayRoutesTestRouter(service.PlatformOpenAI)
++	grokRouter := newGatewayRoutesTestRouter(service.PlatformGrok)
++
++	for _, path := range []string{
++		"/v1/realtime?model=gpt-realtime",
++		"/v1/realtime/translations?model=gpt-realtime-translate",
++	} {
++		req := httptest.NewRequest(http.MethodGet, path, nil)
++		w := httptest.NewRecorder()
++		openAIRouter.ServeHTTP(w, req)
++		require.Equal(t, http.StatusUpgradeRequired, w.Code, "OpenAI path=%s", path)
++	}
++
++	for _, path := range []string{"/v1/realtime?model=grok-realtime", "/realtime?model=grok-realtime"} {
++		req := httptest.NewRequest(http.MethodGet, path, nil)
++		w := httptest.NewRecorder()
++		grokRouter.ServeHTTP(w, req)
++		require.NotEqual(t, http.StatusNotFound, w.Code, "Grok path=%s", path)
++	}
++
++	req := httptest.NewRequest(http.MethodGet, "/realtime?model=gpt-realtime", nil)
++	w := httptest.NewRecorder()
++	openAIRouter.ServeHTTP(w, req)
++	require.Equal(t, http.StatusNotFound, w.Code)
++}
++
++func TestGatewayRoutesRealtimeRESTPathsAreRegistered(t *testing.T) {
++	router := newGatewayRoutesTestRouter(service.PlatformOpenAI)
++
++	for _, path := range []string{
++		"/v1/realtime/client_secrets",
++		"/v1/realtime/translations/client_secrets",
++		"/v1/realtime/calls",
++		"/v1/realtime/translations/calls",
++		"/v1/realtime/calls/call_123/accept",
++		"/v1/realtime/calls/call_123/hangup",
++		"/v1/realtime/calls/call_123/refer",
++		"/v1/realtime/calls/call_123/reject",
++		"/v1/realtime/sessions",
++		"/v1/realtime/transcription_sessions",
++	} {
++		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
++		req.Header.Set("Content-Type", "application/json")
++		w := httptest.NewRecorder()
++		router.ServeHTTP(w, req)
++		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s", path)
++	}
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/realtime/sessions", strings.NewReader(`{}`))
++	req.Header.Set("Content-Type", "application/json")
++	w := httptest.NewRecorder()
++	newGatewayRoutesTestRouter(service.PlatformGrok).ServeHTTP(w, req)
++	require.Equal(t, http.StatusNotFound, w.Code)
++}
++
+ func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
+diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
+index af4272cb8..e1cf21da6 100644
+--- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
++++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
+@@ -53,6 +53,18 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
+ 	excluded := map[string]string{
+-		"/messages/count_tokens":     "tokenization only; it does not execute a model request",
+-		"/images/batches/:id/cancel": "control-plane cancellation with no user prompt",
+-		"/stt":                       "speech transcription is not a text-generation prompt",
+-		"/custom-voices":             "voice profile management has no model prompt",
++		"/messages/count_tokens":                "tokenization only; it does not execute a model request",
++		"/images/batches/:id/cancel":            "control-plane cancellation with no user prompt",
++		"/stt":                                  "speech transcription is not a text-generation prompt",
++		"/audio/transcriptions":                 "speech transcription is forwarded outside the Codex Chat and Responses transformers",
++		"/transcribe":                           "speech transcription is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/client_secrets":              "realtime control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/translations/client_secrets": "realtime translation control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls":                       "realtime call request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/translations/calls":          "realtime translation call request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/accept":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/hangup":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/refer":        "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/reject":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/sessions":                    "realtime session request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/transcription_sessions":      "realtime transcription session request is forwarded outside the Codex Chat and Responses transformers",
++		"/custom-voices":                        "voice profile management has no model prompt",
+ 	}

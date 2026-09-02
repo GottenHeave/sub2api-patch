@@ -1,0 +1,1966 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Wed, 2 Sep 2026 11:26:08 +0000
+Subject: [PATCH] feat: schedule resilient OpenAI audio transcriptions
+
+
+diff --git a/backend/internal/service/model_rate_limit.go b/backend/internal/service/model_rate_limit.go
+index d76bc423f..2fdf19766 100644
+--- a/backend/internal/service/model_rate_limit.go
++++ b/backend/internal/service/model_rate_limit.go
+@@ -20,2 +20,41 @@ const (
+ 
++type modelRateLimitExtraScopesContextKey struct{}
++
++// WithModelRateLimitExtraScopes adds request-specific scopes without replacing
++// the account's mapped-model scope.
++func WithModelRateLimitExtraScopes(ctx context.Context, scopes ...string) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	unique := make([]string, 0, len(scopes))
++	for _, scope := range scopes {
++		scope = strings.TrimSpace(scope)
++		if scope == "" {
++			continue
++		}
++		duplicate := false
++		for _, existing := range unique {
++			if existing == scope {
++				duplicate = true
++				break
++			}
++		}
++		if !duplicate {
++			unique = append(unique, scope)
++		}
++	}
++	if len(unique) == 0 {
++		return ctx
++	}
++	return context.WithValue(ctx, modelRateLimitExtraScopesContextKey{}, unique)
++}
++
++func modelRateLimitExtraScopesFromContext(ctx context.Context) []string {
++	if ctx == nil {
++		return nil
++	}
++	scopes, _ := ctx.Value(modelRateLimitExtraScopesContextKey{}).([]string)
++	return scopes
++}
++
+ // isRateLimitActiveForKey 检查指定 key 的限流是否生效
+@@ -79,10 +118,13 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
+ 	keys := []string{modelKey}
++	for _, scope := range modelRateLimitExtraScopesFromContext(ctx) {
++		keys = appendModelRateLimitKey(keys, scope)
++	}
+ 	switch a.Platform {
+ 	case PlatformAntigravity:
+-		if isAntigravityGeminiModel(modelKey) && modelKey != antigravityGeminiModelRateLimitKey {
+-			keys = append(keys, antigravityGeminiModelRateLimitKey)
++		if isAntigravityGeminiModel(modelKey) {
++			keys = appendModelRateLimitKey(keys, antigravityGeminiModelRateLimitKey)
+ 		}
+ 	case PlatformOpenAI:
+-		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) && modelKey != openAIImageGenerationRateLimitKey {
+-			keys = append(keys, openAIImageGenerationRateLimitKey)
++		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) {
++			keys = appendModelRateLimitKey(keys, openAIImageGenerationRateLimitKey)
+ 		}
+@@ -96,2 +138,15 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
+ 
++func appendModelRateLimitKey(keys []string, key string) []string {
++	key = strings.TrimSpace(key)
++	if key == "" {
++		return keys
++	}
++	for _, existing := range keys {
++		if existing == key {
++			return keys
++		}
++	}
++	return append(keys, key)
++}
++
+ // isAnthropicFableModel 判断是否为 Fable 模型家族（claude-fable-5、claude-fable-5[1m] 等变体）
+diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
+index 2986f6abe..1a94a6614 100644
+--- a/backend/internal/service/openai_account_scheduler.go
++++ b/backend/internal/service/openai_account_scheduler.go
+@@ -93,2 +93,59 @@ type OpenAIAccountScheduleRequest struct {
+ 
++type openAIAudioTranscriptionSelectionContextKey struct{}
++type openAIAudioTranscriptionKnownModelSelectionContextKey struct{}
++type openAIRealtimeRESTSelectionContextKey struct{}
++
++func withOpenAIAudioTranscriptionSelection(ctx context.Context, knownModel bool) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	ctx = context.WithValue(ctx, openAIAudioTranscriptionSelectionContextKey{}, true)
++	if knownModel {
++		return context.WithValue(ctx, openAIAudioTranscriptionKnownModelSelectionContextKey{}, true)
++	}
++	return ctx
++}
++
++func openAIAudioTranscriptionSelectionFromContext(ctx context.Context) bool {
++	if ctx == nil {
++		return false
++	}
++	selected, _ := ctx.Value(openAIAudioTranscriptionSelectionContextKey{}).(bool)
++	return selected
++}
++
++func openAIAudioTranscriptionKnownModelSelectionFromContext(ctx context.Context) bool {
++	if ctx == nil {
++		return false
++	}
++	selected, _ := ctx.Value(openAIAudioTranscriptionKnownModelSelectionContextKey{}).(bool)
++	return selected
++}
++
++func withOpenAIRealtimeRESTSelection(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, openAIRealtimeRESTSelectionContextKey{}, true)
++}
++
++func openAIRealtimeRESTSelectionFromContext(ctx context.Context) bool {
++	if ctx == nil {
++		return false
++	}
++	selected, _ := ctx.Value(openAIRealtimeRESTSelectionContextKey{}).(bool)
++	return selected
++}
++
++func openAIAudioTranscriptionAccountExplicitlySupportsModel(ctx context.Context, account *Account, requestedModel string) bool {
++	if !openAIAudioTranscriptionSelectionFromContext(ctx) || openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
++		return true
++	}
++	if account == nil || strings.TrimSpace(requestedModel) == "" {
++		return false
++	}
++	_, matched := account.ResolveMappedModel(requestedModel)
++	return matched
++}
++
+ type OpenAIAccountScheduleDecision struct {
+@@ -1768,2 +1825,8 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 	}
++	if (openAIAudioTranscriptionSelectionFromContext(ctx) || openAIRealtimeRESTSelectionFromContext(ctx)) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
++		return false, "audio_transcription_account_type"
++	}
++	if !openAIAudioTranscriptionAccountExplicitlySupportsModel(ctx, account, req.RequestedModel) {
++		return false, "audio_transcription_model_not_supported"
++	}
+ 	if req.RequirePrivacySet && !account.IsPrivacySet() {
+@@ -1799,3 +1862,3 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 	}
+-	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
++	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
+ 		return false, "model_not_supported"
+@@ -2139,2 +2202,51 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
+ 
++func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
++	ctx context.Context,
++	groupID *int64,
++	sessionHash string,
++	requestedModel string,
++	excludedIDs map[int64]struct{},
++) (*AccountSelectionResult, OpenAIAccountScheduleDecision, string, error) {
++	selectionCtx := withOpenAIAudioTranscriptionSelection(ctx, OpenAIAudioTranscriptionsAccountSelectionModel(requestedModel) != "")
++	selection, decision, err := s.selectAccountWithScheduler(
++		selectionCtx,
++		groupID,
++		"",
++		sessionHash,
++		requestedModel,
++		excludedIDs,
++		OpenAIUpstreamTransportHTTPSSE,
++		"",
++		"",
++		false,
++		PlatformOpenAI,
++		false,
++		false,
++	)
++	return selection, decision, requestedModel, err
++}
++
++func (s *OpenAIGatewayService) SelectAccountWithSchedulerForRealtimeREST(
++	ctx context.Context,
++	groupID *int64,
++	sessionHash string,
++	excludedIDs map[int64]struct{},
++) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
++	return s.selectAccountWithScheduler(
++		withOpenAIRealtimeRESTSelection(ctx),
++		groupID,
++		"",
++		sessionHash,
++		"",
++		excludedIDs,
++		OpenAIUpstreamTransportHTTPSSE,
++		"",
++		"",
++		false,
++		PlatformOpenAI,
++		false,
++		true,
++	)
++}
++
+ // selectAccountWithScheduler wraps selectAccountWithSchedulerOnce with a
+diff --git a/backend/internal/service/openai_audio_transcriptions.go b/backend/internal/service/openai_audio_transcriptions.go
+new file mode 100644
+index 000000000..28d123a48
+--- /dev/null
++++ b/backend/internal/service/openai_audio_transcriptions.go
+@@ -0,0 +1,644 @@
++package service
++
++import (
++	"bytes"
++	"context"
++	"encoding/base64"
++	"errors"
++	"fmt"
++	"io"
++	"math"
++	"mime"
++	"mime/multipart"
++	"net/http"
++	"net/textproto"
++	"net/url"
++	"regexp"
++	"strings"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
++	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
++	"github.com/gin-gonic/gin"
++	"github.com/tidwall/gjson"
++	"go.uber.org/zap"
++)
++
++const (
++	openAIAudioTranscriptionsEndpoint = "/v1/audio/transcriptions"
++	openAITranscribeAliasEndpoint     = "/transcribe"
++	openAIAudioTranscriptionsURL      = "https://api.openai.com/v1/audio/transcriptions"
++	chatgptTranscribeURL              = "https://chatgpt.com/backend-api/transcribe"
++
++	OpenAIAudioTranscriptionsDefaultModel         = "gpt-4o-mini-transcribe"
++	openAIAudioTranscriptionsModelRateLimitPrefix = "openai_audio_transcriptions:"
++	openAIAudioTranscriptionsMaxFieldSize         = 1 << 20
++	OpenAIAudioTranscriptionsRequiredAccountTypes = AccountTypeAPIKey + "," + AccountTypeOAuth
++)
++
++var (
++	openAIAudioTranscriptionDiagnosticURLPattern = regexp.MustCompile(`(?i)\b(?:https?|wss?)://[^\s<>"']+`)
++	openAIAudioTranscriptionBearerPattern        = regexp.MustCompile(`(?i)\bbearer\s+[^\s,;]+`)
++	openAIAudioTranscriptionOAuthPattern         = regexp.MustCompile(`(?i)\boauth\s+[^\s,;]+`)
++	openAIAudioTranscriptionSecretPattern        = regexp.MustCompile(`(?i)\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|secret|password)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+`)
++)
++
++type OpenAIAudioTranscriptionsRequest struct {
++	Endpoint        string
++	ContentType     string
++	Body            []byte
++	Model           string
++	ExplicitModel   bool
++	Language        string
++	FileName        string
++	FileSizeBytes   int64
++	FileContentType string
++}
++
++func (r *OpenAIAudioTranscriptionsRequest) IsTranscribeAlias() bool {
++	return r != nil && r.Endpoint == openAITranscribeAliasEndpoint
++}
++
++func (r *OpenAIAudioTranscriptionsRequest) StickySessionSeed() string {
++	if r == nil {
++		return ""
++	}
++	return strings.Join([]string{
++		"openai-audio-transcriptions",
++		strings.TrimSpace(r.Endpoint),
++		strings.TrimSpace(r.Model),
++		strings.TrimSpace(r.Language),
++		strings.TrimSpace(r.FileName),
++	}, "|")
++}
++
++func OpenAIAudioTranscriptionsModelRateLimitScope(model string) string {
++	model = strings.ToLower(strings.TrimSpace(model))
++	if model == "" {
++		model = OpenAIAudioTranscriptionsDefaultModel
++	}
++	return openAIAudioTranscriptionsModelRateLimitPrefix + model
++}
++
++func OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(model string) string {
++	model = strings.TrimSpace(model)
++	if model == "" {
++		return ""
++	}
++	return OpenAIAudioTranscriptionsModelRateLimitScope(model)
++}
++
++func OpenAIAudioTranscriptionsAccountSelectionModel(model string) string {
++	model = strings.ToLower(strings.TrimSpace(model))
++	switch {
++	case model == OpenAIAudioTranscriptionsDefaultModel,
++		model == "gpt-4o-transcribe",
++		model == "gpt-4o-transcribe-diarize",
++		model == "whisper-1",
++		strings.HasPrefix(model, "gpt-4o-transcribe-"),
++		strings.HasPrefix(model, "gpt-4o-mini-transcribe-"):
++		return OpenAIAudioTranscriptionsDefaultModel
++	default:
++		return ""
++	}
++}
++
++func (s *OpenAIGatewayService) ParseOpenAIAudioTranscriptionsRequest(c *gin.Context, body []byte) (*OpenAIAudioTranscriptionsRequest, error) {
++	if c == nil || c.Request == nil {
++		return nil, fmt.Errorf("missing request context")
++	}
++	endpoint := normalizeOpenAIAudioTranscriptionsEndpointPath(c.Request.URL.Path)
++	if endpoint == "" {
++		return nil, fmt.Errorf("unsupported audio transcriptions endpoint")
++	}
++
++	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
++	decodedBody := body
++	if strings.EqualFold(strings.TrimSpace(c.GetHeader("X-Codex-Base64")), "1") {
++		var err error
++		decodedBody, err = decodeOpenAICodexBase64MultipartBody(body)
++		if err != nil {
++			return nil, err
++		}
++	}
++
++	req := &OpenAIAudioTranscriptionsRequest{
++		Endpoint:    endpoint,
++		ContentType: contentType,
++		Body:        decodedBody,
++	}
++	if err := parseOpenAIAudioTranscriptionsMultipartRequest(decodedBody, contentType, req); err != nil {
++		return nil, err
++	}
++	if strings.TrimSpace(req.Model) == "" {
++		if req.IsTranscribeAlias() {
++			req.Model = OpenAIAudioTranscriptionsDefaultModel
++		} else {
++			return nil, fmt.Errorf("model is required")
++		}
++	}
++	req.Model = strings.TrimSpace(req.Model)
++	return req, nil
++}
++
++func decodeOpenAICodexBase64MultipartBody(body []byte) ([]byte, error) {
++	raw := strings.TrimSpace(string(body))
++	if raw == "" {
++		return nil, fmt.Errorf("base64 multipart body is empty")
++	}
++	decoded, err := base64.StdEncoding.DecodeString(raw)
++	if err == nil {
++		return decoded, nil
++	}
++	decoded, rawErr := base64.RawStdEncoding.DecodeString(raw)
++	if rawErr == nil {
++		return decoded, nil
++	}
++	return nil, fmt.Errorf("invalid base64 multipart body")
++}
++
++func parseOpenAIAudioTranscriptionsMultipartRequest(body []byte, contentType string, req *OpenAIAudioTranscriptionsRequest) error {
++	mediaType, params, err := mime.ParseMediaType(contentType)
++	if err != nil || !strings.EqualFold(mediaType, "multipart/form-data") {
++		return fmt.Errorf("audio transcriptions endpoint requires multipart/form-data")
++	}
++	boundary := strings.TrimSpace(params["boundary"])
++	if boundary == "" {
++		return fmt.Errorf("multipart boundary is required")
++	}
++
++	reader := multipart.NewReader(bytes.NewReader(body), boundary)
++	hasFile := false
++	for {
++		part, err := reader.NextPart()
++		if err == io.EOF {
++			break
++		}
++		if err != nil {
++			return fmt.Errorf("read multipart body: %w", err)
++		}
++
++		name := strings.TrimSpace(part.FormName())
++		if name == "" {
++			_ = part.Close()
++			continue
++		}
++		if name == "file" {
++			hasFile = true
++			req.FileName = strings.TrimSpace(part.FileName())
++			req.FileContentType = strings.TrimSpace(part.Header.Get("Content-Type"))
++			fileSize, copyErr := io.Copy(io.Discard, part)
++			_ = part.Close()
++			if copyErr != nil {
++				return fmt.Errorf("read multipart file: %w", copyErr)
++			}
++			req.FileSizeBytes = fileSize
++			continue
++		}
++
++		data, err := io.ReadAll(io.LimitReader(part, openAIAudioTranscriptionsMaxFieldSize))
++		_ = part.Close()
++		if err != nil {
++			return fmt.Errorf("read multipart field %s: %w", name, err)
++		}
++		value := strings.TrimSpace(string(data))
++		switch name {
++		case "model":
++			req.Model = value
++			req.ExplicitModel = value != ""
++		case "language":
++			req.Language = value
++		}
++	}
++	if !hasFile {
++		return fmt.Errorf("file is required")
++	}
++	return nil
++}
++
++func normalizeOpenAIAudioTranscriptionsEndpointPath(path string) string {
++	trimmed := strings.TrimSpace(path)
++	switch {
++	case strings.Contains(trimmed, "/audio/transcriptions"):
++		return openAIAudioTranscriptionsEndpoint
++	case trimmed == openAITranscribeAliasEndpoint:
++		return openAITranscribeAliasEndpoint
++	default:
++		return ""
++	}
++}
++
++func (s *OpenAIGatewayService) ForwardAudioTranscriptions(
++	ctx context.Context,
++	c *gin.Context,
++	account *Account,
++	parsed *OpenAIAudioTranscriptionsRequest,
++	channelMappedModel string,
++) (*OpenAIForwardResult, error) {
++	if parsed == nil {
++		return nil, fmt.Errorf("parsed audio transcriptions request is required")
++	}
++	if account == nil {
++		return nil, fmt.Errorf("account is required")
++	}
++	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
++		return nil, fmt.Errorf("audio transcriptions endpoint requires an OpenAI API key or OAuth account")
++	}
++
++	startTime := time.Now()
++	requestModel := strings.TrimSpace(parsed.Model)
++	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
++		requestModel = mapped
++	}
++	upstreamModel := account.GetMappedModel(requestModel)
++	if strings.TrimSpace(upstreamModel) == "" {
++		upstreamModel = requestModel
++	}
++	logger.LegacyPrintf(
++		"service.openai_gateway",
++		"[OpenAI] Audio transcriptions request routing request_model=%s upstream_model=%s account_type=%s",
++		strings.TrimSpace(parsed.Model),
++		upstreamModel,
++		account.Type,
++	)
++
++	forwardBody := parsed.Body
++	forwardContentType := parsed.ContentType
++	var err error
++	if account.Type == AccountTypeAPIKey || parsed.ExplicitModel {
++		forwardBody, forwardContentType, err = rewriteOpenAIAudioTranscriptionsMultipartModel(parsed.Body, parsed.ContentType, upstreamModel)
++		if err != nil {
++			return nil, err
++		}
++	}
++	token, _, err := s.GetAccessToken(ctx, account)
++	if err != nil {
++		return nil, err
++	}
++	upstreamReq, err := s.buildOpenAIAudioTranscriptionsRequest(ctx, c, account, forwardBody, forwardContentType, token)
++	if err != nil {
++		return nil, err
++	}
++
++	proxyURL := ""
++	if account.ProxyID != nil && account.Proxy != nil {
++		proxyURL = account.Proxy.URL()
++	}
++	upstreamStart := time.Now()
++	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
++	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
++	if err != nil {
++		safeErr := sanitizeOpenAIAudioTranscriptionDiagnostic(err.Error())
++		setOpsUpstreamError(c, 0, safeErr, "")
++		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
++			Platform:           account.Platform,
++			AccountID:          account.ID,
++			AccountName:        account.Name,
++			UpstreamStatusCode: 0,
++			UpstreamURL:        safeOpenAIAudioTranscriptionURL(upstreamReq),
++			Kind:               "request_error",
++			Message:            safeErr,
++		})
++		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
++	}
++	if resp.StatusCode >= 400 {
++		var respBody []byte
++		if resp.Body == nil {
++			logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, upstreamReq, resp, errors.New("upstream response body is nil"))
++		} else {
++			respBody, _ = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
++			_ = resp.Body.Close()
++		}
++		resp.Body = io.NopCloser(bytes.NewReader(respBody))
++		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
++		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
++		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
++			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
++				Platform:           account.Platform,
++				AccountID:          account.ID,
++				AccountName:        account.Name,
++				UpstreamStatusCode: resp.StatusCode,
++				UpstreamRequestID:  resp.Header.Get("x-request-id"),
++				UpstreamURL:        safeOpenAIAudioTranscriptionURL(upstreamReq),
++				Kind:               "failover",
++				Message:            "upstream transcription request failed",
++			})
++			return nil, &UpstreamFailoverError{
++				StatusCode:             resp.StatusCode,
++				ResponseBody:           respBody,
++				ResponseHeaders:        resp.Header.Clone(),
++				RetryableOnSameAccount: isOpenAIAudioTranscriptionSameAccountRetryable(account, resp.StatusCode),
++			}
++		}
++		return s.handleOpenAIAudioTranscriptionTerminalError(resp, c, respBody)
++	}
++	if resp.Body == nil {
++		readErr := errors.New("upstream response body is nil")
++		logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, upstreamReq, resp, readErr)
++		return nil, &UpstreamFailoverError{
++			StatusCode:             resp.StatusCode,
++			ResponseBody:           []byte(`{"error":{"message":"upstream response body is nil"}}`),
++			ResponseHeaders:        resp.Header.Clone(),
++			RetryableOnSameAccount: isOpenAIAudioTranscriptionSameAccountRetryable(account, resp.StatusCode),
++			RequestScopedTransient: true,
++		}
++	}
++	defer func() { _ = resp.Body.Close() }()
++
++	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
++	if err != nil {
++		logOpenAIAudioTranscriptionResponseReadFailure(ctx, account, upstreamReq, resp, err)
++		return nil, err
++	}
++	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
++	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
++	if contentType == "" {
++		contentType = "application/json"
++	}
++	c.Data(resp.StatusCode, contentType, body)
++
++	usage, ok := extractOpenAIUsageFromJSONBytes(body)
++	if !ok {
++		usage = estimateOpenAIAudioTranscriptionUsage(parsed, body)
++	}
++	return &OpenAIForwardResult{
++		RequestID:       resp.Header.Get("x-request-id"),
++		Usage:           usage,
++		Model:           requestModel,
++		UpstreamModel:   upstreamModel,
++		Stream:          false,
++		ResponseHeaders: resp.Header.Clone(),
++		Duration:        time.Since(startTime),
++	}, nil
++}
++
++func (s *OpenAIGatewayService) handleOpenAIAudioTranscriptionTerminalError(resp *http.Response, c *gin.Context, body []byte) (*OpenAIForwardResult, error) {
++	if resp == nil {
++		return nil, errors.New("upstream response is nil")
++	}
++	if c != nil {
++		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
++		contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
++		if contentType == "" {
++			contentType = "application/json"
++		}
++		c.Data(resp.StatusCode, contentType, body)
++	}
++	return nil, fmt.Errorf("upstream transcription returned status %d", resp.StatusCode)
++}
++
++func sanitizeOpenAIAudioTranscriptionDiagnostic(value string) string {
++	value = openAIAudioTranscriptionDiagnosticURLPattern.ReplaceAllStringFunc(value, redactOpenAIAudioTranscriptionDiagnosticURL)
++	value = openAIAudioTranscriptionBearerPattern.ReplaceAllString(value, "Bearer ***")
++	value = openAIAudioTranscriptionOAuthPattern.ReplaceAllString(value, "OAuth ***")
++	value = openAIAudioTranscriptionSecretPattern.ReplaceAllString(value, "$1***")
++	return truncateString(sanitizeUpstreamErrorMessage(strings.TrimSpace(value)), 2048)
++}
++
++func redactOpenAIAudioTranscriptionDiagnosticURL(rawURL string) string {
++	parsed, err := url.Parse(rawURL)
++	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
++		return "***"
++	}
++	parsed.User = nil
++	parsed.RawQuery = ""
++	parsed.ForceQuery = false
++	parsed.Fragment = ""
++	parsed.RawFragment = ""
++	return parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
++}
++
++func safeOpenAIAudioTranscriptionURL(req *http.Request) string {
++	if req == nil || req.URL == nil {
++		return ""
++	}
++	u := *req.URL
++	u.User = nil
++	u.RawQuery = ""
++	u.ForceQuery = false
++	u.Fragment = ""
++	u.RawFragment = ""
++	return u.Scheme + "://" + u.Host + u.EscapedPath()
++}
++
++func logOpenAIAudioTranscriptionResponseReadFailure(ctx context.Context, account *Account, req *http.Request, resp *http.Response, err error) {
++	if account == nil || resp == nil || err == nil {
++		return
++	}
++	logger.FromContext(ctx).Error("openai.audio_transcriptions.upstream_response_read_failed",
++		zap.Int64("account_id", account.ID),
++		zap.Int("upstream_status_code", resp.StatusCode),
++		zap.String("upstream_request_id", strings.TrimSpace(resp.Header.Get("x-request-id"))),
++		zap.String("upstream_url", safeOpenAIAudioTranscriptionURL(req)),
++		zap.String("error", sanitizeOpenAIAudioTranscriptionDiagnostic(err.Error())),
++	)
++}
++
++// FinalizeOpenAIAudioTranscriptionFailover applies account state after
++// same-account retries have exhausted.
++func (s *OpenAIGatewayService) FinalizeOpenAIAudioTranscriptionFailover(ctx context.Context, account *Account, requestModel string, failoverErr *UpstreamFailoverError) {
++	if s == nil || account == nil || failoverErr == nil || ctx == nil || ctx.Err() != nil || s.rateLimitService == nil {
++		return
++	}
++	resp := &http.Response{
++		StatusCode: failoverErr.StatusCode,
++		Header:     failoverErr.ResponseHeaders,
++		Body:       io.NopCloser(bytes.NewReader(failoverErr.ResponseBody)),
++	}
++	s.handleOpenAIAudioTranscriptionFailoverSideEffects(ctx, resp, account, requestModel, failoverErr.ResponseBody)
++}
++
++func (s *OpenAIGatewayService) handleOpenAIAudioTranscriptionFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account, requestModel string, respBody []byte) {
++	if s == nil || s.rateLimitService == nil || resp == nil || account == nil {
++		return
++	}
++	if account.Type == AccountTypeOAuth && resp.StatusCode == http.StatusTooManyRequests {
++		if resetAt := parseOpenAIAudioTranscriptionRetryAfterSeconds(respBody); resetAt != nil && s.accountRepo != nil {
++			scope := OpenAIAudioTranscriptionsModelRateLimitScope(requestModel)
++			resetTime := time.Unix(*resetAt, 0)
++			if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, scope, resetTime); err != nil {
++				logger.L().Warn("openai.audio_transcriptions.model_rate_limit_set_failed",
++					zap.Int64("account_id", account.ID),
++					zap.String("scope", scope),
++					zap.Error(err),
++				)
++			}
++			return
++		}
++	}
++	s.handleFailoverSideEffects(ctx, resp, account, respBody, requestModel)
++}
++
++func parseOpenAIAudioTranscriptionRetryAfterSeconds(body []byte) *int64 {
++	seconds := gjson.GetBytes(body, "detail.retry_after_seconds").Int()
++	if seconds <= 0 {
++		seconds = gjson.GetBytes(body, "retry_after_seconds").Int()
++	}
++	if seconds <= 0 {
++		return nil
++	}
++	resetAt := time.Now().Add(time.Duration(seconds) * time.Second).Unix()
++	return &resetAt
++}
++
++func isOpenAIAudioTranscriptionSameAccountRetryable(account *Account, _ int) bool {
++	return account != nil
++}
++
++func estimateOpenAIAudioTranscriptionUsage(parsed *OpenAIAudioTranscriptionsRequest, responseBody []byte) OpenAIUsage {
++	usage := OpenAIUsage{}
++	text := strings.TrimSpace(gjson.GetBytes(responseBody, "text").String())
++	if text != "" {
++		usage.OutputTokens = estimateOpenAIAudioTranscriptionTextTokens(text)
++	}
++	return usage
++}
++
++func estimateOpenAIAudioTranscriptionTextTokens(text string) int {
++	runeCount := len([]rune(strings.TrimSpace(text)))
++	if runeCount == 0 {
++		return 0
++	}
++	tokens := int(math.Ceil(float64(runeCount) / 4))
++	if tokens < 1 {
++		return 1
++	}
++	return tokens
++}
++
++func (s *OpenAIGatewayService) buildOpenAIAudioTranscriptionsRequest(
++	ctx context.Context,
++	c *gin.Context,
++	account *Account,
++	body []byte,
++	contentType string,
++	token string,
++) (*http.Request, error) {
++	targetURL := openAIAudioTranscriptionsURL
++	if account.Type == AccountTypeOAuth {
++		targetURL = chatgptTranscribeURL
++	} else if baseURL := account.GetOpenAIBaseURL(); baseURL != "" {
++		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
++		if err != nil {
++			return nil, err
++		}
++		targetURL = buildOpenAIAudioTranscriptionsURL(validatedURL)
++	}
++
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
++	if err != nil {
++		return nil, err
++	}
++	if c != nil && c.Request != nil {
++		for key, values := range c.Request.Header {
++			lowerKey := strings.ToLower(key)
++			if lowerKey == "x-codex-base64" || !openaiPassthroughAllowedHeaders[lowerKey] {
++				continue
++			}
++			for _, value := range values {
++				req.Header.Add(key, value)
++			}
++		}
++	}
++	req.Header.Del("Authorization")
++	req.Header.Del("X-Api-Key")
++	req.Header.Del("X-Goog-Api-Key")
++	req.Header.Set("Authorization", "Bearer "+token)
++	if account.Type == AccountTypeOAuth {
++		req.Host = "chatgpt.com"
++		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
++			req.Header.Set("chatgpt-account-id", chatgptAccountID)
++		}
++		isCodexOfficialClient := false
++		if c != nil {
++			isCodexOfficialClient = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
++		}
++		req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexOfficialClient))
++	}
++	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
++		req.Header.Set("User-Agent", customUA)
++	} else if account.Type == AccountTypeOAuth {
++		req.Header.Set("User-Agent", codexCLIUserAgent)
++	}
++	if strings.TrimSpace(contentType) != "" {
++		req.Header.Set("Content-Type", contentType)
++	}
++	return req, nil
++}
++
++func buildOpenAIAudioTranscriptionsURL(base string) string {
++	return buildOpenAIEndpointURL(base, openAIAudioTranscriptionsEndpoint)
++}
++
++func rewriteOpenAIAudioTranscriptionsMultipartModel(body []byte, contentType string, model string) ([]byte, string, error) {
++	model = strings.TrimSpace(model)
++	if model == "" {
++		return body, contentType, nil
++	}
++	_, params, err := mime.ParseMediaType(contentType)
++	if err != nil {
++		return nil, "", fmt.Errorf("parse multipart content-type: %w", err)
++	}
++	boundary := strings.TrimSpace(params["boundary"])
++	if boundary == "" {
++		return nil, "", fmt.Errorf("multipart boundary is required")
++	}
++
++	reader := multipart.NewReader(bytes.NewReader(body), boundary)
++	var buffer bytes.Buffer
++	writer := multipart.NewWriter(&buffer)
++	modelWritten := false
++
++	for {
++		part, err := reader.NextPart()
++		if err == io.EOF {
++			break
++		}
++		if err != nil {
++			return nil, "", fmt.Errorf("read multipart body: %w", err)
++		}
++
++		formName := strings.TrimSpace(part.FormName())
++		partHeader := cloneOpenAIAudioMultipartHeader(part.Header)
++		target, err := writer.CreatePart(partHeader)
++		if err != nil {
++			_ = part.Close()
++			return nil, "", fmt.Errorf("create multipart part: %w", err)
++		}
++		if formName == "model" && part.FileName() == "" {
++			if _, err := target.Write([]byte(model)); err != nil {
++				_ = part.Close()
++				return nil, "", fmt.Errorf("rewrite multipart model: %w", err)
++			}
++			modelWritten = true
++			_ = part.Close()
++			continue
++		}
++		if _, err := io.Copy(target, part); err != nil {
++			_ = part.Close()
++			return nil, "", fmt.Errorf("copy multipart part: %w", err)
++		}
++		_ = part.Close()
++	}
++
++	if !modelWritten {
++		if err := writer.WriteField("model", model); err != nil {
++			return nil, "", fmt.Errorf("append multipart model field: %w", err)
++		}
++	}
++	if err := writer.Close(); err != nil {
++		return nil, "", fmt.Errorf("finalize multipart body: %w", err)
++	}
++	return buffer.Bytes(), writer.FormDataContentType(), nil
++}
++
++func cloneOpenAIAudioMultipartHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
++	dst := make(textproto.MIMEHeader, len(src))
++	for key, values := range src {
++		copied := make([]string, len(values))
++		copy(copied, values)
++		dst[key] = copied
++	}
++	return dst
++}
+diff --git a/backend/internal/service/openai_audio_transcriptions_test.go b/backend/internal/service/openai_audio_transcriptions_test.go
+new file mode 100644
+index 000000000..ecea9e349
+--- /dev/null
++++ b/backend/internal/service/openai_audio_transcriptions_test.go
+@@ -0,0 +1,1015 @@
++package service
++
++import (
++	"bytes"
++	"context"
++	"encoding/base64"
++	"errors"
++	"io"
++	"mime"
++	"mime/multipart"
++	"net/http"
++	"net/http/httptest"
++	"net/textproto"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
++	"github.com/gin-gonic/gin"
++	"github.com/stretchr/testify/require"
++)
++
++func buildOpenAIAudioTranscriptionMultipart(t *testing.T, fields map[string]string, fileBytes []byte) ([]byte, string) {
++	t.Helper()
++	var body bytes.Buffer
++	writer := multipart.NewWriter(&body)
++	part, err := writer.CreatePart(textproto.MIMEHeader{
++		"Content-Disposition": []string{`form-data; name="file"; filename="sample.wav"`},
++		"Content-Type":        []string{"audio/wav"},
++	})
++	require.NoError(t, err)
++	_, err = part.Write(fileBytes)
++	require.NoError(t, err)
++	for key, value := range fields {
++		require.NoError(t, writer.WriteField(key, value))
++	}
++	require.NoError(t, writer.Close())
++	return body.Bytes(), writer.FormDataContentType()
++}
++
++func newOpenAIAudioTranscriptionTestContext(method, path string, body []byte, contentType string) (*gin.Context, *httptest.ResponseRecorder) {
++	gin.SetMode(gin.TestMode)
++	rec := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(rec)
++	req := httptest.NewRequest(method, path, bytes.NewReader(body))
++	if contentType != "" {
++		req.Header.Set("Content-Type", contentType)
++	}
++	c.Request = req
++	return c, rec
++}
++
++type audioTranscriptionRateLimitAccountRepoStub struct {
++	rateLimitCalls        int
++	modelRateLimitCalls   int
++	lastModelRateLimitID  int64
++	lastModelRateLimitKey string
++	lastModelRateLimitAt  time.Time
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) SetRateLimited(_ context.Context, _ int64, _ time.Time) error {
++	r.rateLimitCalls++
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) SetModelRateLimit(_ context.Context, id int64, scope string, resetAt time.Time, _ ...string) error {
++	r.modelRateLimitCalls++
++	r.lastModelRateLimitID = id
++	r.lastModelRateLimitKey = scope
++	r.lastModelRateLimitAt = resetAt
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) Create(context.Context, *Account) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) GetByID(context.Context, int64) (*Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) GetByIDs(context.Context, []int64) ([]*Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ExistsByID(context.Context, int64) (bool, error) {
++	return false, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) GetByCRSAccountID(context.Context, string) (*Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) FindByExtraField(context.Context, string, any) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListCRSAccountIDs(context.Context) (map[string]int64, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) Update(context.Context, *Account) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) Delete(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) List(context.Context, pagination.PaginationParams) ([]Account, *pagination.PaginationResult, error) {
++	return nil, nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListWithFilters(context.Context, pagination.PaginationParams, string, string, string, string, int64, string) ([]Account, *pagination.PaginationResult, error) {
++	return nil, nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListAllWithFilters(context.Context, string, string, string, string, int64, string) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListByGroup(context.Context, int64) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListActive(context.Context) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListByPlatform(context.Context, string) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) UpdateLastUsed(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) BatchUpdateLastUsed(context.Context, map[int64]time.Time) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) SetError(context.Context, int64, string) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ClearError(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) SetSchedulable(context.Context, int64, bool) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) AutoPauseExpiredAccounts(context.Context, time.Time) (int64, error) {
++	return 0, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) BindGroups(context.Context, int64, []int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulable(context.Context) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulableByGroupID(context.Context, int64) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulableByPlatform(context.Context, string) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulableByGroupIDAndPlatform(context.Context, int64, string) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulableByPlatforms(context.Context, []string) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulableByGroupIDAndPlatforms(context.Context, int64, []string) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulableUngroupedByPlatform(context.Context, string) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListSchedulableUngroupedByPlatforms(context.Context, []string) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListModelAvailabilityCandidates(context.Context, *int64, []string, bool) ([]Account, error) {
++	return nil, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) SetOverloaded(context.Context, int64, time.Time) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) SetTempUnschedulable(context.Context, int64, time.Time, string) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ClearTempUnschedulable(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ClearRateLimit(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ClearAntigravityQuotaScopes(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ClearModelRateLimits(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) UpdateSessionWindow(context.Context, int64, *time.Time, *time.Time, string) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) UpdateSessionWindowEnd(context.Context, int64, time.Time) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) UpdateExtra(context.Context, int64, map[string]any) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) BulkUpdate(context.Context, []int64, AccountBulkUpdate) (int64, error) {
++	return 0, nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) IncrementQuotaUsed(context.Context, int64, float64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ResetQuotaUsed(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ResetQuotaUsedAndClearRateLimitCooldown(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) RevertProxyFallback(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ListShadowsByParent(context.Context, int64) ([]*Account, error) {
++	return nil, nil
++}
++
++func parseMultipartFieldsForTest(t *testing.T, body []byte, contentType string) map[string]string {
++	t.Helper()
++	mediaType, params, err := mime.ParseMediaType(contentType)
++	require.NoError(t, err)
++	require.Equal(t, "multipart/form-data", mediaType)
++	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
++	fields := map[string]string{}
++	for {
++		part, err := reader.NextPart()
++		if err == io.EOF {
++			break
++		}
++		require.NoError(t, err)
++		data, err := io.ReadAll(part)
++		require.NoError(t, err)
++		if part.FileName() != "" {
++			fields[part.FormName()] = string(data)
++		} else {
++			fields[part.FormName()] = strings.TrimSpace(string(data))
++		}
++		require.NoError(t, part.Close())
++	}
++	return fields
++}
++
++func TestOpenAIGatewayServiceParseAudioTranscriptions_StandardMultipartRequiresModel(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model":           "client-transcribe",
++		"language":        "en",
++		"prompt":          "domain terms",
++		"response_format": "json",
++		"temperature":     "0.2",
++	}, []byte("fake-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++
++	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	require.Equal(t, openAIAudioTranscriptionsEndpoint, parsed.Endpoint)
++	require.Equal(t, "client-transcribe", parsed.Model)
++	require.True(t, parsed.ExplicitModel)
++	require.Equal(t, "en", parsed.Language)
++	require.Equal(t, "sample.wav", parsed.FileName)
++	require.Equal(t, int64(len("fake-audio")), parsed.FileSizeBytes)
++	require.Equal(t, "audio/wav", parsed.FileContentType)
++
++	noModelBody, noModelContentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"language": "en",
++	}, []byte("fake-audio"))
++	c, _ = newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", noModelBody, noModelContentType)
++	parsed, err = (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(c, noModelBody)
++	require.Nil(t, parsed)
++	require.ErrorContains(t, err, "model is required")
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_APIKeyUsesMappedModelAndCustomBaseURL(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model":           "client-transcribe",
++		"language":        "en",
++		"prompt":          "domain terms",
++		"response_format": "json",
++		"temperature":     "0.2",
++	}, []byte("fake-audio"))
++	c, rec := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	c.Request.Header.Set("Accept", "application/json")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header: http.Header{
++			"Content-Type": []string{"application/json"},
++			"x-request-id": []string{"rid_audio"},
++		},
++		Body: io.NopCloser(strings.NewReader(`{"text":"hello"}`)),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          7,
++		Name:        "api-key",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key":  "sk-test",
++			"base_url": "https://audio-upstream.example/v1",
++			"model_mapping": map[string]any{
++				"client-transcribe": "upstream-transcribe",
++			},
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	result, err := svc.ForwardAudioTranscriptions(context.Background(), c, account, parsed, "")
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, "https://audio-upstream.example/v1/audio/transcriptions", upstream.lastReq.URL.String())
++	require.Equal(t, "/v1/audio/transcriptions", upstream.lastReq.URL.Path)
++	require.Equal(t, "Bearer sk-test", upstream.lastReq.Header.Get("Authorization"))
++
++	fields := parseMultipartFieldsForTest(t, upstream.lastBody, upstream.lastReq.Header.Get("Content-Type"))
++	require.Equal(t, "fake-audio", fields["file"])
++	require.Equal(t, "en", fields["language"])
++	require.Equal(t, "domain terms", fields["prompt"])
++	require.Equal(t, "json", fields["response_format"])
++	require.Equal(t, "0.2", fields["temperature"])
++	require.Equal(t, "upstream-transcribe", fields["model"])
++	require.Equal(t, "client-transcribe", result.Model)
++	require.Equal(t, "upstream-transcribe", result.UpstreamModel)
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_UsagePolicy(t *testing.T) {
++	tests := []struct {
++		name          string
++		path          string
++		fields        map[string]string
++		responseBody  string
++		expectedUsage OpenAIUsage
++	}{
++		{
++			name:         "standard endpoint no usage estimates input and output tokens",
++			path:         "/v1/audio/transcriptions",
++			fields:       map[string]string{"model": "gpt-4o-mini-transcribe"},
++			responseBody: `{"text":"hello"}`,
++			expectedUsage: OpenAIUsage{
++				OutputTokens: 2,
++			},
++		},
++		{
++			name:         "transcribe alias no usage estimates input and output tokens",
++			path:         "/transcribe",
++			fields:       map[string]string{"language": "en"},
++			responseBody: `{"text":"hello"}`,
++			expectedUsage: OpenAIUsage{
++				OutputTokens: 2,
++			},
++		},
++		{
++			name:         "standard endpoint top-level usage",
++			path:         "/v1/audio/transcriptions",
++			fields:       map[string]string{"model": "gpt-4o-mini-transcribe"},
++			responseBody: `{"text":"hello","usage":{"input_tokens":11,"output_tokens":3,"input_token_details":{"audio_tokens":7,"cached_tokens":2,"cached_tokens_details":{"audio_tokens":1}},"output_token_details":{"audio_tokens":2}}}`,
++			expectedUsage: OpenAIUsage{
++				InputTokens:          11,
++				OutputTokens:         3,
++				CacheReadInputTokens: 2,
++			},
++		},
++		{
++			name:         "standard endpoint response usage",
++			path:         "/v1/audio/transcriptions",
++			fields:       map[string]string{"model": "gpt-4o-mini-transcribe"},
++			responseBody: `{"text":"hello","response":{"usage":{"input_tokens":12,"output_tokens":4,"input_tokens_details":{"audio_tokens":6,"cached_tokens":3,"cached_tokens_details":{"audio_tokens":2}},"output_tokens_details":{"audio_tokens":1}}}}`,
++			expectedUsage: OpenAIUsage{
++				InputTokens:          12,
++				OutputTokens:         4,
++				CacheReadInputTokens: 3,
++			},
++		},
++		{
++			name:         "transcribe alias top-level usage",
++			path:         "/transcribe",
++			fields:       map[string]string{"language": "en"},
++			responseBody: `{"text":"hello","usage":{"input_tokens":10,"output_tokens":2,"input_token_details":{"audio_tokens":5,"cached_tokens":1,"cached_tokens_details":{"audio_tokens":1}},"output_token_details":{"audio_tokens":2}}}`,
++			expectedUsage: OpenAIUsage{
++				InputTokens:          10,
++				OutputTokens:         2,
++				CacheReadInputTokens: 1,
++			},
++		},
++		{
++			name:         "transcribe alias response usage",
++			path:         "/transcribe",
++			fields:       map[string]string{"language": "en"},
++			responseBody: `{"text":"hello","response":{"usage":{"prompt_tokens":13,"completion_tokens":5,"prompt_tokens_details":{"audio_tokens":8,"cached_tokens":4,"cached_tokens_details":{"audio_tokens":3}},"completion_tokens_details":{"audio_tokens":2}}}}`,
++			expectedUsage: OpenAIUsage{
++				InputTokens:          13,
++				OutputTokens:         5,
++				CacheReadInputTokens: 4,
++			},
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			body, contentType := buildOpenAIAudioTranscriptionMultipart(t, tt.fields, []byte("fake-audio"))
++			c, rec := newOpenAIAudioTranscriptionTestContext(http.MethodPost, tt.path, body, contentType)
++
++			upstream := &httpUpstreamRecorder{resp: newOpenAIAudioTranscriptionResponse(http.StatusOK, tt.responseBody)}
++			svc := &OpenAIGatewayService{
++				cfg:          &config.Config{},
++				httpUpstream: upstream,
++			}
++
++			parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++			require.NoError(t, err)
++			result, err := svc.ForwardAudioTranscriptions(context.Background(), c, openAIAudioTranscriptionAPIKeyAccount(7), parsed, "")
++			require.NoError(t, err)
++			require.NotNil(t, result)
++			require.Equal(t, http.StatusOK, rec.Code)
++			require.Equal(t, tt.expectedUsage, result.Usage)
++		})
++	}
++}
++
++func TestEstimateOpenAIAudioTranscriptionUsage(t *testing.T) {
++	tests := []struct {
++		name         string
++		fileSize     int64
++		responseBody []byte
++		wantUsage    OpenAIUsage
++	}{
++		{
++			name: "empty file and empty text does not estimate",
++		},
++		{
++			name:         "file size does not produce billable audio tokens",
++			fileSize:     1,
++			responseBody: []byte(`{"text":"hello"}`),
++			wantUsage: OpenAIUsage{
++				OutputTokens: 2,
++			},
++		},
++		{
++			name:         "audio-only response remains zero-token",
++			fileSize:     64001,
++			responseBody: []byte(`{"text":""}`),
++		},
++		{
++			name:         "text output can be counted without file size",
++			responseBody: []byte(`{"text":"abcd"}`),
++			wantUsage: OpenAIUsage{
++				OutputTokens: 1,
++			},
++		},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got := estimateOpenAIAudioTranscriptionUsage(&OpenAIAudioTranscriptionsRequest{FileSizeBytes: tt.fileSize}, tt.responseBody)
++			require.Equal(t, tt.wantUsage, got)
++		})
++	}
++}
++
++func TestOpenAIGatewayServiceParseAndForwardTranscribeAlias_DefaultModelAndBase64(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"language": "zh",
++	}, []byte("codex-audio"))
++	plainC, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/transcribe", body, contentType)
++	plainParsed, err := (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(plainC, body)
++	require.NoError(t, err)
++	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, plainParsed.Model)
++	require.Equal(t, "zh", plainParsed.Language)
++
++	encoded := []byte(base64.StdEncoding.EncodeToString(body))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/transcribe", encoded, contentType)
++	c.Request.Header.Set("X-Codex-Base64", "1")
++	c.Request.Header.Set("User-Agent", "codex-desktop-test")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}},
++		Body:       io.NopCloser(strings.NewReader(`{"text":"你好"}`)),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          8,
++		Name:        "api-key",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{"api_key": "sk-test"},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, encoded)
++	require.NoError(t, err)
++	require.Equal(t, openAITranscribeAliasEndpoint, parsed.Endpoint)
++	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, parsed.Model)
++	require.False(t, parsed.ExplicitModel)
++	result, err := svc.ForwardAudioTranscriptions(context.Background(), c, account, parsed, "")
++	require.NoError(t, err)
++	require.NotNil(t, result)
++
++	require.Equal(t, "https://api.openai.com/v1/audio/transcriptions", upstream.lastReq.URL.String())
++	require.Empty(t, upstream.lastReq.Header.Get("X-Codex-Base64"))
++	fields := parseMultipartFieldsForTest(t, upstream.lastBody, upstream.lastReq.Header.Get("Content-Type"))
++	require.Equal(t, "codex-audio", fields["file"])
++	require.Equal(t, "zh", fields["language"])
++	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, fields["model"])
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthUsesChatGPTTranscribe(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"language": "en",
++		"prompt":   "terms",
++	}, []byte("codex-audio"))
++	encoded := []byte(base64.StdEncoding.EncodeToString(body))
++	c, rec := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/transcribe", encoded, contentType)
++	c.Request.Header.Set("X-Codex-Base64", "1")
++	c.Request.Header.Set("User-Agent", "Codex Desktop")
++	c.Request.Header.Set("Authorization", "Bearer client-token")
++	c.Request.Header.Set("chatgpt-account-id", "client-account")
++	c.Request.Header.Set("originator", "client-originator")
++	c.Request.Header.Set("X-Api-Key", "client-api-key")
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_oauth_audio"}},
++		Body:       io.NopCloser(strings.NewReader(`{"text":"hello"}`)),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          9,
++		Name:        "oauth",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"access_token":       "oauth-token",
++			"chatgpt_account_id": "chatgpt-account",
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, encoded)
++	require.NoError(t, err)
++	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, parsed.Model)
++	require.False(t, parsed.ExplicitModel)
++
++	result, err := svc.ForwardAudioTranscriptions(context.Background(), c, account, parsed, "")
++	require.NoError(t, err)
++	require.NotNil(t, result)
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, chatgptTranscribeURL, upstream.lastReq.URL.String())
++	require.Equal(t, "chatgpt.com", upstream.lastReq.Host)
++	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
++	require.Len(t, upstream.lastReq.Header.Values("Authorization"), 1)
++	require.Equal(t, "chatgpt-account", upstream.lastReq.Header.Get("chatgpt-account-id"))
++	require.Len(t, upstream.lastReq.Header.Values("chatgpt-account-id"), 1)
++	require.Equal(t, "client-originator", upstream.lastReq.Header.Get("originator"))
++	require.Len(t, upstream.lastReq.Header.Values("originator"), 1)
++	require.Equal(t, codexCLIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
++	require.Len(t, upstream.lastReq.Header.Values("User-Agent"), 1)
++	require.Empty(t, upstream.lastReq.Header.Get("X-Codex-Base64"))
++	require.Empty(t, upstream.lastReq.Header.Get("X-Api-Key"))
++
++	fields := parseMultipartFieldsForTest(t, upstream.lastBody, upstream.lastReq.Header.Get("Content-Type"))
++	require.Equal(t, "codex-audio", fields["file"])
++	require.Equal(t, "en", fields["language"])
++	require.Equal(t, "terms", fields["prompt"])
++	require.Empty(t, fields["model"])
++	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, result.Model)
++	require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, result.UpstreamModel)
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthPreservesExplicitMappedModel(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model":    "client-transcribe",
++		"language": "en",
++	}, []byte("codex-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"application/json"}},
++		Body:       io.NopCloser(strings.NewReader(`{"text":"hello"}`)),
++	}}
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: upstream,
++	}
++	account := &Account{
++		ID:          11,
++		Name:        "oauth",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"access_token": "oauth-token",
++			"model_mapping": map[string]any{
++				"client-transcribe": "upstream-transcribe",
++			},
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	require.True(t, parsed.ExplicitModel)
++	result, err := svc.ForwardAudioTranscriptions(context.Background(), c, account, parsed, "")
++	require.NoError(t, err)
++	require.NotNil(t, result)
++
++	fields := parseMultipartFieldsForTest(t, upstream.lastBody, upstream.lastReq.Header.Get("Content-Type"))
++	require.Equal(t, "upstream-transcribe", fields["model"])
++	require.Equal(t, "client-transcribe", result.Model)
++	require.Equal(t, "upstream-transcribe", result.UpstreamModel)
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_FailoverStatuses(t *testing.T) {
++	tests := []struct {
++		name                 string
++		status               int
++		poolMode             bool
++		retryableSameAccount bool
++	}{
++		{name: "401 retries same pool account", status: http.StatusUnauthorized, poolMode: true, retryableSameAccount: true},
++		{name: "403 retries same pool account", status: http.StatusForbidden, poolMode: true, retryableSameAccount: true},
++		{name: "429 retries same pool account", status: http.StatusTooManyRequests, poolMode: true, retryableSameAccount: true},
++		{name: "500 is eligible for handler-controlled same-account retry", status: http.StatusInternalServerError, poolMode: true, retryableSameAccount: true},
++		{name: "503 is eligible for handler-controlled same-account retry", status: http.StatusServiceUnavailable, poolMode: true, retryableSameAccount: true},
++		{name: "401 non-pool is retry-eligible but has no configured retry budget", status: http.StatusUnauthorized, retryableSameAccount: true},
++		{name: "403 non-pool is retry-eligible but has no configured retry budget", status: http.StatusForbidden, retryableSameAccount: true},
++		{name: "429 non-pool is retry-eligible but has no configured retry budget", status: http.StatusTooManyRequests, retryableSameAccount: true},
++		{name: "500 non-pool is retry-eligible but has no configured retry budget", status: http.StatusInternalServerError, retryableSameAccount: true},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++				"model": "gpt-4o-mini-transcribe",
++			}, []byte("fake-audio"))
++			c, rec := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++			upstream := &httpUpstreamRecorder{resp: newOpenAIAudioTranscriptionResponse(tt.status, `{"error":{"message":"temporary upstream failure"}}`)}
++			svc := &OpenAIGatewayService{
++				cfg:          &config.Config{},
++				httpUpstream: upstream,
++			}
++			account := openAIAudioTranscriptionAPIKeyAccount(7)
++			if tt.poolMode {
++				account.Credentials["pool_mode"] = true
++			}
++
++			parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++			require.NoError(t, err)
++			result, err := svc.ForwardAudioTranscriptions(context.Background(), c, account, parsed, "")
++			require.Nil(t, result)
++
++			var failoverErr *UpstreamFailoverError
++			require.ErrorAs(t, err, &failoverErr)
++			require.Equal(t, tt.status, failoverErr.StatusCode)
++			require.Equal(t, tt.retryableSameAccount, failoverErr.RetryableOnSameAccount)
++			require.False(t, rec.Result().Header.Get("Content-Type") == "application/json" && rec.Body.Len() > 0, "failover response should not be written before handler retry logic")
++		})
++	}
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_OAuthFailoverStatuses(t *testing.T) {
++	tests := []struct {
++		name                 string
++		status               int
++		responseBody         string
++		retryableSameAccount bool
++		wantModelRateLimit   bool
++	}{
++		{name: "401", status: http.StatusUnauthorized, retryableSameAccount: true},
++		{name: "403", status: http.StatusForbidden, retryableSameAccount: true},
++		{name: "429", status: http.StatusTooManyRequests, responseBody: `{"detail":"Transcription is temporarily unavailable. Please try again shortly.","retry_after_seconds":30}`, retryableSameAccount: true},
++		{name: "500", status: http.StatusInternalServerError, retryableSameAccount: true},
++		{name: "503", status: http.StatusServiceUnavailable, retryableSameAccount: true},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++				"language": "en",
++			}, []byte("fake-audio"))
++			c, rec := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/transcribe", body, contentType)
++			responseBody := tt.responseBody
++			if responseBody == "" {
++				responseBody = `{"error":{"message":"temporary upstream failure"}}`
++			}
++			upstream := &httpUpstreamRecorder{resp: newOpenAIAudioTranscriptionResponse(tt.status, responseBody)}
++			accountRepo := &audioTranscriptionRateLimitAccountRepoStub{}
++			rateLimitService := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
++			svc := &OpenAIGatewayService{
++				accountRepo:      accountRepo,
++				cfg:              &config.Config{},
++				httpUpstream:     upstream,
++				rateLimitService: rateLimitService,
++			}
++			account := openAIAudioTranscriptionOAuthAccount(8)
++
++			parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++			require.NoError(t, err)
++			result, err := svc.ForwardAudioTranscriptions(context.Background(), c, account, parsed, "")
++
++			require.Nil(t, result)
++			var failoverErr *UpstreamFailoverError
++			require.ErrorAs(t, err, &failoverErr)
++			require.Equal(t, tt.status, failoverErr.StatusCode)
++			require.Equal(t, tt.retryableSameAccount, failoverErr.RetryableOnSameAccount)
++			require.Equal(t, chatgptTranscribeURL, upstream.lastReq.URL.String())
++			require.Empty(t, rec.Body.String(), "failover response should not be written before handler retry logic")
++			if tt.wantModelRateLimit {
++				require.Zero(t, accountRepo.rateLimitCalls)
++				require.Equal(t, 1, accountRepo.modelRateLimitCalls)
++				require.Equal(t, int64(8), accountRepo.lastModelRateLimitID)
++				require.Equal(t, OpenAIAudioTranscriptionsModelRateLimitScope(OpenAIAudioTranscriptionsDefaultModel), accountRepo.lastModelRateLimitKey)
++				require.True(t, accountRepo.lastModelRateLimitAt.After(time.Now().Add(20*time.Second)))
++			} else {
++				require.Zero(t, accountRepo.modelRateLimitCalls)
++			}
++		})
++	}
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_PersistsLowercaseCooldownForMixedCaseModel(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model": " GPT-4O-TRANSCRIBE ",
++	}, []byte("fake-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	accountRepo := &audioTranscriptionRateLimitAccountRepoStub{}
++	svc := &OpenAIGatewayService{
++		accountRepo:      accountRepo,
++		cfg:              &config.Config{},
++		httpUpstream:     &httpUpstreamRecorder{resp: newOpenAIAudioTranscriptionResponse(http.StatusTooManyRequests, `{"detail":"Transcription is temporarily unavailable. Please try again shortly.","retry_after_seconds":30}`)},
++		rateLimitService: NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil),
++	}
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++
++	account := openAIAudioTranscriptionOAuthAccount(8)
++	_, err = svc.ForwardAudioTranscriptions(context.Background(), c, account, parsed, "")
++
++	var failoverErr *UpstreamFailoverError
++	require.ErrorAs(t, err, &failoverErr)
++	svc.FinalizeOpenAIAudioTranscriptionFailover(context.Background(), account, parsed.Model, failoverErr)
++	require.Equal(t, 1, accountRepo.modelRateLimitCalls)
++	require.Equal(t, OpenAIAudioTranscriptionsModelRateLimitScope("gpt-4o-transcribe"), accountRepo.lastModelRateLimitKey)
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_RequestErrorIsNotFailover(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model": "gpt-4o-mini-transcribe",
++	}, []byte("fake-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	svc := &OpenAIGatewayService{
++		cfg:          &config.Config{},
++		httpUpstream: &httpUpstreamRecorder{err: errors.New("dial failed")},
++	}
++
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	result, err := svc.ForwardAudioTranscriptions(context.Background(), c, openAIAudioTranscriptionAPIKeyAccount(7), parsed, "")
++
++	require.Nil(t, result)
++	require.Error(t, err)
++	var failoverErr *UpstreamFailoverError
++	require.False(t, errors.As(err, &failoverErr))
++}
++
++func TestOpenAIGatewayServiceForwardAudioTranscriptions_RejectsUnsupportedAccountType(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"model": "client-transcribe",
++	}, []byte("fake-audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: &httpUpstreamRecorder{}}
++	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++
++	result, err := svc.ForwardAudioTranscriptions(context.Background(), c, &Account{
++		ID:          10,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeSetupToken,
++		Credentials: map[string]any{"access_token": "setup-token"},
++	}, parsed, "")
++
++	require.Nil(t, result)
++	require.ErrorContains(t, err, "OpenAI API key or OAuth account")
++}
++
++func TestOpenAIGatewayServiceParseTranscribeAlias_InvalidBase64(t *testing.T) {
++	_, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{
++		"language": "en",
++	}, []byte("fake-audio"))
++	body := []byte("not base64%")
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/transcribe", body, contentType)
++	c.Request.Header.Set("X-Codex-Base64", "1")
++
++	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.Nil(t, parsed)
++	require.ErrorContains(t, err, "invalid base64 multipart body")
++}
++
++func TestOpenAIAudioTranscriptionsAccountSelectionModel_KnownModelsBypassChatMappings(t *testing.T) {
++	for _, model := range []string{
++		" gpt-4o-mini-transcribe ",
++		"GPT-4O-TRANSCRIBE",
++		"gpt-4o-transcribe-diarize",
++		"whisper-1",
++		"gpt-4o-transcribe-v2",
++		"gpt-4o-mini-transcribe-v2",
++	} {
++		require.Equal(t, OpenAIAudioTranscriptionsDefaultModel, OpenAIAudioTranscriptionsAccountSelectionModel(model))
++	}
++	require.Empty(t, OpenAIAudioTranscriptionsAccountSelectionModel("custom-transcription-model"))
++}
++
++func TestOpenAIAudioTranscriptionRateLimitScopesAreDistinct(t *testing.T) {
++	ctx := WithModelRateLimitExtraScopes(context.Background(), " audio:requested ", "audio:requested", "audio:mapped")
++	require.Equal(t, []string{"audio:requested", "audio:mapped"}, modelRateLimitExtraScopesFromContext(ctx))
++}
++
++func TestOpenAIAudioTranscriptionRateLimitScopeNormalizesCaseForCooldownLookup(t *testing.T) {
++	scope := OpenAIAudioTranscriptionsModelRateLimitScope(" GPT-4O-TRANSCRIBE ")
++	require.Equal(t, "openai_audio_transcriptions:gpt-4o-transcribe", scope)
++
++	account := &Account{
++		Platform: PlatformOpenAI,
++		Extra: map[string]any{
++			modelRateLimitsKey: map[string]any{
++				scope: map[string]any{"rate_limit_reset_at": time.Now().Add(time.Minute).Format(time.RFC3339)},
++			},
++		},
++	}
++	ctx := WithModelRateLimitExtraScopes(context.Background(), OpenAIAudioTranscriptionsModelRateLimitScope(" gPt-4O-TrAnScRiBe "))
++	require.Greater(t, account.GetModelRateLimitRemainingTimeWithContext(ctx, "unrelated-model"), time.Duration(0))
++}
++
++func TestForwardAudioTranscriptions_NilSuccessBodyReturnsSanitizedError(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{"model": OpenAIAudioTranscriptionsDefaultModel}, []byte("audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}}}
++
++	result, err := svc.ForwardAudioTranscriptions(context.Background(), c, openAIAudioTranscriptionAPIKeyAccount(9), parsed, "")
++
++	require.Nil(t, result)
++	var failoverErr *UpstreamFailoverError
++	require.ErrorAs(t, err, &failoverErr)
++	require.Equal(t, http.StatusOK, failoverErr.StatusCode)
++	require.True(t, failoverErr.RetryableOnSameAccount)
++}
++
++func TestForwardAudioTranscriptions_DiagnosticsExcludeProviderResponseBody(t *testing.T) {
++	body, contentType := buildOpenAIAudioTranscriptionMultipart(t, map[string]string{"model": OpenAIAudioTranscriptionsDefaultModel}, []byte("audio"))
++	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
++	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(c, body)
++	require.NoError(t, err)
++	providerEcho := `{"error":{"message":"provider-echo-secret Authorization: Bearer sk-test oauth=oauth-secret https://user:password@example.test/transcribe?token=query-secret"}}`
++	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: &httpUpstreamRecorder{resp: newOpenAIAudioTranscriptionResponse(http.StatusInternalServerError, providerEcho)}}
++
++	_, err = svc.ForwardAudioTranscriptions(context.Background(), c, openAIAudioTranscriptionAPIKeyAccount(10), parsed, "")
++
++	var failoverErr *UpstreamFailoverError
++	require.ErrorAs(t, err, &failoverErr)
++	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
++	require.True(t, ok)
++	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
++	require.True(t, ok)
++	require.Len(t, events, 1)
++	require.NotContains(t, events[0].Message, "provider-echo-secret")
++	require.NotContains(t, events[0].Message, "sk-test")
++	require.NotContains(t, events[0].Message, "oauth-secret")
++	require.NotContains(t, events[0].Message, "query-secret")
++	require.Empty(t, events[0].Detail)
++	require.Empty(t, events[0].UpstreamResponseBody)
++}
++
++func TestSanitizeOpenAIAudioTranscriptionDiagnosticRedactsCredentialsAndURLs(t *testing.T) {
++	input := "request failed Authorization: Bearer bearer-secret Cookie: sid=cookie-secret; OAuth oauth-secret https://user:password@example.test/transcribe?query-secret=value#fragment-secret access_token=access-secret"
++	got := sanitizeOpenAIAudioTranscriptionDiagnostic(input)
++
++	for _, secret := range []string{"bearer-secret", "cookie-secret", "oauth-secret", "user:password", "query-secret", "value", "fragment-secret", "access-secret"} {
++		require.NotContains(t, got, secret)
++	}
++	require.Contains(t, got, "https://example.test/transcribe")
++}
++
++func TestRecordAudioTranscriptionUsage_WritesOneZeroCostRowWithoutBillingCommand(t *testing.T) {
++	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
++	billingRepo := &openAIRecordUsageBillingRepoStub{}
++	svc := &OpenAIGatewayService{usageLogRepo: usageRepo, usageBillingRepo: billingRepo}
++	err := svc.RecordAudioTranscriptionUsage(context.Background(), &OpenAIAudioTranscriptionUsageInput{
++		Result: &OpenAIForwardResult{
++			RequestID: "audio-success",
++			Model:     OpenAIAudioTranscriptionsDefaultModel,
++			Duration:  time.Second,
++			Usage: OpenAIUsage{
++				InputTokens:          11,
++				OutputTokens:         3,
++				CacheReadInputTokens: 2,
++			},
++		},
++		APIKey:  &APIKey{ID: 2, User: &User{ID: 1}},
++		Account: &Account{ID: 3},
++	})
++
++	require.NoError(t, err)
++	require.Equal(t, 1, usageRepo.calls)
++	require.Zero(t, billingRepo.calls)
++	require.NotNil(t, usageRepo.lastLog)
++	require.Zero(t, usageRepo.lastLog.InputTokens)
++	require.Zero(t, usageRepo.lastLog.OutputTokens)
++	require.Zero(t, usageRepo.lastLog.CacheCreationTokens)
++	require.Zero(t, usageRepo.lastLog.CacheReadTokens)
++	require.Zero(t, usageRepo.lastLog.TotalCost)
++	require.Zero(t, usageRepo.lastLog.ActualCost)
++}
++
++func newOpenAIAudioTranscriptionResponse(status int, body string) *http.Response {
++	return &http.Response{
++		StatusCode: status,
++		Header: http.Header{
++			"Content-Type": []string{"application/json"},
++			"x-request-id": []string{"rid_audio"},
++		},
++		Body: io.NopCloser(strings.NewReader(body)),
++	}
++}
++
++func openAIAudioTranscriptionAPIKeyAccount(id int64) *Account {
++	return &Account{
++		ID:          id,
++		Name:        "api-key",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key": "sk-test",
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++}
++
++func openAIAudioTranscriptionOAuthAccount(id int64) *Account {
++	return &Account{
++		ID:          id,
++		Name:        "oauth",
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"access_token": "oauth-token",
++		},
++		Status:      StatusActive,
++		Schedulable: true,
++	}
++}
+diff --git a/backend/internal/service/openai_gateway_scheduling.go b/backend/internal/service/openai_gateway_scheduling.go
+index a90bad3e2..a3e3e00f5 100644
+--- a/backend/internal/service/openai_gateway_scheduling.go
++++ b/backend/internal/service/openai_gateway_scheduling.go
+@@ -397,2 +397,8 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+ 	}
++	if (openAIAudioTranscriptionSelectionFromContext(ctx) || openAIRealtimeRESTSelectionFromContext(ctx)) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
++		return "endpoint_account_type"
++	}
++	if !openAIAudioTranscriptionAccountExplicitlySupportsModel(ctx, account, requestedModel) {
++		return "audio_transcription_model_not_supported"
++	}
+ 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
+@@ -433,3 +439,3 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+ 	}
+-	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
++	if requestedModel != "" && !account.IsModelSupported(requestedModel) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
+ 		return "model_not_supported"
+diff --git a/backend/internal/service/openai_gateway_usage.go b/backend/internal/service/openai_gateway_usage.go
+index cb998b55f..9fe160e04 100644
+--- a/backend/internal/service/openai_gateway_usage.go
++++ b/backend/internal/service/openai_gateway_usage.go
+@@ -48,2 +48,56 @@ type OpenAIRecordUsageInput struct {
+ 
++type OpenAIAudioTranscriptionUsageInput struct {
++	Result           *OpenAIForwardResult
++	APIKey           *APIKey
++	Account          *Account
++	InboundEndpoint  string
++	UpstreamEndpoint string
++	UserAgent        string
++	IPAddress        string
++	ChannelUsageFields
++}
++
++// RecordAudioTranscriptionUsage writes the generic success row without
++// invoking pricing, balance, subscription, quota, or account billing commands.
++func (s *OpenAIGatewayService) RecordAudioTranscriptionUsage(ctx context.Context, input *OpenAIAudioTranscriptionUsageInput) error {
++	if input == nil || input.Result == nil || input.APIKey == nil || input.APIKey.User == nil || input.Account == nil {
++		return errors.New("audio transcription usage input is incomplete")
++	}
++	durationMs := int(input.Result.Duration.Milliseconds())
++	billingMode := string(BillingModeToken)
++	usageLog := &UsageLog{
++		UserID:            input.APIKey.User.ID,
++		APIKeyID:          input.APIKey.ID,
++		AccountID:         input.Account.ID,
++		RequestID:         resolveUsageBillingRequestID(ctx, input.Result.RequestID),
++		Model:             input.Result.Model,
++		RequestedModel:    input.Result.Model,
++		UpstreamModel:     optionalTrimmedStringPtr(input.Result.UpstreamModel),
++		InboundEndpoint:   optionalTrimmedStringPtr(input.InboundEndpoint),
++		UpstreamEndpoint:  optionalTrimmedStringPtr(input.UpstreamEndpoint),
++		RateMultiplier:    1,
++		BillingMode:       &billingMode,
++		BillingType:       BillingTypeBalance,
++		RequestType:       RequestTypeSync,
++		DurationMs:        &durationMs,
++		CreatedAt:         time.Now(),
++		ChannelID:         optionalInt64Ptr(input.ChannelID),
++		ModelMappingChain: optionalTrimmedStringPtr(input.ModelMappingChain),
++	}
++	if input.APIKey.GroupID != nil {
++		usageLog.GroupID = input.APIKey.GroupID
++	}
++	if input.UserAgent != "" {
++		usageLog.UserAgent = &input.UserAgent
++	}
++	if input.IPAddress != "" {
++		usageLog.IPAddress = &input.IPAddress
++	}
++	if s.usageLogRepo == nil {
++		return nil
++	}
++	_, err := s.usageLogRepo.Create(ctx, usageLog)
++	return err
++}
++
+ // CyberPolicyUsageInput 是 cyber 拒绝、未走正常 RecordUsage 的请求记录用量的入参。
