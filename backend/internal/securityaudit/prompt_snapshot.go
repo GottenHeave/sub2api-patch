@@ -92,6 +92,9 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
 		return extractGeminiRoot(root)
 	case "openai_responses", "responses", "responses_websocket":
 		if frameType := stringValue(root["type"]); frameType != "" || protocol == "responses_websocket" {
+			if realtime := extractOpenAIRealtimeSegments(root); len(realtime) > 0 {
+				return realtime
+			}
 			if frameType != "response.create" {
 				return nil
 			}
@@ -104,6 +107,8 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
 			return extractInstructions(root["instructions"])
 		}
 		return append(extractInstructions(root["instructions"]), extractResponses(root["input"])...)
+	case "openai_realtime", "realtime":
+		return extractOpenAIRealtimeSegments(root)
 	case "openai_images", "grok_media", "media", "images":
 		return userPromptSegments(extractMediaPrompts(root))
 	default:
@@ -117,6 +122,27 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
 			return gemini
 		}
 		return userPromptSegments(extractMediaPrompts(root))
+	}
+}
+
+func extractOpenAIRealtimeSegments(root map[string]any) []promptSegment {
+	if root == nil {
+		return nil
+	}
+	switch stringValue(root["type"]) {
+	case "session.update":
+		session, _ := root["session"].(map[string]any)
+		return extractInstructions(session["instructions"])
+	case "conversation.item.create":
+		return extractResponses(root["item"])
+	case "response.create":
+		response, _ := root["response"].(map[string]any)
+		if response != nil {
+			return append(extractInstructions(response["instructions"]), extractResponses(response["input"])...)
+		}
+		return append(extractInstructions(root["instructions"]), extractResponses(root["input"])...)
+	default:
+		return nil
 	}
 }
 
