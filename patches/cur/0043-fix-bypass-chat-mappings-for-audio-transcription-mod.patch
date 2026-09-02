@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: audit <audit@example.invalid>
+Date: Wed, 2 Sep 2026 05:08:28 +0000
+Subject: [PATCH] fix: bypass chat mappings for audio transcription models
+
+
+diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
+index 1dbc8aa18..280bb2ba1 100644
+--- a/backend/internal/service/openai_account_scheduler.go
++++ b/backend/internal/service/openai_account_scheduler.go
+@@ -2184,8 +2184,16 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
+ 	requestedModel string,
+ 	excludedIDs map[int64]struct{},
+ ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, string, error) {
++	fallbackModel := OpenAIAudioTranscriptionsAccountSelectionModel(requestedModel)
++	// Audio model names are valid upstream transcription models even when an
++	// account's model_mapping only describes its text-model aliases. Keep the
++	// mapping out of every audio candidate check, including account switches.
++	audioSelectionCtx := ctx
++	if fallbackModel != "" {
++		audioSelectionCtx = withOpenAIAudioTranscriptionModelSupportBypass(ctx)
++	}
+ 	selection, decision, err := s.SelectAccountWithSchedulerForAccountType(
+-		ctx,
++		audioSelectionCtx,
+ 		groupID,
+ 		"",
+ 		sessionHash,
+@@ -2196,20 +2204,22 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
+ 		false,
+ 	)
+ 	if err == nil {
+-		return selection, decision, requestedModel, nil
++		selectionModel := requestedModel
++		if openAIAudioTranscriptionModelSupportBypassed(audioSelectionCtx) &&
++			selection != nil && selection.Account != nil &&
++			!selection.Account.IsModelSupported(requestedModel) {
++			selectionModel = fallbackModel
++		}
++		return selection, decision, selectionModel, nil
+ 	}
+ 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
+ 		return nil, decision, requestedModel, err
+ 	}
+-	fallbackModel := OpenAIAudioTranscriptionsAccountSelectionModel(requestedModel)
+-	if fallbackModel == "" && strings.EqualFold(strings.TrimSpace(requestedModel), OpenAIAudioTranscriptionsDefaultModel) {
+-		fallbackModel = OpenAIAudioTranscriptionsDefaultModel
+-	}
+ 	if fallbackModel == "" {
+ 		return nil, decision, requestedModel, err
+ 	}
+ 	fallbackSelection, fallbackDecision, fallbackErr := s.SelectAccountWithSchedulerForAccountType(
+-		withOpenAIAudioTranscriptionModelSupportBypass(ctx),
++		audioSelectionCtx,
+ 		groupID,
+ 		"",
+ 		sessionHash,
+diff --git a/backend/internal/service/openai_account_scheduler_test.go b/backend/internal/service/openai_account_scheduler_test.go
+index a298ff9cc..6dda47885 100644
+--- a/backend/internal/service/openai_account_scheduler_test.go
++++ b/backend/internal/service/openai_account_scheduler_test.go
+@@ -775,6 +775,45 @@ func TestOpenAIGatewayService_SelectAccountWithSchedulerForAudioTranscriptions_A
+ 	}
+ }
+ 
++func TestOpenAIGatewayService_SelectAccountWithSchedulerForAudioTranscriptions_UnknownModelStillUsesMapping(t *testing.T) {
++	resetOpenAIAdvancedSchedulerSettingCacheForTest()
++
++	ctx := context.Background()
++	groupID := int64(10113)
++	account := Account{
++		ID:          36034,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Status:      StatusActive,
++		Schedulable: true,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"model_mapping": map[string]any{
++				"gpt-5.6-sol": "gpt-5.6-sol",
++			},
++		},
++	}
++	cfg := &config.Config{}
++	cfg.Gateway.Scheduling.LoadBatchEnabled = false
++	svc := &OpenAIGatewayService{
++		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
++		cfg:                cfg,
++		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
++	}
++
++	selection, _, selectionModel, err := svc.SelectAccountWithSchedulerForAudioTranscriptions(
++		ctx,
++		&groupID,
++		"",
++		"voiceink-transcribe",
++		nil,
++	)
++	require.Error(t, err)
++	require.ErrorIs(t, err, ErrNoAvailableAccounts)
++	require.Nil(t, selection)
++	require.Equal(t, "voiceink-transcribe", selectionModel)
++}
++
+ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_EmbeddingsSkipsChatOnlyAccount(t *testing.T) {
+ 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+ 
+diff --git a/backend/internal/service/openai_audio_transcriptions.go b/backend/internal/service/openai_audio_transcriptions.go
+index 44806f7ea..d4f960d78 100644
+--- a/backend/internal/service/openai_audio_transcriptions.go
++++ b/backend/internal/service/openai_audio_transcriptions.go
+@@ -84,7 +84,8 @@ func OpenAIAudioTranscriptionsModelRateLimitScopeIfModel(model string) string {
+ func OpenAIAudioTranscriptionsAccountSelectionModel(model string) string {
+ 	model = strings.ToLower(strings.TrimSpace(model))
+ 	switch {
+-	case model == "gpt-4o-transcribe",
++	case model == OpenAIAudioTranscriptionsDefaultModel,
++		model == "gpt-4o-transcribe",
+ 		model == "gpt-4o-transcribe-diarize",
+ 		model == "whisper-1",
+ 		strings.HasPrefix(model, "gpt-4o-transcribe-"),
+@@ -97,10 +98,10 @@ func OpenAIAudioTranscriptionsAccountSelectionModel(model string) string {
+ 
+ type openAIAudioTranscriptionSelectionContextKey struct{}
+ 
+-// withOpenAIAudioTranscriptionModelSupportBypass marks the last-resort audio
+-// selection pass. Transcription models are served by the audio upstream even
+-// when an account's model_mapping only lists chat models, so that allowlist
+-// must not make every otherwise eligible audio account disappear.
++// withOpenAIAudioTranscriptionModelSupportBypass marks an audio selection pass.
++// Transcription models are served by the audio upstream even when an account's
++// model_mapping only describes text-model aliases, so that mapping must not
++// filter an otherwise eligible audio account.
+ func withOpenAIAudioTranscriptionModelSupportBypass(ctx context.Context) context.Context {
+ 	if ctx == nil {
+ 		ctx = context.Background()
