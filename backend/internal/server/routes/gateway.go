@@ -262,6 +262,28 @@ func RegisterGatewayRoutes(
 			}
 			h.OpenAIGateway.RealtimeTranslationWebSocket(c)
 		})
+		realtimeRESTHandler := func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Realtime API is not supported for this platform",
+					},
+				})
+				return
+			}
+			h.OpenAIGateway.RealtimeREST(c)
+		}
+		gateway.POST("/realtime/client_secrets", realtimeRESTHandler)
+		gateway.POST("/realtime/translations/client_secrets", realtimeRESTHandler)
+		gateway.POST("/realtime/calls", realtimeRESTHandler)
+		gateway.POST("/realtime/translations/calls", realtimeRESTHandler)
+		gateway.POST("/realtime/calls/:call_id/accept", realtimeRESTHandler)
+		gateway.POST("/realtime/calls/:call_id/hangup", realtimeRESTHandler)
+		gateway.POST("/realtime/calls/:call_id/refer", realtimeRESTHandler)
+		gateway.POST("/realtime/calls/:call_id/reject", realtimeRESTHandler)
+		gateway.POST("/realtime/sessions", realtimeRESTHandler)
+		gateway.POST("/realtime/transcription_sessions", realtimeRESTHandler)
 		// OpenAI Chat Completions API: auto-route based on group platform
 		gateway.POST("/chat/completions", func(c *gin.Context) {
 			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
@@ -409,7 +431,13 @@ func RegisterGatewayRoutes(
 	codexDirect := r.Group("/backend-api/codex")
 	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), groupModelAllowlist, compositeTarget, requireGroupAnthropic)
 	{
-		codexDirect.POST("/realtime/calls", h.OpenAIGateway.Live)
+		codexDirect.POST("/realtime/calls", func(c *gin.Context) {
+			if c.GetHeader("OpenAI-Alpha") == "quicksilver=v1" {
+				h.OpenAIGateway.RealtimeREST(c)
+				return
+			}
+			h.OpenAIGateway.Live(c)
+		})
 		codexDirect.GET("/:call_id", h.OpenAIGateway.LiveSideband)
 		codexDirect.POST("/responses", responsesHandler)
 		codexDirect.POST("/responses/*subpath", guardResponsesSubpath(responsesHandler))
