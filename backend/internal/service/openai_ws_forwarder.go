@@ -255,8 +255,7 @@ type OpenAIWSIngressHooks struct {
 	InitialTurnStartedAt time.Time
 	// MaxReasoningEffort limits explicit reasoning effort values for this WS session.
 	MaxReasoningEffort string
-	// MaxReasoningEffortOverLimit is the access control when an explicit effort
-	// exceeds the ceiling: downgrade (default) or deny.
+	// MaxReasoningEffortOverLimit controls whether an over-limit value is capped or rejected.
 	MaxReasoningEffortOverLimit string
 	// ReasoningEffortMappings rewrites explicit effort values for this WS session.
 	ReasoningEffortMappings []ReasoningEffortMapping
