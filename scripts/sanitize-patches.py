@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
+import tempfile
+from email import policy
+from email.parser import Parser
 from pathlib import Path
 
 subject_ref = re.compile(r"\s*\(#[0-9]+\)")
@@ -14,17 +18,6 @@ body_patterns = [
     re.compile(r"/issues/[0-9]+"),
     re.compile(r"/pull/[0-9]+"),
 ]
-diff_metadata_prefixes = (
-    "old mode ",
-    "new mode ",
-    "deleted file mode ",
-    "new file mode ",
-    "copy from ",
-    "rename from ",
-    "similarity index ",
-    "dissimilarity index ",
-    "index ",
-)
 
 
 def sanitize(lines: list[str]) -> list[str]:
@@ -38,22 +31,59 @@ def sanitize(lines: list[str]) -> list[str]:
     return out
 
 
-def downstream_text(lines: list[str]) -> str:
-    diff_start = len(lines)
-    for index in range(len(lines) - 1):
-        if lines[index].startswith("diff --git ") and lines[index + 1].startswith(
-            diff_metadata_prefixes
-        ):
-            diff_start = index
-            break
-
-    selected = lines[:diff_start]
-    for line in lines[diff_start:]:
-        if line.startswith("+") and not line.startswith("+++ "):
+def added_patch_text(lines: list[str]) -> str:
+    selected: list[str] = []
+    in_hunk = False
+    for line in lines:
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif line.startswith("@@ "):
+            in_hunk = True
+        elif in_hunk and line.startswith("+"):
             selected.append(line[1:])
-        elif line.startswith(("rename to ", "copy to ")):
+        elif in_hunk and not line.startswith(("-", " ", "\\ No newline")):
+            in_hunk = False
+        elif not in_hunk and line.startswith(("rename to ", "copy to ")):
             selected.append(line)
     return "".join(selected)
+
+
+def mailinfo_text(text: str) -> str:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        message_path = root / "message"
+        patch_path = root / "patch"
+        result = subprocess.run(
+            ["git", "mailinfo", "--encoding=UTF-8", message_path, patch_path],
+            input=text,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or "unknown git mailinfo error"
+            raise SystemExit(f"could not parse format-patch message: {detail}")
+        metadata = result.stdout + message_path.read_text(encoding="utf-8")
+        patch = patch_path.read_text(encoding="utf-8")
+    return metadata + added_patch_text(patch.splitlines(keepends=True))
+
+
+def downstream_text(text: str) -> str:
+    message = Parser(policy=policy.default).parsestr(text)
+    if message.is_multipart():
+        raise SystemExit("could not parse multipart format-patch message")
+    payload = message.get_payload()
+    if not isinstance(payload, str):
+        raise SystemExit("could not decode format-patch message")
+
+    separators = list(re.finditer(r"(?m)^---\r?\n", payload))
+    if not separators:
+        return mailinfo_text(text)
+    separator = separators[-1]
+    metadata = "\n".join(f"{name}: {value}" for name, value in message.raw_items())
+    metadata += "\n" + payload[: separator.start()]
+    patch = payload[separator.end() :]
+    return metadata + added_patch_text(patch.splitlines(keepends=True))
 
 
 check_only = False
@@ -71,7 +101,7 @@ for arg in args:
     text = "".join(lines)
     if check_only and text != original:
         raise SystemExit(f"patch requires sanitization: {path}")
-    added_text = downstream_text(lines)
+    added_text = downstream_text(text)
     for pattern in body_patterns:
         if pattern.search(added_text):
             raise SystemExit(f"blocked pull request or issue reference in {path}")

@@ -17,7 +17,7 @@ format_head() {
   local root="$1"
   local output="$2"
   git -C "$root" format-patch -1 --stdout \
-    --zero-commit --no-signature --no-numbered --no-stat > "$output"
+    --zero-commit --no-signature --no-numbered > "$output"
 }
 
 valid_repo="$tmp/valid"
@@ -61,7 +61,7 @@ printf 'base\n' > "$body_repo/file.txt"
 git -C "$body_repo" add file.txt
 git -C "$body_repo" commit -qm base
 printf 'safe addition\n' >> "$body_repo/file.txt"
-printf 'capability\n\ndiff --git a/fake b/fake\nissue #%s\n' "$body_ref" \
+printf 'capability\n\ndiff --git a/fake b/fake\nindex 1111111..2222222 100644\n--- a/fake\n+++ b/fake\n@@ -1 +1 @@\n-old\n+new\nissue #%s\n' "$body_ref" \
   > "$tmp/commit-message"
 git -C "$body_repo" add file.txt
 git -C "$body_repo" commit -qF "$tmp/commit-message"
@@ -71,5 +71,14 @@ if python3 "$sanitizer" --check "$body_patch" 2>"$tmp/body.stderr"; then
   exit 1
 fi
 grep -q 'blocked pull request or issue reference' "$tmp/body.stderr"
+
+replay_repo="$tmp/replay"
+git clone -q "$valid_repo" "$replay_repo"
+git -C "$replay_repo" config user.name test
+git -C "$replay_repo" config user.email test@example.com
+git -C "$replay_repo" reset -q --hard HEAD^
+git -C "$replay_repo" am -q "$valid_patch"
+test "$(git -C "$replay_repo" rev-parse 'HEAD^{tree}')" = \
+  "$(git -C "$valid_repo" rev-parse 'HEAD^{tree}')"
 
 echo 'patch sanitizer regressions passed'

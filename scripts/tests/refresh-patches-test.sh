@@ -53,4 +53,32 @@ grep -q 'blocked pull request or issue reference' "$tmp/failure.stderr"
 diff -ru "$tmp/original-series" "$failure_metadata/patches/cur"
 test -z "$(find "$failure_metadata/patches" -maxdepth 1 -type d -name '.*' -print)"
 
+malformed_metadata="$tmp/malformed-metadata"
+malformed_worktree="$tmp/malformed-worktree"
+fake_bin="$tmp/fake-bin"
+new_metadata_repo "$malformed_metadata"
+cp -a "$malformed_metadata/patches/cur" "$tmp/malformed-original-series"
+new_worktree "$malformed_worktree" 'upstream behavior'
+malformed_base="$(git -C "$malformed_worktree" rev-parse HEAD)"
+printf 'downstream behavior\n' >> "$malformed_worktree/file.txt"
+git -C "$malformed_worktree" commit -qam capability
+mkdir -p "$fake_bin"
+real_git="$(command -v git)"
+sed \
+  -e "s|@REAL_GIT@|$real_git|g" \
+  -e "s|@TARGET_REPO@|$malformed_worktree|g" \
+  "$source_root/scripts/tests/fixtures/corrupt-format-patch-git.sh" \
+  > "$fake_bin/git"
+chmod +x "$fake_bin/git"
+if PATH="$fake_bin:$PATH" \
+  "$malformed_metadata/scripts/refresh-patches.sh" \
+  "$malformed_worktree" "$malformed_base" \
+  >"$tmp/malformed.stdout" 2>"$tmp/malformed.stderr"; then
+  echo 'refresh replaced the series with an unreplayable patch' >&2
+  exit 1
+fi
+grep -Eq 'Patch failed|does not exist in index' "$tmp/malformed.stderr"
+diff -ru "$tmp/malformed-original-series" "$malformed_metadata/patches/cur"
+test -z "$(find "$malformed_metadata/patches" -maxdepth 1 -type d -name '.*' -print)"
+
 echo 'refresh patch regressions passed'

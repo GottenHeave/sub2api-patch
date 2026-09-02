@@ -7,6 +7,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 patch_dir="$repo_root/patches/cur"
 staging_dir=""
 backup_dir=""
+validation_dir=""
 
 cleanup() {
   if [ -n "$backup_dir" ] && [ -d "$backup_dir" ]; then
@@ -18,6 +19,9 @@ cleanup() {
   fi
   if [ -n "$staging_dir" ] && [ -d "$staging_dir" ]; then
     rm -rf "$staging_dir"
+  fi
+  if [ -n "$validation_dir" ] && [ -d "$validation_dir" ]; then
+    rm -rf "$validation_dir"
   fi
 }
 trap cleanup EXIT
@@ -38,6 +42,8 @@ if [ -n "${EXPECTED_BASE_SHA:-}" ]; then
     exit 1
   fi
 fi
+base_sha="$(git rev-parse "${base_ref}^{commit}")"
+expected_tree="$(git rev-parse 'HEAD^{tree}')"
 
 staging_dir="$(mktemp -d "$repo_root/patches/.refresh.XXXXXX")"
 
@@ -45,7 +51,6 @@ git format-patch \
   --zero-commit \
   --no-signature \
   --no-numbered \
-  --no-stat \
   -o "$staging_dir" \
   "$base_ref"..HEAD
 
@@ -58,6 +63,20 @@ if [ "${#staged_patches[@]}" -eq 0 ]; then
 fi
 
 python3 scripts/sanitize-patches.py "${staged_patches[@]}"
+
+validation_dir="$(mktemp -d "$repo_root/patches/.replay.XXXXXX")"
+git clone --quiet --no-checkout "$worktree" "$validation_dir"
+git -C "$validation_dir" config user.name "patch replay validation"
+git -C "$validation_dir" config user.email "patch-replay@example.invalid"
+git -C "$validation_dir" checkout --quiet --detach "$base_sha"
+git -C "$validation_dir" am --quiet "${staged_patches[@]}"
+actual_tree="$(git -C "$validation_dir" rev-parse 'HEAD^{tree}')"
+if [ "$actual_tree" != "$expected_tree" ]; then
+  echo "refreshed patches do not reproduce the patched tree" >&2
+  exit 1
+fi
+rm -rf "$validation_dir"
+validation_dir=""
 scripts/check-no-pr-issue-refs.sh "$repo_root"
 
 backup_dir="$(mktemp -d "$repo_root/patches/.cur-backup.XXXXXX")"
