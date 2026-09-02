@@ -49,3 +49,7 @@ scripts/refresh-patches.sh /path/to/sub2api-worktree
 
 Refresh also rejects uncommitted changes. Set `EXPECTED_BASE_SHA` to require
 the resolved base ref to match a specific commit before replacing patch files.
+Refresh preserves commit order and emits one patch per commit, so the worktree
+must contain a curated logical commit series with one capability topic per
+commit. Generated patches are staged and validated before the current series
+is replaced; rejected output leaves `patches/cur` unchanged.

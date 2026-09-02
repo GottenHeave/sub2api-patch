@@ -5,9 +5,18 @@ root="${1:-$(pwd)}"
 cd "$root"
 
 scan_paths=()
-for path in patches scripts .github README.md PATCHES.md RELEASE_POLICY.md docs; do
+for path in scripts .github README.md PATCHES.md RELEASE_POLICY.md docs; do
   [ -e "$path" ] && scan_paths+=("$path")
 done
+
+patch_files=()
+while IFS= read -r -d '' path; do
+  patch_files+=("$path")
+done < <(find patches -type f -name '*.patch' -print0 2>/dev/null)
+
+if [ "${#patch_files[@]}" -gt 0 ]; then
+  python3 scripts/sanitize-patches.py --check "${patch_files[@]}"
+fi
 
 if [ "${#scan_paths[@]}" -eq 0 ]; then
   exit 0

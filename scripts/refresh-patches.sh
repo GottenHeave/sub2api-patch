@@ -5,6 +5,22 @@ worktree="${1:?usage: scripts/refresh-patches.sh /path/to/patched-worktree [base
 base_ref="${2:-upstream/main}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 patch_dir="$repo_root/patches/cur"
+staging_dir=""
+backup_dir=""
+
+cleanup() {
+  if [ -n "$backup_dir" ] && [ -d "$backup_dir" ]; then
+    if [ ! -e "$patch_dir" ]; then
+      mv "$backup_dir" "$patch_dir"
+    else
+      rm -rf "$backup_dir"
+    fi
+  fi
+  if [ -n "$staging_dir" ] && [ -d "$staging_dir" ]; then
+    rm -rf "$staging_dir"
+  fi
+}
+trap cleanup EXIT
 
 cd "$worktree"
 
@@ -23,16 +39,31 @@ if [ -n "${EXPECTED_BASE_SHA:-}" ]; then
   fi
 fi
 
-rm -f "$patch_dir"/*.patch
+staging_dir="$(mktemp -d "$repo_root/patches/.refresh.XXXXXX")"
 
 git format-patch \
   --zero-commit \
   --no-signature \
   --no-numbered \
   --no-stat \
-  -o "$patch_dir" \
+  -o "$staging_dir" \
   "$base_ref"..HEAD
 
 cd "$repo_root"
-python3 scripts/sanitize-patches.py patches/cur/*.patch
+shopt -s nullglob
+staged_patches=("$staging_dir"/*.patch)
+if [ "${#staged_patches[@]}" -eq 0 ]; then
+  echo "refresh produced no patches for $base_ref..HEAD" >&2
+  exit 1
+fi
+
+python3 scripts/sanitize-patches.py "${staged_patches[@]}"
 scripts/check-no-pr-issue-refs.sh "$repo_root"
+
+backup_dir="$(mktemp -d "$repo_root/patches/.cur-backup.XXXXXX")"
+rmdir "$backup_dir"
+mv "$patch_dir" "$backup_dir"
+mv "$staging_dir" "$patch_dir"
+staging_dir=""
+rm -rf "$backup_dir"
+backup_dir=""
