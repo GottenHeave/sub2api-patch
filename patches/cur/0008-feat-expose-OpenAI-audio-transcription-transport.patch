@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 12:08:06 +0000
+Date: Wed, 2 Sep 2026 12:58:23 +0000
 Subject: [PATCH] feat: expose OpenAI audio transcription transport
 
 
@@ -1038,12 +1038,3 @@ index 6da33c207..8f7af707d 100644
 +		h.OpenAIGateway.AudioTranscriptions(c)
 +	})
  	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, imagesHandler)
-diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-index 6da6d317c..e1cf21da6 100644
---- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-+++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-@@ -56,2 +56,4 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
- 		"/stt":                                  "speech transcription is not a text-generation prompt",
-+		"/audio/transcriptions":                 "speech transcription is forwarded outside the Codex Chat and Responses transformers",
-+		"/transcribe":                           "speech transcription is forwarded outside the Codex Chat and Responses transformers",
- 		"/realtime/client_secrets":              "realtime control request is forwarded outside the Codex Chat and Responses transformers",
