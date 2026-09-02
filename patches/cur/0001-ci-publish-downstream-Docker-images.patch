@@ -3,6 +3,9 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 12:27:03 +0000
 Subject: [PATCH 01/11] ci: publish downstream Docker images
 
+---
+ .github/workflows/docker-ghcr.yml | 49 +++++++++++++++++++++++++++++++
+ 1 file changed, 49 insertions(+)
 
 diff --git a/.github/workflows/docker-ghcr.yml b/.github/workflows/docker-ghcr.yml
 new file mode 100644

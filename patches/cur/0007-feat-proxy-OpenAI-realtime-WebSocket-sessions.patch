@@ -3,6 +3,20 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 14:00:07 +0000
 Subject: [PATCH 07/11] feat: proxy OpenAI realtime WebSocket sessions
 
+---
+ backend/internal/handler/endpoint.go          |   6 +
+ .../handler/openai_gateway_handler.go         | 161 ++++++++++++++----
+ backend/internal/server/routes/gateway.go     |  39 ++++-
+ .../internal/server/routes/gateway_test.go    |  27 +++
+ .../service/openai_fast_policy_ws_test.go     |  14 ++
+ .../internal/service/openai_ws_forwarder.go   |   3 +-
+ .../service/openai_ws_forwarder_ingress.go    |  48 ++++++
+ .../service/openai_ws_forwarder_payload.go    |  75 +++++++-
+ .../openai_ws_forwarder_success_test.go       |  28 +++
+ .../service/openai_ws_v2/passthrough_relay.go | 112 +++++++++---
+ .../passthrough_relay_internal_test.go        |  60 +++++++
+ .../openai_ws_v2_passthrough_adapter.go       | 144 +++++++++++-----
+ 12 files changed, 604 insertions(+), 113 deletions(-)
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
 index b45b101d8..8ee8928b2 100644

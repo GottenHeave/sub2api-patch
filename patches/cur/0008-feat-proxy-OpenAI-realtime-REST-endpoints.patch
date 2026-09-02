@@ -3,6 +3,16 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 14:00:48 +0000
 Subject: [PATCH 08/11] feat: proxy OpenAI realtime REST endpoints
 
+---
+ backend/internal/handler/endpoint.go          |  41 ++
+ .../internal/handler/openai_realtime_calls.go | 229 ++++++++++
+ .../handler/openai_realtime_calls_test.go     | 302 +++++++++++++
+ backend/internal/server/routes/gateway.go     |  22 +
+ .../internal/server/routes/gateway_test.go    |  29 ++
+ .../prompt_audit_route_coverage_test.go       |  12 +-
+ .../internal/service/openai_realtime_calls.go | 380 ++++++++++++++++
+ .../service/openai_realtime_calls_test.go     | 412 ++++++++++++++++++
+ 8 files changed, 1426 insertions(+), 1 deletion(-)
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
 index 8ee8928b2..80ad3e686 100644

@@ -11,11 +11,8 @@ validation_dir=""
 
 cleanup() {
   if [ -n "$backup_dir" ] && [ -d "$backup_dir" ]; then
-    if [ ! -e "$patch_dir" ]; then
-      mv "$backup_dir" "$patch_dir"
-    else
-      rm -rf "$backup_dir"
-    fi
+    rm -rf "$patch_dir"
+    mv "$backup_dir" "$patch_dir"
   fi
   if [ -n "$staging_dir" ] && [ -d "$staging_dir" ]; then
     rm -rf "$staging_dir"
@@ -50,7 +47,9 @@ staging_dir="$(mktemp -d "$repo_root/patches/.refresh.XXXXXX")"
 git format-patch \
   --zero-commit \
   --no-signature \
-  --no-numbered \
+  --numbered \
+  --stat \
+  --unified=2 \
   -o "$staging_dir" \
   "$base_ref"..HEAD
 
@@ -77,12 +76,12 @@ if [ "$actual_tree" != "$expected_tree" ]; then
 fi
 rm -rf "$validation_dir"
 validation_dir=""
-scripts/check-no-pr-issue-refs.sh "$repo_root"
 
-backup_dir="$(mktemp -d "$repo_root/patches/.cur-backup.XXXXXX")"
+backup_dir="$(mktemp -d "$repo_root/.cur-backup.XXXXXX")"
 rmdir "$backup_dir"
 mv "$patch_dir" "$backup_dir"
 mv "$staging_dir" "$patch_dir"
 staging_dir=""
+scripts/check-no-pr-issue-refs.sh "$repo_root"
 rm -rf "$backup_dir"
 backup_dir=""

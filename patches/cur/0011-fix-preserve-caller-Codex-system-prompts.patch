@@ -3,6 +3,13 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 14:03:18 +0000
 Subject: [PATCH 11/11] fix: preserve caller Codex system prompts
 
+---
+ .../openai_codex_prompt_injection_test.go     | 200 ++++++++++++++++++
+ .../service/openai_codex_transform.go         |  50 +++--
+ .../service/openai_gateway_forward.go         |   2 +-
+ .../service/openai_gateway_passthrough.go     |   2 +-
+ .../service/openai_gateway_request_body.go    |  41 ++++
+ 5 files changed, 281 insertions(+), 14 deletions(-)
 
 diff --git a/backend/internal/service/openai_codex_prompt_injection_test.go b/backend/internal/service/openai_codex_prompt_injection_test.go
 new file mode 100644

@@ -3,6 +3,12 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 14:03:17 +0000
 Subject: [PATCH 06/11] feat: expose OpenAI audio transcription transport
 
+---
+ .../handler/openai_audio_transcriptions.go    | 298 ++++++++
+ .../openai_audio_transcriptions_test.go       | 698 ++++++++++++++++++
+ backend/internal/server/routes/gateway.go     |  16 +
+ .../prompt_audit_route_coverage_test.go       |   8 +-
+ 4 files changed, 1017 insertions(+), 3 deletions(-)
 
 diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
 new file mode 100644

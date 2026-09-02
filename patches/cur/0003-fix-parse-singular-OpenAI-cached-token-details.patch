@@ -3,6 +3,10 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 12:27:03 +0000
 Subject: [PATCH 03/11] fix: parse singular OpenAI cached token details
 
+---
+ .../openai_gateway_response_handling.go       |  1 +
+ ...ai_gateway_response_handling_usage_test.go | 19 +++++++++++++++++++
+ 2 files changed, 20 insertions(+)
 
 diff --git a/backend/internal/service/openai_gateway_response_handling.go b/backend/internal/service/openai_gateway_response_handling.go
 index 104f319dc..9b55c87ce 100644

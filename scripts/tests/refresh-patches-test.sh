@@ -81,4 +81,25 @@ grep -Eq 'Patch failed|does not exist in index' "$tmp/malformed.stderr"
 diff -ru "$tmp/malformed-original-series" "$malformed_metadata/patches/cur"
 test -z "$(find "$malformed_metadata/patches" -maxdepth 1 -type d -name '.*' -print)"
 
+post_swap_metadata="$tmp/post-swap-metadata"
+post_swap_worktree="$tmp/post-swap-worktree"
+new_metadata_repo "$post_swap_metadata"
+cp -a "$post_swap_metadata/patches/cur" "$tmp/post-swap-original-series"
+printf 'blocked issue #%s\n' 999 > "$post_swap_metadata/scripts/marker.sh"
+new_worktree "$post_swap_worktree" 'upstream behavior'
+post_swap_base="$(git -C "$post_swap_worktree" rev-parse HEAD)"
+printf 'downstream behavior\n' >> "$post_swap_worktree/file.txt"
+git -C "$post_swap_worktree" commit -qam capability
+if "$post_swap_metadata/scripts/refresh-patches.sh" \
+  "$post_swap_worktree" "$post_swap_base" \
+  >"$tmp/post-swap.stdout" 2>"$tmp/post-swap.stderr"; then
+  echo 'refresh retained a new series after repository validation failed' >&2
+  exit 1
+fi
+grep -q 'blocked pull request, issue, or mention reference found' \
+  "$tmp/post-swap.stderr"
+diff -ru "$tmp/post-swap-original-series" "$post_swap_metadata/patches/cur"
+test -z "$(find "$post_swap_metadata/patches" -maxdepth 1 -type d -name '.*' -print)"
+test -z "$(find "$post_swap_metadata" -maxdepth 1 -type d -name '.cur-backup.*' -print)"
+
 echo 'refresh patch regressions passed'

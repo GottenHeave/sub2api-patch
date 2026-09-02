@@ -3,6 +3,9 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 12:27:03 +0000
 Subject: [PATCH 02/11] build: cache pnpm dependencies with BuildKit
 
+---
+ Dockerfile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/Dockerfile b/Dockerfile
 index adfa4d470..c3d792874 100644

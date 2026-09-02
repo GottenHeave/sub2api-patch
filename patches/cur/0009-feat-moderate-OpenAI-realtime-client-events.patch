@@ -3,6 +3,15 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 14:02:58 +0000
 Subject: [PATCH 09/11] feat: moderate OpenAI realtime client events
 
+---
+ backend/internal/handler/openai_live.go       |  2 +-
+ backend/internal/handler/openai_live_test.go  | 27 ++++++++
+ .../securityaudit/coordinator_test.go         | 65 +++++++++++++++++++
+ .../internal/securityaudit/prompt_snapshot.go | 26 ++++++++
+ .../internal/service/content_moderation.go    |  9 +++
+ .../service/content_moderation_input.go       | 64 ++++++++++++++++++
+ .../service/content_moderation_test.go        | 51 +++++++++++++++
+ 7 files changed, 243 insertions(+), 1 deletion(-)
 
 diff --git a/backend/internal/handler/openai_live.go b/backend/internal/handler/openai_live.go
 index 1f6b6c49a..9c21c31e1 100644

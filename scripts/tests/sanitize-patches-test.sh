@@ -17,7 +17,14 @@ format_head() {
   local root="$1"
   local output="$2"
   git -C "$root" format-patch -1 --stdout \
-    --zero-commit --no-signature --no-numbered > "$output"
+    --zero-commit --no-signature --numbered --stat --unified=2 > "$output"
+}
+
+format_head_without_stat() {
+  local root="$1"
+  local output="$2"
+  git -C "$root" format-patch -1 --stdout \
+    --zero-commit --no-signature --no-numbered --no-stat > "$output"
 }
 
 valid_repo="$tmp/valid"
@@ -36,6 +43,48 @@ format_head "$valid_repo" "$valid_patch"
 grep -q "^ unchanged issue #$context_ref" "$valid_patch"
 grep -q "^-deleted issue #$deleted_ref" "$valid_patch"
 python3 "$sanitizer" --check "$valid_patch"
+
+diff_target_ref=7070
+diff_target_patch="$tmp/diff-target.patch"
+sed "s|diff --git a/file.txt b/file.txt|diff --git a/file.txt b/ref-#$diff_target_ref.txt|" \
+  "$valid_patch" > "$diff_target_patch"
+git apply --numstat "$diff_target_patch" >/dev/null
+if python3 "$sanitizer" --check "$diff_target_patch" 2>"$tmp/diff-target.stderr"; then
+  echo 'sanitizer accepted a forbidden reference in a diff target path' >&2
+  exit 1
+fi
+grep -q 'invalid Git diff destination header' "$tmp/diff-target.stderr"
+
+embedded_target_ref=7171
+embedded_target_patch="$tmp/embedded-target.patch"
+sed "s|diff --git a/file.txt b/file.txt|diff --git a/file.txt b/ref-#$embedded_target_ref b/file.txt|" \
+  "$valid_patch" > "$embedded_target_patch"
+git apply --numstat "$embedded_target_patch" >/dev/null
+if python3 "$sanitizer" --check "$embedded_target_patch" \
+  2>"$tmp/embedded-target.stderr"; then
+  echo 'sanitizer accepted an ambiguous forbidden diff target path' >&2
+  exit 1
+fi
+grep -q 'invalid Git diff destination header' "$tmp/embedded-target.stderr"
+
+plus_target_ref=8080
+plus_target_patch="$tmp/plus-target.patch"
+sed "s|+++ b/file.txt|+++ b/ref-#$plus_target_ref.txt|" \
+  "$valid_patch" > "$plus_target_patch"
+git apply --numstat "$plus_target_patch" >/dev/null
+if python3 "$sanitizer" --check "$plus_target_patch" 2>"$tmp/plus-target.stderr"; then
+  echo 'sanitizer accepted a forbidden reference in a plus target path' >&2
+  exit 1
+fi
+grep -q 'invalid Git diff destination header' "$tmp/plus-target.stderr"
+
+malformed_patch="$tmp/malformed.patch"
+sed '$d' "$valid_patch" > "$malformed_patch"
+if python3 "$sanitizer" --check "$malformed_patch" 2>"$tmp/malformed.stderr"; then
+  echo 'sanitizer accepted malformed Git patch structure' >&2
+  exit 1
+fi
+grep -q 'invalid Git patch structure' "$tmp/malformed.stderr"
 
 added_repo="$tmp/added"
 added_patch="$tmp/added.patch"
@@ -71,6 +120,104 @@ if python3 "$sanitizer" --check "$body_patch" 2>"$tmp/body.stderr"; then
   exit 1
 fi
 grep -q 'blocked pull request or issue reference' "$tmp/body.stderr"
+
+ambiguous_patch="$tmp/ambiguous.patch"
+format_head_without_stat "$body_repo" "$ambiguous_patch"
+if python3 "$sanitizer" --check "$ambiguous_patch" 2>"$tmp/ambiguous.stderr"; then
+  echo 'sanitizer accepted separator-less patch metadata as a diff' >&2
+  exit 1
+fi
+grep -q 'canonical format-patch separator' "$tmp/ambiguous.stderr"
+
+assert_blocked_new_path() {
+  local name="$1"
+  local filename="$2"
+  local root="$tmp/path-$name"
+  local patch="$tmp/path-$name.patch"
+  new_repo "$root"
+  printf 'base\n' > "$root/base.txt"
+  git -C "$root" add base.txt
+  git -C "$root" commit -qm base
+  mkdir -p "$(dirname "$root/$filename")"
+  printf 'safe content\n' > "$root/$filename"
+  git -C "$root" add .
+  git -C "$root" commit -qm capability
+  format_head "$root" "$patch"
+  if python3 "$sanitizer" --check "$patch" 2>"$tmp/path-$name.stderr"; then
+    echo "sanitizer accepted a forbidden reference in $name destination path" >&2
+    exit 1
+  fi
+  grep -q 'blocked pull request or issue reference' "$tmp/path-$name.stderr"
+}
+
+path_ref=4242
+path_filename="$(printf 'issue #%s\t.txt' "$path_ref")"
+assert_blocked_new_path normal "ref-#$path_ref.txt"
+assert_blocked_new_path quoted "$path_filename"
+assert_blocked_new_path issues "refs/issues/$path_ref.txt"
+assert_blocked_new_path pull "refs/pull/$path_ref.txt"
+grep -q '^diff --git "a/issue #' "$tmp/path-quoted.patch"
+
+rename_repo="$tmp/rename"
+rename_patch="$tmp/rename.patch"
+rename_filename="$(printf 'PR #%s\t.txt' 4243)"
+new_repo "$rename_repo"
+printf 'safe content\n' > "$rename_repo/original.txt"
+git -C "$rename_repo" add original.txt
+git -C "$rename_repo" commit -qm base
+git -C "$rename_repo" mv original.txt "$rename_filename"
+git -C "$rename_repo" commit -qm capability
+format_head "$rename_repo" "$rename_patch"
+grep -q '^rename to "PR #' "$rename_patch"
+if python3 "$sanitizer" --check "$rename_patch" 2>"$tmp/rename.stderr"; then
+  echo 'sanitizer accepted a forbidden reference in a rename destination' >&2
+  exit 1
+fi
+grep -q 'blocked pull request or issue reference' "$tmp/rename.stderr"
+
+copy_repo="$tmp/copy"
+copy_patch="$tmp/copy.patch"
+copy_filename="$(printf 'pull request #%s\t.txt' 4244)"
+new_repo "$copy_repo"
+printf 'content copied through Git detection\n' > "$copy_repo/original.txt"
+git -C "$copy_repo" add original.txt
+git -C "$copy_repo" commit -qm base
+cp "$copy_repo/original.txt" "$copy_repo/$copy_filename"
+git -C "$copy_repo" add .
+git -C "$copy_repo" commit -qm capability
+git -C "$copy_repo" format-patch -1 --stdout \
+  --zero-commit --no-signature --numbered --stat --unified=2 \
+  --find-copies-harder -C > "$copy_patch"
+grep -q '^copy to "pull request #' "$copy_patch"
+if python3 "$sanitizer" --check "$copy_patch" 2>"$tmp/copy.stderr"; then
+  echo 'sanitizer accepted a forbidden reference in a copy destination' >&2
+  exit 1
+fi
+grep -q 'blocked pull request or issue reference' "$tmp/copy.stderr"
+
+removed_ref=9090
+removed_filename="$(printf 'issue #%s\t.txt' "$removed_ref")"
+delete_repo="$tmp/delete"
+delete_patch="$tmp/delete.patch"
+new_repo "$delete_repo"
+printf 'safe content\n' > "$delete_repo/$removed_filename"
+git -C "$delete_repo" add .
+git -C "$delete_repo" commit -qm base
+git -C "$delete_repo" rm -q "$removed_filename"
+git -C "$delete_repo" commit -qm capability
+format_head "$delete_repo" "$delete_patch"
+python3 "$sanitizer" --check "$delete_patch"
+
+rename_away_repo="$tmp/rename-away"
+rename_away_patch="$tmp/rename-away.patch"
+new_repo "$rename_away_repo"
+printf 'safe content\n' > "$rename_away_repo/$removed_filename"
+git -C "$rename_away_repo" add .
+git -C "$rename_away_repo" commit -qm base
+git -C "$rename_away_repo" mv "$removed_filename" safe.txt
+git -C "$rename_away_repo" commit -qm capability
+format_head "$rename_away_repo" "$rename_away_patch"
+python3 "$sanitizer" --check "$rename_away_patch"
 
 replay_repo="$tmp/replay"
 git clone -q "$valid_repo" "$replay_repo"

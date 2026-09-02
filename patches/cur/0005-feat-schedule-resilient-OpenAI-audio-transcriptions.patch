@@ -3,6 +3,13 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 14:03:17 +0000
 Subject: [PATCH 05/11] feat: schedule resilient OpenAI audio transcriptions
 
+---
+ backend/internal/service/model_rate_limit.go  |   63 +-
+ .../service/openai_account_scheduler.go       |    2 +-
+ .../service/openai_audio_transcriptions.go    |  644 +++++++++++
+ .../openai_audio_transcriptions_test.go       | 1015 +++++++++++++++++
+ .../internal/service/openai_gateway_usage.go  |   54 +
+ 5 files changed, 1773 insertions(+), 5 deletions(-)
 
 diff --git a/backend/internal/service/model_rate_limit.go b/backend/internal/service/model_rate_limit.go
 index d76bc423f..2fdf19766 100644

@@ -3,6 +3,10 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 14:00:07 +0000
 Subject: [PATCH 04/11] feat: add shared endpoint account scheduling context
 
+---
+ .../service/openai_account_scheduler.go       | 114 +++++++++++++++++-
+ .../service/openai_gateway_scheduling.go      |   8 +-
+ 2 files changed, 120 insertions(+), 2 deletions(-)
 
 diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
 index 2986f6abe..4bfec7300 100644

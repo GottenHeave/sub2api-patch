@@ -3,6 +3,9 @@ From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 14:02:58 +0000
 Subject: [PATCH 10/11] feat: connect realtime REST moderation protocol
 
+---
+ backend/internal/handler/openai_realtime_calls.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
 index 4485f3301..0d19030d6 100644
