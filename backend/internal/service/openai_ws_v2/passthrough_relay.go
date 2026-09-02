@@ -1101,18 +1101,14 @@ func parseUsageAndAccumulate(
 		return Usage{}
 	}
 
-	inputResult := usageResult.Get("input_tokens")
-	if !inputResult.Exists() {
-		inputResult = usageResult.Get("prompt_tokens")
-	}
-	outputResult := usageResult.Get("output_tokens")
-	if !outputResult.Exists() {
-		outputResult = usageResult.Get("completion_tokens")
-	}
-	cachedResult := usageResult.Get("input_tokens_details.cached_tokens")
-	if !cachedResult.Exists() {
-		cachedResult = usageResult.Get("prompt_tokens_details.cached_tokens")
-	}
+	inputResult := firstUsageResult(usageResult, "input_tokens", "prompt_tokens")
+	outputResult := firstUsageResult(usageResult, "output_tokens", "completion_tokens")
+	cachedResult := firstUsageResult(
+		usageResult,
+		"input_tokens_details.cached_tokens",
+		"input_token_details.cached_tokens",
+		"prompt_tokens_details.cached_tokens",
+	)
 	imageTokens := usageResult.Get("output_tokens_details.image_tokens").Int()
 	if imageTokens == 0 {
 		imageTokens = usageResult.Get("completion_tokens_details.image_tokens").Int()
@@ -1130,6 +1126,19 @@ func parseUsageAndAccumulate(
 		// 解析失败时不做部分字段累加，避免计费 usage 出现“半有效”状态。
 		return Usage{}
 	}
+	cachedTokens = realtimeCachedTokensWithoutAudio(usageResult, cachedTokens)
+	inputTokens = realtimeTextTokensFromUsage(
+		usageResult,
+		inputTokens,
+		[]string{"input_tokens_details.text_tokens", "input_token_details.text_tokens", "prompt_tokens_details.text_tokens"},
+		[]string{"input_tokens_details.audio_tokens", "input_token_details.audio_tokens", "prompt_tokens_details.audio_tokens"},
+	)
+	outputTokens = realtimeTextTokensFromUsage(
+		usageResult,
+		outputTokens,
+		[]string{"output_tokens_details.text_tokens", "output_token_details.text_tokens", "completion_tokens_details.text_tokens"},
+		[]string{"output_tokens_details.audio_tokens", "output_token_details.audio_tokens", "completion_tokens_details.audio_tokens"},
+	)
 	reasoningTokens := usageResult.Get("output_tokens_details.reasoning_tokens").Int()
 	if reasoningTokens == 0 {
 		reasoningTokens = usageResult.Get("completion_tokens_details.reasoning_tokens").Int()
@@ -1156,6 +1165,60 @@ func parseUsageAndAccumulate(
 		return Usage{}
 	}
 	return parsedUsage
+}
+
+func realtimeTextTokensFromUsage(usage gjson.Result, aggregate int, textPaths, audioPaths []string) int {
+	audioResult := firstUsageResult(usage, audioPaths...)
+	if !audioResult.Exists() {
+		return aggregate
+	}
+	audioTokens, ok := parseUsageIntField(audioResult, false)
+	if !ok || audioTokens <= 0 {
+		return aggregate
+	}
+	textResult := firstUsageResult(usage, textPaths...)
+	if textResult.Exists() {
+		if textTokens, ok := parseUsageIntField(textResult, false); ok {
+			return textTokens
+		}
+		return aggregate
+	}
+	if aggregate <= audioTokens {
+		return 0
+	}
+	return aggregate - audioTokens
+}
+
+func realtimeCachedTokensWithoutAudio(usage gjson.Result, aggregate int) int {
+	audioResult := firstUsageResult(
+		usage,
+		"input_tokens_details.cached_tokens_details.audio_tokens",
+		"input_token_details.cached_tokens_details.audio_tokens",
+		"prompt_tokens_details.cached_tokens_details.audio_tokens",
+	)
+	if !audioResult.Exists() {
+		return aggregate
+	}
+	audioTokens, ok := parseUsageIntField(audioResult, false)
+	if !ok || audioTokens <= 0 {
+		return aggregate
+	}
+	textResult := firstUsageResult(
+		usage,
+		"input_tokens_details.cached_tokens_details.text_tokens",
+		"input_token_details.cached_tokens_details.text_tokens",
+		"prompt_tokens_details.cached_tokens_details.text_tokens",
+	)
+	if textResult.Exists() {
+		if textTokens, ok := parseUsageIntField(textResult, false); ok {
+			return textTokens
+		}
+		return aggregate
+	}
+	if aggregate <= audioTokens {
+		return 0
+	}
+	return aggregate - audioTokens
 }
 
 func relayUsageHasTokens(usage Usage) bool {
@@ -1197,6 +1260,16 @@ func finalizeRelayTurnUsage(state *relayState) Usage {
 	state.usage.ImageOutputTokens += turnUsage.ImageOutputTokens
 	state.turnUsage = Usage{}
 	return turnUsage
+}
+
+func firstUsageResult(value gjson.Result, paths ...string) gjson.Result {
+	for _, path := range paths {
+		result := value.Get(path)
+		if result.Exists() {
+			return result
+		}
+	}
+	return gjson.Result{}
 }
 
 func parseUsageIntField(value gjson.Result, required bool) (int, bool) {
