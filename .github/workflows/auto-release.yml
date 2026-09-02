@@ -187,17 +187,17 @@ jobs:
           - patchset commit: ${patchset_commit}
 
           Patch topics:
-          - downstream Docker image publication
-          - pnpm dependency caching in the Docker BuildKit build
-          - singular \`input_token_details.cached_tokens\` parsing
-          - shared endpoint account-selection context and eligibility guards
-          - OpenAI realtime WebSocket sessions and translations
-          - OpenAI realtime REST sessions, translations, and calls
-          - prompt-audit classification for downstream gateway routes
-          - moderation of OpenAI realtime client events
-          - OpenAI audio transcription HTTP transport and routes
-          - audio transcription scheduling, retry, diagnostics, and zero-cost usage logging
-          - caller-provided Codex system-prompt preservation
+          - publish downstream Docker images
+          - cache pnpm dependencies with BuildKit
+          - parse singular OpenAI cached token details
+          - add shared endpoint account scheduling context
+          - schedule resilient OpenAI audio transcriptions
+          - expose OpenAI audio transcription transport
+          - proxy OpenAI realtime WebSocket sessions
+          - proxy OpenAI realtime REST endpoints
+          - moderate OpenAI realtime client events
+          - connect realtime REST moderation protocol
+          - preserve caller Codex system prompts
           EOF
           sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
           if grep -E '#[0-9]+|/issues/[0-9]+|/pull/[0-9]+' release-notes.md; then
