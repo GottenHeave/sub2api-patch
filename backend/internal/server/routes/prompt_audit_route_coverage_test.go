@@ -56,6 +56,16 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
 		"/stt":                                  "speech transcription is not a text-generation prompt",
 		"/audio/transcriptions":                 "speech transcription is forwarded outside the Codex Chat and Responses transformers",
 		"/custom-voices":                        "voice profile management has no model prompt",
+		"/realtime/client_secrets":              "realtime control request is forwarded outside the Codex Chat and Responses transformers",
+		"/realtime/translations/client_secrets": "realtime translation control request is forwarded outside the Codex Chat and Responses transformers",
+		"/realtime/calls":                       "realtime call request is forwarded outside the Codex Chat and Responses transformers",
+		"/realtime/translations/calls":          "realtime translation call request is forwarded outside the Codex Chat and Responses transformers",
+		"/realtime/calls/:call_id/accept":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
+		"/realtime/calls/:call_id/hangup":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
+		"/realtime/calls/:call_id/refer":        "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
+		"/realtime/calls/:call_id/reject":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
+		"/realtime/sessions":                    "realtime session request is forwarded outside the Codex Chat and Responses transformers",
+		"/realtime/transcription_sessions":      "realtime transcription session request is forwarded outside the Codex Chat and Responses transformers",
 	}
 
 	unclassified := make([]string, 0)
