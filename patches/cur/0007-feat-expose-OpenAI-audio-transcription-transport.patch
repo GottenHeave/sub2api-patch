@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 11:26:08 +0000
+Date: Wed, 2 Sep 2026 12:08:06 +0000
 Subject: [PATCH] feat: expose OpenAI audio transcription transport
 
 
@@ -1013,65 +1013,10 @@ index 000000000..787c5233f
 +	}
 +}
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index fe753b238..8f7af707d 100644
+index 6da33c207..8f7af707d 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -231,2 +231,54 @@ func RegisterGatewayRoutes(
- 		})
-+		gateway.GET("/realtime", func(c *gin.Context) {
-+			platform := getGroupPlatform(c)
-+			if platform == service.PlatformGrok {
-+				h.OpenAIGateway.GrokRealtime(c)
-+				return
-+			}
-+			if platform != service.PlatformOpenAI {
-+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
-+				c.JSON(http.StatusNotFound, gin.H{
-+					"error": gin.H{
-+						"type":    "not_found_error",
-+						"message": "Realtime API is not supported for this platform",
-+					},
-+				})
-+				return
-+			}
-+			h.OpenAIGateway.RealtimeWebSocket(c)
-+		})
-+		gateway.GET("/realtime/translations", func(c *gin.Context) {
-+			if getGroupPlatform(c) != service.PlatformOpenAI {
-+				c.JSON(http.StatusNotFound, gin.H{
-+					"error": gin.H{
-+						"type":    "not_found_error",
-+						"message": "Realtime API is not supported for this platform",
-+					},
-+				})
-+				return
-+			}
-+			h.OpenAIGateway.RealtimeTranslationWebSocket(c)
-+		})
-+		realtimeRESTHandler := func(c *gin.Context) {
-+			if getGroupPlatform(c) != service.PlatformOpenAI {
-+				c.JSON(http.StatusNotFound, gin.H{
-+					"error": gin.H{
-+						"type":    "not_found_error",
-+						"message": "Realtime API is not supported for this platform",
-+					},
-+				})
-+				return
-+			}
-+			h.OpenAIGateway.RealtimeREST(c)
-+		}
-+		gateway.POST("/realtime/client_secrets", realtimeRESTHandler)
-+		gateway.POST("/realtime/translations/client_secrets", realtimeRESTHandler)
-+		gateway.POST("/realtime/calls", realtimeRESTHandler)
-+		gateway.POST("/realtime/translations/calls", realtimeRESTHandler)
-+		gateway.POST("/realtime/calls/:call_id/accept", realtimeRESTHandler)
-+		gateway.POST("/realtime/calls/:call_id/hangup", realtimeRESTHandler)
-+		gateway.POST("/realtime/calls/:call_id/refer", realtimeRESTHandler)
-+		gateway.POST("/realtime/calls/:call_id/reject", realtimeRESTHandler)
-+		gateway.POST("/realtime/sessions", realtimeRESTHandler)
-+		gateway.POST("/realtime/transcription_sessions", realtimeRESTHandler)
- 		// OpenAI Chat Completions API: auto-route based on group platform
-@@ -252,2 +304,10 @@ func RegisterGatewayRoutes(
+@@ -304,2 +304,10 @@ func RegisterGatewayRoutes(
  		})
 +		gateway.POST("/audio/transcriptions", func(c *gin.Context) {
 +			if !isOpenAIOnlyEndpointGatewayPlatform(c) {
@@ -1082,18 +1027,7 @@ index fe753b238..8f7af707d 100644
 +			h.OpenAIGateway.AudioTranscriptions(c)
 +		})
  		gateway.POST("/images/generations", imagesHandler)
-@@ -310,10 +370,2 @@ func RegisterGatewayRoutes(
- 		gateway.DELETE("/custom-voices/:voice_id", customVoicePathHandler)
--		gateway.GET("/realtime", func(c *gin.Context) {
--			if getGroupPlatform(c) != service.PlatformGrok {
--				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
--				c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Realtime API is not supported for this platform"}})
--				return
--			}
--			h.OpenAIGateway.GrokRealtime(c)
--		})
- 		gateway.POST("/web_search", func(c *gin.Context) {
-@@ -402,2 +454,10 @@ func RegisterGatewayRoutes(
+@@ -446,2 +454,10 @@ func RegisterGatewayRoutes(
  	})
 +	r.POST("/transcribe", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, func(c *gin.Context) {
 +		if !isOpenAIOnlyEndpointGatewayPlatform(c) {
@@ -1104,97 +1038,12 @@ index fe753b238..8f7af707d 100644
 +		h.OpenAIGateway.AudioTranscriptions(c)
 +	})
  	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, imagesHandler)
-@@ -419,3 +479,2 @@ func RegisterGatewayRoutes(
- 	r.GET("/videos/:request_id/content", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, videoContentHandler)
--
- 	rootVoiceHandler := func(endpoint string) gin.HandlerFunc {
-diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
-index 9ab241bdf..3f545b22e 100644
---- a/backend/internal/server/routes/gateway_test.go
-+++ b/backend/internal/server/routes/gateway_test.go
-@@ -126,2 +126,58 @@ func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
- 
-+func TestGatewayRoutesRealtimeDispatchMatrix(t *testing.T) {
-+	openAIRouter := newGatewayRoutesTestRouter(service.PlatformOpenAI)
-+	grokRouter := newGatewayRoutesTestRouter(service.PlatformGrok)
-+
-+	for _, path := range []string{
-+		"/v1/realtime?model=gpt-realtime",
-+		"/v1/realtime/translations?model=gpt-realtime-translate",
-+	} {
-+		req := httptest.NewRequest(http.MethodGet, path, nil)
-+		w := httptest.NewRecorder()
-+		openAIRouter.ServeHTTP(w, req)
-+		require.Equal(t, http.StatusUpgradeRequired, w.Code, "OpenAI path=%s", path)
-+	}
-+
-+	for _, path := range []string{"/v1/realtime?model=grok-realtime", "/realtime?model=grok-realtime"} {
-+		req := httptest.NewRequest(http.MethodGet, path, nil)
-+		w := httptest.NewRecorder()
-+		grokRouter.ServeHTTP(w, req)
-+		require.NotEqual(t, http.StatusNotFound, w.Code, "Grok path=%s", path)
-+	}
-+
-+	req := httptest.NewRequest(http.MethodGet, "/realtime?model=gpt-realtime", nil)
-+	w := httptest.NewRecorder()
-+	openAIRouter.ServeHTTP(w, req)
-+	require.Equal(t, http.StatusNotFound, w.Code)
-+}
-+
-+func TestGatewayRoutesRealtimeRESTPathsAreRegistered(t *testing.T) {
-+	router := newGatewayRoutesTestRouter(service.PlatformOpenAI)
-+
-+	for _, path := range []string{
-+		"/v1/realtime/client_secrets",
-+		"/v1/realtime/translations/client_secrets",
-+		"/v1/realtime/calls",
-+		"/v1/realtime/translations/calls",
-+		"/v1/realtime/calls/call_123/accept",
-+		"/v1/realtime/calls/call_123/hangup",
-+		"/v1/realtime/calls/call_123/refer",
-+		"/v1/realtime/calls/call_123/reject",
-+		"/v1/realtime/sessions",
-+		"/v1/realtime/transcription_sessions",
-+	} {
-+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
-+		req.Header.Set("Content-Type", "application/json")
-+		w := httptest.NewRecorder()
-+		router.ServeHTTP(w, req)
-+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s", path)
-+	}
-+
-+	req := httptest.NewRequest(http.MethodPost, "/v1/realtime/sessions", strings.NewReader(`{}`))
-+	req.Header.Set("Content-Type", "application/json")
-+	w := httptest.NewRecorder()
-+	newGatewayRoutesTestRouter(service.PlatformGrok).ServeHTTP(w, req)
-+	require.Equal(t, http.StatusNotFound, w.Code)
-+}
-+
- func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
 diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-index af4272cb8..e1cf21da6 100644
+index 6da6d317c..e1cf21da6 100644
 --- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
 +++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-@@ -53,6 +53,18 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
- 	excluded := map[string]string{
--		"/messages/count_tokens":     "tokenization only; it does not execute a model request",
--		"/images/batches/:id/cancel": "control-plane cancellation with no user prompt",
--		"/stt":                       "speech transcription is not a text-generation prompt",
--		"/custom-voices":             "voice profile management has no model prompt",
-+		"/messages/count_tokens":                "tokenization only; it does not execute a model request",
-+		"/images/batches/:id/cancel":            "control-plane cancellation with no user prompt",
-+		"/stt":                                  "speech transcription is not a text-generation prompt",
+@@ -56,2 +56,4 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
+ 		"/stt":                                  "speech transcription is not a text-generation prompt",
 +		"/audio/transcriptions":                 "speech transcription is forwarded outside the Codex Chat and Responses transformers",
 +		"/transcribe":                           "speech transcription is forwarded outside the Codex Chat and Responses transformers",
-+		"/realtime/client_secrets":              "realtime control request is forwarded outside the Codex Chat and Responses transformers",
-+		"/realtime/translations/client_secrets": "realtime translation control request is forwarded outside the Codex Chat and Responses transformers",
-+		"/realtime/calls":                       "realtime call request is forwarded outside the Codex Chat and Responses transformers",
-+		"/realtime/translations/calls":          "realtime translation call request is forwarded outside the Codex Chat and Responses transformers",
-+		"/realtime/calls/:call_id/accept":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
-+		"/realtime/calls/:call_id/hangup":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
-+		"/realtime/calls/:call_id/refer":        "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
-+		"/realtime/calls/:call_id/reject":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
-+		"/realtime/sessions":                    "realtime session request is forwarded outside the Codex Chat and Responses transformers",
-+		"/realtime/transcription_sessions":      "realtime transcription session request is forwarded outside the Codex Chat and Responses transformers",
-+		"/custom-voices":                        "voice profile management has no model prompt",
- 	}
+ 		"/realtime/client_secrets":              "realtime control request is forwarded outside the Codex Chat and Responses transformers",

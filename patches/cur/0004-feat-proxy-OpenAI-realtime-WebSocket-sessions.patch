@@ -1,72 +1,28 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 11:26:08 +0000
+Date: Wed, 2 Sep 2026 12:06:01 +0000
 Subject: [PATCH] feat: proxy OpenAI realtime WebSocket sessions
 
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
-index b45b101d8..80ad3e686 100644
+index b45b101d8..8ee8928b2 100644
 --- a/backend/internal/handler/endpoint.go
 +++ b/backend/internal/handler/endpoint.go
-@@ -32,2 +32,4 @@ const (
+@@ -32,2 +32,3 @@ const (
  	EndpointGeminiModels         = "/v1beta/models"
 +	EndpointRealtime             = "/v1/realtime"
-+	EndpointRealtimeREST         = "/v1/realtime/rest"
  )
-@@ -111,2 +113,6 @@ func NormalizeInboundEndpoint(path string) string {
+@@ -111,2 +112,4 @@ func NormalizeInboundEndpoint(path string) string {
  		return EndpointResponses
-+	case isRealtimeRESTEndpoint(path):
-+		return EndpointRealtimeREST
 +	case strings.Contains(path, EndpointRealtime):
 +		return EndpointRealtime
  	case strings.Contains(path, EndpointGeminiModels):
-@@ -202,2 +208,8 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
+@@ -202,2 +205,5 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
  		}
 +		if inbound == EndpointRealtime {
 +			return EndpointRealtime
 +		}
-+		if inbound == EndpointRealtimeREST {
-+			return realtimeRESTUpstreamPath(rawRequestPath)
-+		}
  		// OpenAI forwards everything to the Responses API.
-@@ -256,2 +268,37 @@ func responsesSubpathSuffix(rawPath string) string {
- 
-+func isRealtimeRESTEndpoint(path string) bool {
-+	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
-+	if trimmed == "" {
-+		return false
-+	}
-+	switch {
-+	case strings.Contains(trimmed, "/realtime/client_secrets"):
-+		return true
-+	case strings.Contains(trimmed, "/realtime/translations/client_secrets"):
-+		return true
-+	case strings.Contains(trimmed, "/realtime/translations/calls"):
-+		return true
-+	case strings.Contains(trimmed, "/realtime/sessions"):
-+		return true
-+	case strings.Contains(trimmed, "/realtime/transcription_sessions"):
-+		return true
-+	case strings.Contains(trimmed, "/realtime/calls"):
-+		return true
-+	default:
-+		return false
-+	}
-+}
-+
-+func realtimeRESTUpstreamPath(rawPath string) string {
-+	trimmed := strings.TrimRight(strings.TrimSpace(rawPath), "/")
-+	idx := strings.LastIndex(trimmed, "/realtime/")
-+	if idx < 0 {
-+		if strings.HasSuffix(trimmed, "/realtime") {
-+			return EndpointRealtime
-+		}
-+		return EndpointRealtimeREST
-+	}
-+	return "/v1" + trimmed[idx:]
-+}
-+
- // ──────────────────────────────────────────────────────────
 diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
 index ce67e07e8..51d982618 100644
 --- a/backend/internal/handler/openai_gateway_handler.go
@@ -266,6 +222,92 @@ index ce67e07e8..51d982618 100644
 +}
 +
  func (h *OpenAIGatewayHandler) recoverResponsesPanic(c *gin.Context, streamStarted *bool) {
+diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
+index fe753b238..e077e521a 100644
+--- a/backend/internal/server/routes/gateway.go
++++ b/backend/internal/server/routes/gateway.go
+@@ -231,2 +231,32 @@ func RegisterGatewayRoutes(
+ 		})
++		gateway.GET("/realtime", func(c *gin.Context) {
++			platform := getGroupPlatform(c)
++			if platform == service.PlatformGrok {
++				h.OpenAIGateway.GrokRealtime(c)
++				return
++			}
++			if platform != service.PlatformOpenAI {
++				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeWebSocket(c)
++		})
++		gateway.GET("/realtime/translations", func(c *gin.Context) {
++			if getGroupPlatform(c) != service.PlatformOpenAI {
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeTranslationWebSocket(c)
++		})
+ 		// OpenAI Chat Completions API: auto-route based on group platform
+@@ -310,10 +340,2 @@ func RegisterGatewayRoutes(
+ 		gateway.DELETE("/custom-voices/:voice_id", customVoicePathHandler)
+-		gateway.GET("/realtime", func(c *gin.Context) {
+-			if getGroupPlatform(c) != service.PlatformGrok {
+-				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+-				c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Realtime API is not supported for this platform"}})
+-				return
+-			}
+-			h.OpenAIGateway.GrokRealtime(c)
+-		})
+ 		gateway.POST("/web_search", func(c *gin.Context) {
+@@ -419,3 +441,2 @@ func RegisterGatewayRoutes(
+ 	r.GET("/videos/:request_id/content", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, videoContentHandler)
+-
+ 	rootVoiceHandler := func(endpoint string) gin.HandlerFunc {
+diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
+index 9ab241bdf..03f4b97fc 100644
+--- a/backend/internal/server/routes/gateway_test.go
++++ b/backend/internal/server/routes/gateway_test.go
+@@ -126,2 +126,29 @@ func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
+ 
++func TestGatewayRoutesRealtimeDispatchMatrix(t *testing.T) {
++	openAIRouter := newGatewayRoutesTestRouter(service.PlatformOpenAI)
++	grokRouter := newGatewayRoutesTestRouter(service.PlatformGrok)
++
++	for _, path := range []string{
++		"/v1/realtime?model=gpt-realtime",
++		"/v1/realtime/translations?model=gpt-realtime-translate",
++	} {
++		req := httptest.NewRequest(http.MethodGet, path, nil)
++		w := httptest.NewRecorder()
++		openAIRouter.ServeHTTP(w, req)
++		require.Equal(t, http.StatusUpgradeRequired, w.Code, "OpenAI path=%s", path)
++	}
++
++	for _, path := range []string{"/v1/realtime?model=grok-realtime", "/realtime?model=grok-realtime"} {
++		req := httptest.NewRequest(http.MethodGet, path, nil)
++		w := httptest.NewRecorder()
++		grokRouter.ServeHTTP(w, req)
++		require.NotEqual(t, http.StatusNotFound, w.Code, "Grok path=%s", path)
++	}
++
++	req := httptest.NewRequest(http.MethodGet, "/realtime?model=gpt-realtime", nil)
++	w := httptest.NewRecorder()
++	openAIRouter.ServeHTTP(w, req)
++	require.Equal(t, http.StatusNotFound, w.Code)
++}
++
+ func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
 diff --git a/backend/internal/service/openai_fast_policy_ws_test.go b/backend/internal/service/openai_fast_policy_ws_test.go
 index 607d32a22..5c4598a72 100644
 --- a/backend/internal/service/openai_fast_policy_ws_test.go

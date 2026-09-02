@@ -1,9 +1,66 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 11:26:08 +0000
+Date: Wed, 2 Sep 2026 12:07:29 +0000
 Subject: [PATCH] feat: proxy OpenAI realtime REST endpoints
 
 
+diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
+index 8ee8928b2..80ad3e686 100644
+--- a/backend/internal/handler/endpoint.go
++++ b/backend/internal/handler/endpoint.go
+@@ -33,2 +33,3 @@ const (
+ 	EndpointRealtime             = "/v1/realtime"
++	EndpointRealtimeREST         = "/v1/realtime/rest"
+ )
+@@ -112,2 +113,4 @@ func NormalizeInboundEndpoint(path string) string {
+ 		return EndpointResponses
++	case isRealtimeRESTEndpoint(path):
++		return EndpointRealtimeREST
+ 	case strings.Contains(path, EndpointRealtime):
+@@ -208,2 +211,5 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
+ 		}
++		if inbound == EndpointRealtimeREST {
++			return realtimeRESTUpstreamPath(rawRequestPath)
++		}
+ 		// OpenAI forwards everything to the Responses API.
+@@ -262,2 +268,37 @@ func responsesSubpathSuffix(rawPath string) string {
+ 
++func isRealtimeRESTEndpoint(path string) bool {
++	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
++	if trimmed == "" {
++		return false
++	}
++	switch {
++	case strings.Contains(trimmed, "/realtime/client_secrets"):
++		return true
++	case strings.Contains(trimmed, "/realtime/translations/client_secrets"):
++		return true
++	case strings.Contains(trimmed, "/realtime/translations/calls"):
++		return true
++	case strings.Contains(trimmed, "/realtime/sessions"):
++		return true
++	case strings.Contains(trimmed, "/realtime/transcription_sessions"):
++		return true
++	case strings.Contains(trimmed, "/realtime/calls"):
++		return true
++	default:
++		return false
++	}
++}
++
++func realtimeRESTUpstreamPath(rawPath string) string {
++	trimmed := strings.TrimRight(strings.TrimSpace(rawPath), "/")
++	idx := strings.LastIndex(trimmed, "/realtime/")
++	if idx < 0 {
++		if strings.HasSuffix(trimmed, "/realtime") {
++			return EndpointRealtime
++		}
++		return EndpointRealtimeREST
++	}
++	return "/v1" + trimmed[idx:]
++}
++
+ // ──────────────────────────────────────────────────────────
 diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
 new file mode 100644
 index 000000000..0d19030d6
@@ -547,6 +604,162 @@ index 000000000..d3cf895ba
 +		Credentials: map[string]any{"api_key": "sk-test"},
 +	}
 +}
+diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
+index e077e521a..6da33c207 100644
+--- a/backend/internal/server/routes/gateway.go
++++ b/backend/internal/server/routes/gateway.go
+@@ -261,2 +261,24 @@ func RegisterGatewayRoutes(
+ 		})
++		realtimeRESTHandler := func(c *gin.Context) {
++			if getGroupPlatform(c) != service.PlatformOpenAI {
++				c.JSON(http.StatusNotFound, gin.H{
++					"error": gin.H{
++						"type":    "not_found_error",
++						"message": "Realtime API is not supported for this platform",
++					},
++				})
++				return
++			}
++			h.OpenAIGateway.RealtimeREST(c)
++		}
++		gateway.POST("/realtime/client_secrets", realtimeRESTHandler)
++		gateway.POST("/realtime/translations/client_secrets", realtimeRESTHandler)
++		gateway.POST("/realtime/calls", realtimeRESTHandler)
++		gateway.POST("/realtime/translations/calls", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/accept", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/hangup", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/refer", realtimeRESTHandler)
++		gateway.POST("/realtime/calls/:call_id/reject", realtimeRESTHandler)
++		gateway.POST("/realtime/sessions", realtimeRESTHandler)
++		gateway.POST("/realtime/transcription_sessions", realtimeRESTHandler)
+ 		// OpenAI Chat Completions API: auto-route based on group platform
+diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
+index 03f4b97fc..3f545b22e 100644
+--- a/backend/internal/server/routes/gateway_test.go
++++ b/backend/internal/server/routes/gateway_test.go
+@@ -153,2 +153,31 @@ func TestGatewayRoutesRealtimeDispatchMatrix(t *testing.T) {
+ 
++func TestGatewayRoutesRealtimeRESTPathsAreRegistered(t *testing.T) {
++	router := newGatewayRoutesTestRouter(service.PlatformOpenAI)
++
++	for _, path := range []string{
++		"/v1/realtime/client_secrets",
++		"/v1/realtime/translations/client_secrets",
++		"/v1/realtime/calls",
++		"/v1/realtime/translations/calls",
++		"/v1/realtime/calls/call_123/accept",
++		"/v1/realtime/calls/call_123/hangup",
++		"/v1/realtime/calls/call_123/refer",
++		"/v1/realtime/calls/call_123/reject",
++		"/v1/realtime/sessions",
++		"/v1/realtime/transcription_sessions",
++	} {
++		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
++		req.Header.Set("Content-Type", "application/json")
++		w := httptest.NewRecorder()
++		router.ServeHTTP(w, req)
++		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s", path)
++	}
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/realtime/sessions", strings.NewReader(`{}`))
++	req.Header.Set("Content-Type", "application/json")
++	w := httptest.NewRecorder()
++	newGatewayRoutesTestRouter(service.PlatformGrok).ServeHTTP(w, req)
++	require.Equal(t, http.StatusNotFound, w.Code)
++}
++
+ func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
+diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
+index af4272cb8..6da6d317c 100644
+--- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
++++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
+@@ -53,6 +53,16 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
+ 	excluded := map[string]string{
+-		"/messages/count_tokens":     "tokenization only; it does not execute a model request",
+-		"/images/batches/:id/cancel": "control-plane cancellation with no user prompt",
+-		"/stt":                       "speech transcription is not a text-generation prompt",
+-		"/custom-voices":             "voice profile management has no model prompt",
++		"/messages/count_tokens":                "tokenization only; it does not execute a model request",
++		"/images/batches/:id/cancel":            "control-plane cancellation with no user prompt",
++		"/stt":                                  "speech transcription is not a text-generation prompt",
++		"/realtime/client_secrets":              "realtime control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/translations/client_secrets": "realtime translation control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls":                       "realtime call request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/translations/calls":          "realtime translation call request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/accept":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/hangup":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/refer":        "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/calls/:call_id/reject":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/sessions":                    "realtime session request is forwarded outside the Codex Chat and Responses transformers",
++		"/realtime/transcription_sessions":      "realtime transcription session request is forwarded outside the Codex Chat and Responses transformers",
++		"/custom-voices":                        "voice profile management has no model prompt",
+ 	}
+diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
+index 2986f6abe..63528eb6e 100644
+--- a/backend/internal/service/openai_account_scheduler.go
++++ b/backend/internal/service/openai_account_scheduler.go
+@@ -93,2 +93,19 @@ type OpenAIAccountScheduleRequest struct {
+ 
++type openAIRealtimeRESTSelectionContextKey struct{}
++
++func withOpenAIRealtimeRESTSelection(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, openAIRealtimeRESTSelectionContextKey{}, true)
++}
++
++func openAIRealtimeRESTSelectionFromContext(ctx context.Context) bool {
++	if ctx == nil {
++		return false
++	}
++	selected, _ := ctx.Value(openAIRealtimeRESTSelectionContextKey{}).(bool)
++	return selected
++}
++
+ type OpenAIAccountScheduleDecision struct {
+@@ -1768,2 +1785,5 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 	}
++	if openAIRealtimeRESTSelectionFromContext(ctx) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
++		return false, "audio_transcription_account_type"
++	}
+ 	if req.RequirePrivacySet && !account.IsPrivacySet() {
+@@ -2139,2 +2159,25 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
+ 
++func (s *OpenAIGatewayService) SelectAccountWithSchedulerForRealtimeREST(
++	ctx context.Context,
++	groupID *int64,
++	sessionHash string,
++	excludedIDs map[int64]struct{},
++) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
++	return s.selectAccountWithScheduler(
++		withOpenAIRealtimeRESTSelection(ctx),
++		groupID,
++		"",
++		sessionHash,
++		"",
++		excludedIDs,
++		OpenAIUpstreamTransportHTTPSSE,
++		"",
++		"",
++		false,
++		PlatformOpenAI,
++		false,
++		true,
++	)
++}
++
+ // selectAccountWithScheduler wraps selectAccountWithSchedulerOnce with a
+diff --git a/backend/internal/service/openai_gateway_scheduling.go b/backend/internal/service/openai_gateway_scheduling.go
+index a90bad3e2..b34891efe 100644
+--- a/backend/internal/service/openai_gateway_scheduling.go
++++ b/backend/internal/service/openai_gateway_scheduling.go
+@@ -397,2 +397,5 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+ 	}
++	if openAIRealtimeRESTSelectionFromContext(ctx) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
++		return "endpoint_account_type"
++	}
+ 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
 diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
 new file mode 100644
 index 000000000..9844270d2

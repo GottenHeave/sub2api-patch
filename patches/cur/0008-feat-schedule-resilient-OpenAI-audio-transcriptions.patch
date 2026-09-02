@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
-Date: Wed, 2 Sep 2026 11:26:08 +0000
+Date: Wed, 2 Sep 2026 12:08:38 +0000
 Subject: [PATCH] feat: schedule resilient OpenAI audio transcriptions
 
 
@@ -85,15 +85,15 @@ index d76bc423f..2fdf19766 100644
 +
  // isAnthropicFableModel 判断是否为 Fable 模型家族（claude-fable-5、claude-fable-5[1m] 等变体）
 diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
-index 2986f6abe..1a94a6614 100644
+index 63528eb6e..1a94a6614 100644
 --- a/backend/internal/service/openai_account_scheduler.go
 +++ b/backend/internal/service/openai_account_scheduler.go
-@@ -93,2 +93,59 @@ type OpenAIAccountScheduleRequest struct {
+@@ -93,4 +93,33 @@ type OpenAIAccountScheduleRequest struct {
  
 +type openAIAudioTranscriptionSelectionContextKey struct{}
 +type openAIAudioTranscriptionKnownModelSelectionContextKey struct{}
-+type openAIRealtimeRESTSelectionContextKey struct{}
-+
+ type openAIRealtimeRESTSelectionContextKey struct{}
+ 
 +func withOpenAIAudioTranscriptionSelection(ctx context.Context, knownModel bool) context.Context {
 +	if ctx == nil {
 +		ctx = context.Background()
@@ -121,21 +121,9 @@ index 2986f6abe..1a94a6614 100644
 +	return selected
 +}
 +
-+func withOpenAIRealtimeRESTSelection(ctx context.Context) context.Context {
-+	if ctx == nil {
-+		ctx = context.Background()
-+	}
-+	return context.WithValue(ctx, openAIRealtimeRESTSelectionContextKey{}, true)
-+}
-+
-+func openAIRealtimeRESTSelectionFromContext(ctx context.Context) bool {
-+	if ctx == nil {
-+		return false
-+	}
-+	selected, _ := ctx.Value(openAIRealtimeRESTSelectionContextKey{}).(bool)
-+	return selected
-+}
-+
+ func withOpenAIRealtimeRESTSelection(ctx context.Context) context.Context {
+@@ -110,2 +139,13 @@ func openAIRealtimeRESTSelectionFromContext(ctx context.Context) bool {
+ 
 +func openAIAudioTranscriptionAccountExplicitlySupportsModel(ctx context.Context, account *Account, requestedModel string) bool {
 +	if !openAIAudioTranscriptionSelectionFromContext(ctx) || openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
 +		return true
@@ -148,21 +136,22 @@ index 2986f6abe..1a94a6614 100644
 +}
 +
  type OpenAIAccountScheduleDecision struct {
-@@ -1768,2 +1825,8 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+@@ -1785,5 +1825,8 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
  	}
+-	if openAIRealtimeRESTSelectionFromContext(ctx) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
 +	if (openAIAudioTranscriptionSelectionFromContext(ctx) || openAIRealtimeRESTSelectionFromContext(ctx)) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
-+		return false, "audio_transcription_account_type"
-+	}
+ 		return false, "audio_transcription_account_type"
+ 	}
 +	if !openAIAudioTranscriptionAccountExplicitlySupportsModel(ctx, account, req.RequestedModel) {
 +		return false, "audio_transcription_model_not_supported"
 +	}
  	if req.RequirePrivacySet && !account.IsPrivacySet() {
-@@ -1799,3 +1862,3 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+@@ -1819,3 +1862,3 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
  	}
 -	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
 +	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
  		return false, "model_not_supported"
-@@ -2139,2 +2202,51 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
+@@ -2159,2 +2202,28 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
  
 +func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
 +	ctx context.Context,
@@ -190,30 +179,7 @@ index 2986f6abe..1a94a6614 100644
 +	return selection, decision, requestedModel, err
 +}
 +
-+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForRealtimeREST(
-+	ctx context.Context,
-+	groupID *int64,
-+	sessionHash string,
-+	excludedIDs map[int64]struct{},
-+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-+	return s.selectAccountWithScheduler(
-+		withOpenAIRealtimeRESTSelection(ctx),
-+		groupID,
-+		"",
-+		sessionHash,
-+		"",
-+		excludedIDs,
-+		OpenAIUpstreamTransportHTTPSSE,
-+		"",
-+		"",
-+		false,
-+		PlatformOpenAI,
-+		false,
-+		true,
-+	)
-+}
-+
- // selectAccountWithScheduler wraps selectAccountWithSchedulerOnce with a
+ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForRealtimeREST(
 diff --git a/backend/internal/service/openai_audio_transcriptions.go b/backend/internal/service/openai_audio_transcriptions.go
 new file mode 100644
 index 000000000..28d123a48
@@ -1886,19 +1852,20 @@ index 000000000..ecea9e349
 +	}
 +}
 diff --git a/backend/internal/service/openai_gateway_scheduling.go b/backend/internal/service/openai_gateway_scheduling.go
-index a90bad3e2..a3e3e00f5 100644
+index b34891efe..a3e3e00f5 100644
 --- a/backend/internal/service/openai_gateway_scheduling.go
 +++ b/backend/internal/service/openai_gateway_scheduling.go
-@@ -397,2 +397,8 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+@@ -397,5 +397,8 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
  	}
+-	if openAIRealtimeRESTSelectionFromContext(ctx) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
 +	if (openAIAudioTranscriptionSelectionFromContext(ctx) || openAIRealtimeRESTSelectionFromContext(ctx)) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
-+		return "endpoint_account_type"
-+	}
+ 		return "endpoint_account_type"
+ 	}
 +	if !openAIAudioTranscriptionAccountExplicitlySupportsModel(ctx, account, requestedModel) {
 +		return "audio_transcription_model_not_supported"
 +	}
  	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
-@@ -433,3 +439,3 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+@@ -436,3 +439,3 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
  	}
 -	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 +	if requestedModel != "" && !account.IsModelSupported(requestedModel) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
