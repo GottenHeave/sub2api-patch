@@ -190,8 +190,10 @@ jobs:
           - downstream Docker image publication
           - pnpm dependency caching in the Docker BuildKit build
           - singular \`input_token_details.cached_tokens\` parsing
+          - shared endpoint account-selection context and eligibility guards
           - OpenAI realtime WebSocket sessions and translations
           - OpenAI realtime REST sessions, translations, and calls
+          - prompt-audit classification for downstream gateway routes
           - moderation of OpenAI realtime client events
           - OpenAI audio transcription HTTP transport and routes
           - audio transcription scheduling, retry, diagnostics, and zero-cost usage logging
