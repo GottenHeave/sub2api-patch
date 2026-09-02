@@ -1,0 +1,313 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Wed, 2 Sep 2026 13:09:56 +0000
+Subject: [PATCH] feat: moderate OpenAI realtime client events
+
+
+diff --git a/backend/internal/handler/openai_live.go b/backend/internal/handler/openai_live.go
+index 1f6b6c49a..9c21c31e1 100644
+--- a/backend/internal/handler/openai_live.go
++++ b/backend/internal/handler/openai_live.go
+@@ -70,3 +70,3 @@ func (h *OpenAIGatewayHandler) Live(c *gin.Context) {
+ 		subject,
+-		service.ContentModerationProtocolOpenAIResponses,
++		service.ContentModerationProtocolOpenAIRealtime,
+ 		model,
+diff --git a/backend/internal/handler/openai_live_test.go b/backend/internal/handler/openai_live_test.go
+index 93fc10fff..451b63d64 100644
+--- a/backend/internal/handler/openai_live_test.go
++++ b/backend/internal/handler/openai_live_test.go
+@@ -10,2 +10,4 @@ import (
+ 
++	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
++	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+ 	"github.com/Wei-Shaw/sub2api/internal/service"
+@@ -94,2 +96,27 @@ func TestLiveEnabledForAPIKey(t *testing.T) {
+ 
++func TestLiveSecurityAuditUsesRealtimeProtocol(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	engine := blockingHandlerPromptEngine()
++	handler := &OpenAIGatewayHandler{securityAuditCoordinator: securityaudit.NewCoordinator(nil, engine)}
++	recorder := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(recorder)
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/live", bytes.NewBufferString(`{"sdp":"v=0\\r\\n","session":{"model":"gpt-realtime","instructions":"blocked realtime instructions"}}`))
++	c.Request.Header.Set("Content-Type", "application/json")
++	groupID := int64(4)
++	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
++		ID: 9, UserID: 7, User: &service.User{ID: 7}, GroupID: &groupID,
++		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, AllowLive: true},
++	})
++	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
++
++	handler.Live(c)
++
++	require.Equal(t, http.StatusForbidden, recorder.Code)
++	evaluated, _, requests := engine.snapshot()
++	require.Equal(t, 1, evaluated)
++	require.Len(t, requests, 1)
++	require.Equal(t, service.ContentModerationProtocolOpenAIRealtime, requests[0].Protocol)
++	require.Contains(t, string(requests[0].Body), "blocked realtime instructions")
++}
++
+ func TestLiveAttestationErrorIsExplicit(t *testing.T) {
+diff --git a/backend/internal/securityaudit/coordinator_test.go b/backend/internal/securityaudit/coordinator_test.go
+index 936f2a7c1..4ab31a144 100644
+--- a/backend/internal/securityaudit/coordinator_test.go
++++ b/backend/internal/securityaudit/coordinator_test.go
+@@ -42,2 +42,67 @@ func (f *fakePromptEngine) Evaluate(context.Context, Request) (*PromptDecision,
+ 
++type snapshotPromptEngine struct {
++	mode     Mode
++	snapshot PromptSnapshot
++	err      error
++	calls    atomic.Int64
++}
++
++func (e *snapshotPromptEngine) EffectiveMode() Mode { return e.mode }
++
++func (e *snapshotPromptEngine) Enqueue(_ context.Context, req Request) error {
++	e.snapshot, e.err = ExtractPromptSnapshot(req)
++	e.calls.Add(1)
++	return e.err
++}
++
++func (e *snapshotPromptEngine) Evaluate(_ context.Context, req Request) (*PromptDecision, error) {
++	e.snapshot, e.err = ExtractBlockingPromptSnapshot(req, false)
++	e.calls.Add(1)
++	if e.err != nil {
++		return nil, e.err
++	}
++	return &PromptDecision{Kind: DecisionAllow, AllowNextStage: true}, nil
++}
++
++func TestCoordinatorExtractsOpenAIRealtimeFramesInAsyncAndBlockingModes(t *testing.T) {
++	frames := []struct {
++		name string
++		body string
++		want string
++	}{
++		{
++			name: "session update",
++			body: `{"type":"session.update","session":{"instructions":"session instructions"}}`,
++			want: "session instructions",
++		},
++		{
++			name: "conversation item create",
++			body: `{"type":"conversation.item.create","item":{"role":"user","content":[{"type":"input_text","text":"conversation input"}]}}`,
++			want: "conversation input",
++		},
++		{
++			name: "response create",
++			body: `{"type":"response.create","response":{"input":[{"role":"user","content":[{"type":"input_text","text":"response input"}]}]}}`,
++			want: "response input",
++		},
++	}
++
++	for _, mode := range []Mode{ModeAsync, ModeBlocking} {
++		for _, frame := range frames {
++			t.Run(string(mode)+"/"+frame.name, func(t *testing.T) {
++				prompt := &snapshotPromptEngine{mode: mode}
++				decision := NewCoordinator(nil, prompt).Check(context.Background(), Request{
++					Protocol: "openai_realtime",
++					Body:     []byte(frame.body),
++				})
++
++				require.True(t, decision.AllowNextStage)
++				require.NoError(t, prompt.err)
++				require.Equal(t, int64(1), prompt.calls.Load())
++				require.Contains(t, prompt.snapshot.ScanText, frame.want)
++			})
++		}
++	}
++}
++
+ func TestCoordinatorModesAndPriority(t *testing.T) {
+diff --git a/backend/internal/securityaudit/prompt_snapshot.go b/backend/internal/securityaudit/prompt_snapshot.go
+index b47e84674..2f77d4c3a 100644
+--- a/backend/internal/securityaudit/prompt_snapshot.go
++++ b/backend/internal/securityaudit/prompt_snapshot.go
+@@ -94,2 +94,5 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
+ 		if frameType := stringValue(root["type"]); frameType != "" || protocol == "responses_websocket" {
++			if realtime := extractOpenAIRealtimeSegments(root); len(realtime) > 0 {
++				return realtime
++			}
+ 			if frameType != "response.create" {
+@@ -106,2 +109,4 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
+ 		return append(extractInstructions(root["instructions"]), extractResponses(root["input"])...)
++	case "openai_realtime", "realtime":
++		return extractOpenAIRealtimeSegments(root)
+ 	case "openai_images", "grok_media", "media", "images":
+@@ -122,2 +127,23 @@ func extractProtocolSegments(protocol string, document any) []promptSegment {
+ 
++func extractOpenAIRealtimeSegments(root map[string]any) []promptSegment {
++	if root == nil {
++		return nil
++	}
++	switch stringValue(root["type"]) {
++	case "session.update":
++		session, _ := root["session"].(map[string]any)
++		return extractInstructions(session["instructions"])
++	case "conversation.item.create":
++		return extractResponses(root["item"])
++	case "response.create":
++		response, _ := root["response"].(map[string]any)
++		if response != nil {
++			return append(extractInstructions(response["instructions"]), extractResponses(response["input"])...)
++		}
++		return append(extractInstructions(root["instructions"]), extractResponses(root["input"])...)
++	default:
++		return nil
++	}
++}
++
+ // clientInstructionRoles are roles a client may freely populate. Attackers can
+diff --git a/backend/internal/service/content_moderation.go b/backend/internal/service/content_moderation.go
+index a8cd4b93d..e8015ba40 100644
+--- a/backend/internal/service/content_moderation.go
++++ b/backend/internal/service/content_moderation.go
+@@ -816,2 +816,3 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
+ 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
++	input.Protocol = normalizeContentModerationProtocol(input.Protocol, input.Endpoint)
+ 	if s == nil || s.settingRepo == nil || s.repo == nil {
+@@ -1047,2 +1048,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
+ 
++func normalizeContentModerationProtocol(protocol string, endpoint string) string {
++	if protocol == ContentModerationProtocolOpenAIResponses && strings.EqualFold(strings.TrimSpace(endpoint), "/v1/realtime") {
++		return ContentModerationProtocolOpenAIRealtime
++	}
++	return protocol
++}
++
+ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) *ContentModerationDecision {
+diff --git a/backend/internal/service/content_moderation_input.go b/backend/internal/service/content_moderation_input.go
+index 73d5b6973..1e9dff174 100644
+--- a/backend/internal/service/content_moderation_input.go
++++ b/backend/internal/service/content_moderation_input.go
+@@ -28,2 +28,4 @@ func ExtractContentModerationInput(protocol string, body []byte) ContentModerati
+ 		collectLastResponsesInput(gjson.GetBytes(body, "input"), &parts, &images)
++	case ContentModerationProtocolOpenAIRealtime:
++		collectRealtimeEventInput(gjson.ParseBytes(body), &parts, &images)
+ 	case ContentModerationProtocolGemini:
+@@ -173,2 +175,64 @@ func responseItemHasModerationText(item gjson.Result) bool {
+ 
++func collectRealtimeEventInput(event gjson.Result, parts *[]string, images *[]string) {
++	eventType := strings.ToLower(strings.TrimSpace(event.Get("type").String()))
++	switch eventType {
++	case "session.update":
++		collectRealtimeSessionInput(event.Get("session"), parts, images)
++	case "conversation.item.create":
++		collectRealtimeConversationItemInput(event.Get("item"), parts, images)
++	case "response.create":
++		collectLastResponsesInput(event.Get("response.input"), parts, images)
++		if normalizeContentModerationText(strings.Join(*parts, "\n")) == "" && len(*images) == 0 {
++			collectLastResponsesInput(event.Get("input"), parts, images)
++		}
++	default:
++		collectRealtimeSessionInput(event.Get("session"), parts, images)
++		collectRealtimeConversationItemInput(event.Get("item"), parts, images)
++	}
++}
++
++func collectRealtimeSessionInput(session gjson.Result, parts *[]string, images *[]string) {
++	if !session.IsObject() {
++		return
++	}
++	addModerationText(parts, session.Get("instructions").String())
++}
++
++func collectRealtimeConversationItemInput(item gjson.Result, parts *[]string, images *[]string) {
++	if !item.IsObject() {
++		return
++	}
++	role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
++	if role != "" && role != "user" {
++		return
++	}
++	collectRealtimeContentValue(item.Get("content"), parts, images)
++}
++
++func collectRealtimeContentValue(value gjson.Result, parts *[]string, images *[]string) {
++	switch {
++	case !value.Exists():
++		return
++	case value.Type == gjson.String:
++		addModerationText(parts, value.String())
++	case value.IsArray():
++		value.ForEach(func(_, item gjson.Result) bool {
++			collectRealtimeContentValue(item, parts, images)
++			return true
++		})
++	case value.IsObject():
++		typ := strings.ToLower(strings.TrimSpace(value.Get("type").String()))
++		switch typ {
++		case "image_url", "input_image", "image":
++			collectContentValue(value, parts, images)
++			return
++		}
++		addModerationText(parts, value.Get("text").String())
++		addModerationText(parts, value.Get("transcript").String())
++		if value.Get("content").Exists() {
++			collectRealtimeContentValue(value.Get("content"), parts, images)
++		}
++	}
++}
++
+ func collectLastGeminiContent(contents gjson.Result, parts *[]string, images *[]string) {
+diff --git a/backend/internal/service/content_moderation_test.go b/backend/internal/service/content_moderation_test.go
+index 1cacc6747..e0ee4340c 100644
+--- a/backend/internal/service/content_moderation_test.go
++++ b/backend/internal/service/content_moderation_test.go
+@@ -1012,2 +1012,53 @@ func TestExtractContentModerationInput_OpenAIResponsesCodexPayloadUsesLastUserMe
+ 
++func TestExtractContentModerationInput_OpenAIRealtimeSessionUpdateExtractsInstructions(t *testing.T) {
++	body := []byte(`{
++		"type":"session.update",
++		"session":{
++			"model":"gpt-realtime",
++			"instructions":"moderate these realtime instructions"
++		}
++	}`)
++
++	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIRealtime, body)
++
++	require.Equal(t, "moderate these realtime instructions", input.Text)
++	require.Empty(t, input.Images)
++}
++
++func TestExtractContentModerationInput_OpenAIRealtimeConversationItemExtractsContent(t *testing.T) {
++	body := []byte(`{
++		"type":"conversation.item.create",
++		"item":{
++			"type":"message",
++			"role":"user",
++			"content":[
++				{"type":"input_text","text":"moderate realtime content text"},
++				{"type":"input_audio","transcript":"moderate realtime transcript"}
++			]
++		}
++	}`)
++
++	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIRealtime, body)
++
++	require.Equal(t, "moderate realtime content text moderate realtime transcript", input.Text)
++	require.Empty(t, input.Images)
++}
++
++func TestExtractContentModerationInput_OpenAIResponsesDoesNotUseRealtimeFields(t *testing.T) {
++	body := []byte(`{
++		"type":"session.update",
++		"session":{"instructions":"responses extractor must ignore realtime instructions"}
++	}`)
++
++	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIResponses, body)
++
++	require.Empty(t, input.Text)
++	require.Empty(t, input.Images)
++}
++
++func TestContentModerationProtocolRealtimeEndpointUsesRealtimeExtractor(t *testing.T) {
++	require.Equal(t, ContentModerationProtocolOpenAIRealtime, normalizeContentModerationProtocol(ContentModerationProtocolOpenAIResponses, "/v1/realtime"))
++	require.Equal(t, ContentModerationProtocolOpenAIResponses, normalizeContentModerationProtocol(ContentModerationProtocolOpenAIResponses, "/v1/responses"))
++}
++
+ func TestContentModerationCheck_OpenAIResponsesRecordsNonHitForCodexPayload(t *testing.T) {

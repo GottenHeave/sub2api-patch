@@ -13,11 +13,12 @@ Patch topics, in replay order:
 3. singular `input_token_details.cached_tokens` parsing
 4. shared endpoint account-selection context and eligibility guards
 5. OpenAI realtime WebSocket sessions and translations
-6. OpenAI realtime REST sessions, calls, and moderation
+6. OpenAI realtime REST sessions, translations, and calls
 7. prompt-audit classification for downstream gateway routes
-8. OpenAI audio transcription HTTP transport and routes
-9. audio transcription scheduling, retry, diagnostics, and zero-cost usage logging
-10. caller-provided Codex system-prompt preservation
+8. moderation of OpenAI realtime client events
+9. OpenAI audio transcription HTTP transport and routes
+10. audio transcription scheduling, retry, diagnostics, and zero-cost usage logging
+11. caller-provided Codex system-prompt preservation
 
 These patches are synthetic capability patches rebuilt from the approved final
 tree. Patch 4 owns the shared request-context markers and account eligibility
@@ -30,9 +31,10 @@ Selectable dependency closures:
 - patch 1 is the standalone Docker publication workflow
 - patch 2 is the standalone pnpm BuildKit cache change
 - patch 3 is the standalone cached-token parser
-- patches 4 through 7 are the complete realtime capability without transcription
-- patches 4 and 7 through 9 are the complete transcription capability without realtime
-- patch 10 is the standalone Codex prompt-preservation guard
+- patches 4 through 7 are the realtime transport closure without moderation or transcription
+- patch 8 adds realtime moderation to the transport closure
+- patches 4, 7, 9, and 10 are the complete transcription capability without realtime
+- patch 11 is the standalone Codex prompt-preservation guard
 
 The Docker topics preserve the complete downstream publication workflow and
 the pnpm BuildKit cache. The cache-token parser accepts the singular OpenAI
@@ -56,10 +58,11 @@ frontend control.
 
 Replay and subset evidence:
 
-- all ten patches replay to the same Git tree as integration commit `f50d520a5`
+- all eleven patches replay to the same Git tree as integration commit `f50d520a5`
 - the Docker workflow and pnpm cache patches apply independently
 - the cached-token parser patch passes its focused service test independently
-- the realtime closure passes handler, route, security-audit, service, and relay tests without transcription patches
+- the realtime transport closure compiles handler, route, service, and relay packages without moderation or transcription patches
+- the realtime moderation patch changes only moderation, security-audit, and live-hook files and tests
 - the transcription closure compiles handler, route, and service packages without realtime patches
 - the Codex patch passes focused service tests independently
 - the full replay passes `go test ./...`
