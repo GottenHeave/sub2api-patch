@@ -14,6 +14,17 @@ body_patterns = [
     re.compile(r"/issues/[0-9]+"),
     re.compile(r"/pull/[0-9]+"),
 ]
+diff_metadata_prefixes = (
+    "old mode ",
+    "new mode ",
+    "deleted file mode ",
+    "new file mode ",
+    "copy from ",
+    "rename from ",
+    "similarity index ",
+    "dissimilarity index ",
+    "index ",
+)
 
 
 def sanitize(lines: list[str]) -> list[str]:
@@ -28,17 +39,19 @@ def sanitize(lines: list[str]) -> list[str]:
 
 
 def downstream_text(lines: list[str]) -> str:
-    selected: list[str] = []
-    in_diff = False
-    for line in lines:
-        if line.startswith("diff --git "):
-            in_diff = True
-            selected.append(line)
-        elif not in_diff:
-            selected.append(line)
-        elif line.startswith("+") and not line.startswith("+++ "):
+    diff_start = len(lines)
+    for index in range(len(lines) - 1):
+        if lines[index].startswith("diff --git ") and lines[index + 1].startswith(
+            diff_metadata_prefixes
+        ):
+            diff_start = index
+            break
+
+    selected = lines[:diff_start]
+    for line in lines[diff_start:]:
+        if line.startswith("+") and not line.startswith("+++ "):
             selected.append(line[1:])
-        elif line.startswith(("+++ ", "rename to ", "copy to ")):
+        elif line.startswith(("rename to ", "copy to ")):
             selected.append(line)
     return "".join(selected)
 
