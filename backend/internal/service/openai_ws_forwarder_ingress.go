@@ -149,6 +149,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				firstClientMessage,
 				hooks,
 				wsDecision,
+				"/v1/responses",
+				"",
 			)
 		case OpenAIWSIngressModeHTTPBridge:
 			forceHTTPBridge = true
@@ -1944,4 +1946,47 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		turn++
 	}
+}
+
+// ProxyRealtimeWebSocketFromClient relays an OpenAI Realtime connection over
+// the existing WebSocket v2 transport without Responses protocol conversion.
+func (s *OpenAIGatewayService) ProxyRealtimeWebSocketFromClient(
+	ctx context.Context,
+	c *gin.Context,
+	clientConn *coderws.Conn,
+	account *Account,
+	token string,
+	firstClientMessage []byte,
+	model string,
+	upstreamEndpoint string,
+	hooks *OpenAIWSIngressHooks,
+) error {
+	if s == nil {
+		return errors.New("service is nil")
+	}
+	if c == nil {
+		return errors.New("gin context is nil")
+	}
+	if clientConn == nil {
+		return errors.New("client websocket is nil")
+	}
+	if account == nil {
+		return errors.New("account is nil")
+	}
+	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "realtime websocket requires an OpenAI API key or OAuth account", nil)
+	}
+	if account.Type == AccountTypeOAuth && strings.TrimSpace(c.Query("call_id")) == "" {
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "OAuth realtime requires an existing WebRTC call_id", nil)
+	}
+	if s.settingService != nil {
+		if settings, err := s.settingService.GetOpenAIFastPolicySettings(ctx); err == nil && settings != nil {
+			ctx = withOpenAIFastPolicyContext(ctx, settings)
+		}
+	}
+	wsDecision := OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportRealtimeWebsocket, Reason: "realtime"}
+	if endpoint := strings.TrimRight(strings.TrimSpace(upstreamEndpoint), "/"); endpoint != "/v1/realtime" && endpoint != "/v1/realtime/translations" {
+		upstreamEndpoint = "/v1/realtime"
+	}
+	return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision, upstreamEndpoint, model)
 }
