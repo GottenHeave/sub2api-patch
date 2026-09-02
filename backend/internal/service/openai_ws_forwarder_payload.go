@@ -75,6 +75,109 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
 	return parsed.String(), nil
 }
 
+func (s *OpenAIGatewayService) buildOpenAIRealtimeWSURL(account *Account, model string) (string, error) {
+	return s.buildOpenAIRealtimeWSURLForEndpoint(account, "/v1/realtime", model)
+}
+
+type openAIRealtimeCallAccountContextKey struct{}
+
+func OpenAIRealtimeCallSessionHash(callID string) string {
+	return "openai-realtime-call|" + strings.TrimSpace(callID)
+}
+
+func (s *OpenAIGatewayService) WithOpenAIRealtimeCallAccount(ctx context.Context, groupID *int64, callID string) context.Context {
+	if strings.TrimSpace(callID) == "" {
+		return ctx
+	}
+	accountID, err := s.getStickySessionAccountID(ctx, groupID, OpenAIRealtimeCallSessionHash(callID))
+	if err != nil || accountID <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, openAIRealtimeCallAccountContextKey{}, accountID)
+}
+
+func openAIRealtimeWSQuery(target string, c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return target
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return target
+	}
+	query := parsed.Query()
+	for _, key := range []string{"intent", "architecture", "call_id"} {
+		if value := c.Request.URL.Query().Get(key); value != "" {
+			query.Set(key, value)
+		}
+	}
+	if query.Get("call_id") != "" {
+		query.Del("model")
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func (s *OpenAIGatewayService) buildOpenAIRealtimeTranslationWSURL(account *Account, model string) (string, error) {
+	return s.buildOpenAIRealtimeWSURLForEndpoint(account, "/v1/realtime/translations", model)
+}
+
+func (s *OpenAIGatewayService) buildOpenAIWSURL(account *Account, endpoint, model string) (string, error) {
+	if isOpenAIRealtimeWSEndpoint(endpoint) {
+		return s.buildOpenAIRealtimeWSURLForEndpoint(account, endpoint, model)
+	}
+	return s.buildOpenAIResponsesWSURL(account)
+}
+
+func isOpenAIRealtimeWSEndpoint(endpoint string) bool {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	return endpoint == "/v1/realtime" || endpoint == "/v1/realtime/translations"
+}
+
+func (s *OpenAIGatewayService) buildOpenAIRealtimeWSURLForEndpoint(account *Account, endpoint, model string) (string, error) {
+	if account == nil {
+		return "", errors.New("account is nil")
+	}
+	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
+		return "", errors.New("realtime websocket requires an OpenAI API key or OAuth account")
+	}
+
+	baseURL := "https://api.openai.com"
+	if account.Type == AccountTypeAPIKey && strings.TrimSpace(account.GetOpenAIBaseURL()) != "" {
+		validatedURL, err := s.validateUpstreamBaseURL(account.GetOpenAIBaseURL())
+		if err != nil {
+			return "", err
+		}
+		baseURL = validatedURL
+	}
+	parsed, err := url.Parse(buildOpenAIEndpointURL(baseURL, endpoint))
+	if err != nil {
+		return "", fmt.Errorf("invalid target url: %w", err)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		parsed.Scheme = "wss"
+	case "http":
+		parsed.Scheme = "ws"
+	case "wss", "ws":
+	default:
+		return "", fmt.Errorf("unsupported scheme for ws: %s", parsed.Scheme)
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		query := parsed.Query()
+		query.Set("model", model)
+		parsed.RawQuery = query.Encode()
+	}
+	return parsed.String(), nil
+}
+
+func isOpenAIRealtimeRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	path := strings.TrimRight(c.Request.URL.Path, "/")
+	return strings.Contains(path, "/v1/realtime") || strings.Contains(strings.TrimRight(c.FullPath(), "/"), "/v1/realtime")
+}
+
 func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	ctx context.Context,
 	c *gin.Context,
@@ -154,11 +257,19 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 	}
 
-	betaValue := openAIWSBetaV2Value
-	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
-		betaValue = openAIWSBetaV1Value
+	if !isOpenAIRealtimeRequest(c) {
+		betaValue := openAIWSBetaV2Value
+		if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
+			betaValue = openAIWSBetaV1Value
+		}
+		headers.Set("OpenAI-Beta", betaValue)
+	} else {
+		for _, key := range []string{"OpenAI-Alpha", "OpenAI-Beta", "x-session-id", "x-oai-attestation"} {
+			if value := c.GetHeader(key); value != "" {
+				headers.Set(key, value)
+			}
+		}
 	}
-	headers.Set("OpenAI-Beta", betaValue)
 
 	customUA := ""
 	if account != nil {
