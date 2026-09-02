@@ -325,6 +325,66 @@ func TestParseUsageAndEnrichCoverage(t *testing.T) {
 	enrichResult(nil, state, 0)
 }
 
+func TestParseUsageAndAccumulateExcludesRealtimeAudioFromAggregateTotals(t *testing.T) {
+	state := &relayState{}
+	usage := parseUsageAndAccumulate(
+		state,
+		[]byte(`{"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":7,"input_token_details":{"text_tokens":4,"cached_tokens":3,"audio_tokens":8},"output_token_details":{"text_tokens":2,"audio_tokens":5}}}}`),
+		"response.completed",
+		nil,
+	)
+
+	require.Equal(t, 4, usage.InputTokens)
+	require.Equal(t, 2, usage.OutputTokens)
+	require.Equal(t, 3, usage.CacheReadInputTokens)
+	finalizeRelayTurnUsage(state)
+	require.Equal(t, 4, state.usage.InputTokens)
+	require.Equal(t, 2, state.usage.OutputTokens)
+	require.Equal(t, 3, state.usage.CacheReadInputTokens)
+}
+
+func TestParseUsageAndAccumulateExcludesRealtimeCachedAudioFromCacheReadTokens(t *testing.T) {
+	state := &relayState{}
+	usage := parseUsageAndAccumulate(
+		state,
+		[]byte(`{"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":2,"input_token_details":{"text_tokens":8,"audio_tokens":4,"cached_tokens":10,"cached_tokens_details":{"text_tokens":6,"audio_tokens":4}}}}}}`),
+		"response.completed",
+		nil,
+	)
+
+	require.Equal(t, 8, usage.InputTokens)
+	require.Equal(t, 6, usage.CacheReadInputTokens)
+	finalizeRelayTurnUsage(state)
+	require.Equal(t, 6, state.usage.CacheReadInputTokens)
+}
+
+func TestParseUsageAndAccumulatePreservesNonAudioImageAggregateWithTextDetails(t *testing.T) {
+	state := &relayState{}
+	usage := parseUsageAndAccumulate(
+		state,
+		[]byte(`{"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":196,"input_token_details":{"text_tokens":12},"output_tokens_details":{"text_tokens":10,"image_tokens":186}}}}}`),
+		"response.completed",
+		nil,
+	)
+
+	require.Equal(t, 12, usage.InputTokens)
+	require.Equal(t, 196, usage.OutputTokens)
+	require.Equal(t, 186, usage.ImageOutputTokens)
+}
+
+func TestParseUsageAndAccumulatePreservesNonAudioReasoningAggregateWithTextDetails(t *testing.T) {
+	state := &relayState{}
+	usage := parseUsageAndAccumulate(
+		state,
+		[]byte(`{"type":"response.completed","response":{"usage":{"input_tokens":32,"output_tokens":119,"total_tokens":151,"input_token_details":{"text_tokens":32},"output_token_details":{"text_tokens":9,"reasoning_tokens":110}}}}}`),
+		"response.completed",
+		nil,
+	)
+
+	require.Equal(t, 32, usage.InputTokens)
+	require.Equal(t, 119, usage.OutputTokens)
+}
+
 func TestParseUsageAndAccumulateIncludesIndependentReasoningTokens(t *testing.T) {
 	t.Parallel()
 
