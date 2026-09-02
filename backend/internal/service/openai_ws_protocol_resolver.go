@@ -7,6 +7,8 @@ type OpenAIUpstreamTransport string
 
 const (
 	OpenAIUpstreamTransportAny                  OpenAIUpstreamTransport = ""
+	OpenAIUpstreamTransportRealtimeWebsocket    OpenAIUpstreamTransport = "realtime_websocket"
+	OpenAIUpstreamTransportRealtimeSideband     OpenAIUpstreamTransport = "realtime_sideband"
 	OpenAIUpstreamTransportHTTPSSE              OpenAIUpstreamTransport = "http_sse"
 	OpenAIUpstreamTransportResponsesWebsocket   OpenAIUpstreamTransport = "responses_websockets"
 	OpenAIUpstreamTransportResponsesWebsocketV2 OpenAIUpstreamTransport = "responses_websockets_v2"
