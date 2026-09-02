@@ -66,7 +66,7 @@ func (h *OpenAIGatewayHandler) RealtimeREST(c *gin.Context) {
 	setOpsRequestContext(c, parsed.Model, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
 
-	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, "openai_realtime", parsed.Model, body); decision != nil && !decision.AllowNextStage {
+	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIRealtime, parsed.Model, body); decision != nil && !decision.AllowNextStage {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}
