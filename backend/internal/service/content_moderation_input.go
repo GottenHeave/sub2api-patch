@@ -41,6 +41,8 @@ func extractContentModerationInput(protocol string, body []byte, filterReminders
 		collector.collectLastRoleMessage(gjson.GetBytes(body, "messages"), "user", &parts, &images)
 	case ContentModerationProtocolOpenAIResponses:
 		collector.collectLastResponsesInput(gjson.GetBytes(body, "input"), &parts, &images)
+	case ContentModerationProtocolOpenAIRealtime:
+		collector.collectRealtimeEventInput(gjson.ParseBytes(body), &parts, &images)
 	case ContentModerationProtocolGemini:
 		collector.collectLastGeminiContent(gjson.GetBytes(body, "contents"), &parts, &images)
 	case ContentModerationProtocolOpenAIImages:
@@ -186,6 +188,68 @@ func (collector moderationTextCollector) responseItemHasModerationText(item gjso
 		collector.collectContentValue(item, &parts, &images)
 	}
 	return normalizeContentModerationText(strings.Join(parts, "\n")) != "" || len(images) > 0
+}
+
+func (collector moderationTextCollector) collectRealtimeEventInput(event gjson.Result, parts *[]string, images *[]string) {
+	eventType := strings.ToLower(strings.TrimSpace(event.Get("type").String()))
+	switch eventType {
+	case "session.update":
+		collector.collectRealtimeSessionInput(event.Get("session"), parts, images)
+	case "conversation.item.create":
+		collector.collectRealtimeConversationItemInput(event.Get("item"), parts, images)
+	case "response.create":
+		collector.collectLastResponsesInput(event.Get("response.input"), parts, images)
+		if normalizeContentModerationText(strings.Join(*parts, "\n")) == "" && len(*images) == 0 {
+			collector.collectLastResponsesInput(event.Get("input"), parts, images)
+		}
+	default:
+		collector.collectRealtimeSessionInput(event.Get("session"), parts, images)
+		collector.collectRealtimeConversationItemInput(event.Get("item"), parts, images)
+	}
+}
+
+func (collector moderationTextCollector) collectRealtimeSessionInput(session gjson.Result, parts *[]string, images *[]string) {
+	if !session.IsObject() {
+		return
+	}
+	collector.addModerationText(parts, session.Get("instructions").String())
+}
+
+func (collector moderationTextCollector) collectRealtimeConversationItemInput(item gjson.Result, parts *[]string, images *[]string) {
+	if !item.IsObject() {
+		return
+	}
+	role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+	if role != "" && role != "user" {
+		return
+	}
+	collector.collectRealtimeContentValue(item.Get("content"), parts, images)
+}
+
+func (collector moderationTextCollector) collectRealtimeContentValue(value gjson.Result, parts *[]string, images *[]string) {
+	switch {
+	case !value.Exists():
+		return
+	case value.Type == gjson.String:
+		collector.addModerationText(parts, value.String())
+	case value.IsArray():
+		value.ForEach(func(_, item gjson.Result) bool {
+			collector.collectRealtimeContentValue(item, parts, images)
+			return true
+		})
+	case value.IsObject():
+		typ := strings.ToLower(strings.TrimSpace(value.Get("type").String()))
+		switch typ {
+		case "image_url", "input_image", "image":
+			collector.collectContentValue(value, parts, images)
+			return
+		}
+		collector.addModerationText(parts, value.Get("text").String())
+		collector.addModerationText(parts, value.Get("transcript").String())
+		if value.Get("content").Exists() {
+			collector.collectRealtimeContentValue(value.Get("content"), parts, images)
+		}
+	}
 }
 
 func (collector moderationTextCollector) collectLastGeminiContent(contents gjson.Result, parts *[]string, images *[]string) {
