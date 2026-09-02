@@ -94,6 +94,63 @@ type OpenAIAccountScheduleRequest struct {
 	ExcludedIDs    map[int64]struct{}
 }
 
+type openAIAudioTranscriptionSelectionContextKey struct{}
+type openAIAudioTranscriptionKnownModelSelectionContextKey struct{}
+type openAIRealtimeRESTSelectionContextKey struct{}
+
+func withOpenAIAudioTranscriptionSelection(ctx context.Context, knownModel bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithValue(ctx, openAIAudioTranscriptionSelectionContextKey{}, true)
+	if knownModel {
+		return context.WithValue(ctx, openAIAudioTranscriptionKnownModelSelectionContextKey{}, true)
+	}
+	return ctx
+}
+
+func openAIAudioTranscriptionSelectionFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	selected, _ := ctx.Value(openAIAudioTranscriptionSelectionContextKey{}).(bool)
+	return selected
+}
+
+func openAIAudioTranscriptionKnownModelSelectionFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	selected, _ := ctx.Value(openAIAudioTranscriptionKnownModelSelectionContextKey{}).(bool)
+	return selected
+}
+
+func withOpenAIRealtimeRESTSelection(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, openAIRealtimeRESTSelectionContextKey{}, true)
+}
+
+func openAIRealtimeRESTSelectionFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	selected, _ := ctx.Value(openAIRealtimeRESTSelectionContextKey{}).(bool)
+	return selected
+}
+
+func openAIAudioTranscriptionAccountExplicitlySupportsModel(ctx context.Context, account *Account, requestedModel string) bool {
+	if !openAIAudioTranscriptionSelectionFromContext(ctx) || openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
+		return true
+	}
+	if account == nil || strings.TrimSpace(requestedModel) == "" {
+		return false
+	}
+	_, matched := account.ResolveMappedModel(requestedModel)
+	return matched
+}
+
 type OpenAIAccountScheduleDecision struct {
 	Layer               string
 	StickyPreviousHit   bool
@@ -1772,6 +1829,12 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if account == nil {
 		return false, "account_nil"
 	}
+	if (openAIAudioTranscriptionSelectionFromContext(ctx) || openAIRealtimeRESTSelectionFromContext(ctx)) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
+		return false, "audio_transcription_account_type"
+	}
+	if !openAIAudioTranscriptionAccountExplicitlySupportsModel(ctx, account, req.RequestedModel) {
+		return false, "audio_transcription_model_not_supported"
+	}
 	if req.RequirePrivacySet && !account.IsPrivacySet() {
 		return false, "privacy_not_set"
 	}
@@ -1803,7 +1866,7 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	}) {
 		return false, "shadow_parent_unhealthy"
 	}
-	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
 		return false, "model_not_supported"
 	}
 	if req.GroupID != nil && s != nil && s.service != nil &&
@@ -2141,6 +2204,56 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false, false)
 	}
 	return selection, decision, err
+}
+
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForAudioTranscriptions(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, string, error) {
+	selectionCtx := withOpenAIAudioTranscriptionSelection(ctx, false)
+	selection, decision, err := s.selectAccountWithScheduler(
+		selectionCtx,
+		groupID,
+		"",
+		sessionHash,
+		requestedModel,
+		excludedIDs,
+		OpenAIUpstreamTransportHTTPSSE,
+		"",
+		"",
+		false,
+		PlatformOpenAI,
+		false,
+		false,
+	)
+	return selection, decision, requestedModel, err
+}
+
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForRealtimeREST(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return s.selectAccountWithScheduler(
+		withOpenAIRealtimeRESTSelection(ctx),
+		groupID,
+		"",
+		sessionHash,
+		requestedModel,
+		excludedIDs,
+		OpenAIUpstreamTransportHTTPSSE,
+		"",
+		"",
+		false,
+		PlatformOpenAI,
+		false,
+		true,
+	)
 }
 
 // selectAccountWithScheduler wraps selectAccountWithSchedulerOnce with a
