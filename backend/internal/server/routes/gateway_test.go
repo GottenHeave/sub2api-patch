@@ -124,6 +124,33 @@ func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
 	}
 }
 
+func TestGatewayRoutesRealtimeDispatchMatrix(t *testing.T) {
+	openAIRouter := newGatewayRoutesTestRouter(service.PlatformOpenAI)
+	grokRouter := newGatewayRoutesTestRouter(service.PlatformGrok)
+
+	for _, path := range []string{
+		"/v1/realtime?model=gpt-realtime",
+		"/v1/realtime/translations?model=gpt-realtime-translate",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		openAIRouter.ServeHTTP(w, req)
+		require.Equal(t, http.StatusUpgradeRequired, w.Code, "OpenAI path=%s", path)
+	}
+
+	for _, path := range []string{"/v1/realtime?model=grok-realtime", "/realtime?model=grok-realtime"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		grokRouter.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "Grok path=%s", path)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/realtime?model=gpt-realtime", nil)
+	w := httptest.NewRecorder()
+	openAIRouter.ServeHTTP(w, req)
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
 func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
 	router := newGatewayRoutesTestRouter()
 	registered := make(map[string]bool)
