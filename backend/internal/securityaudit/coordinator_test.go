@@ -40,6 +40,71 @@ func (f *fakePromptEngine) Evaluate(context.Context, Request) (*PromptDecision, 
 	return f.decision, f.err
 }
 
+type snapshotPromptEngine struct {
+	mode     Mode
+	snapshot PromptSnapshot
+	err      error
+	calls    atomic.Int64
+}
+
+func (e *snapshotPromptEngine) EffectiveMode() Mode { return e.mode }
+
+func (e *snapshotPromptEngine) Enqueue(_ context.Context, req Request) error {
+	e.snapshot, e.err = ExtractPromptSnapshot(req)
+	e.calls.Add(1)
+	return e.err
+}
+
+func (e *snapshotPromptEngine) Evaluate(_ context.Context, req Request) (*PromptDecision, error) {
+	e.snapshot, e.err = ExtractBlockingPromptSnapshot(req, false)
+	e.calls.Add(1)
+	if e.err != nil {
+		return nil, e.err
+	}
+	return &PromptDecision{Kind: DecisionAllow, AllowNextStage: true}, nil
+}
+
+func TestCoordinatorExtractsOpenAIRealtimeFramesInAsyncAndBlockingModes(t *testing.T) {
+	frames := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "session update",
+			body: `{"type":"session.update","session":{"instructions":"session instructions"}}`,
+			want: "session instructions",
+		},
+		{
+			name: "conversation item create",
+			body: `{"type":"conversation.item.create","item":{"role":"user","content":[{"type":"input_text","text":"conversation input"}]}}`,
+			want: "conversation input",
+		},
+		{
+			name: "response create",
+			body: `{"type":"response.create","response":{"input":[{"role":"user","content":[{"type":"input_text","text":"response input"}]}]}}`,
+			want: "response input",
+		},
+	}
+
+	for _, mode := range []Mode{ModeAsync, ModeBlocking} {
+		for _, frame := range frames {
+			t.Run(string(mode)+"/"+frame.name, func(t *testing.T) {
+				prompt := &snapshotPromptEngine{mode: mode}
+				decision := NewCoordinator(nil, prompt).Check(context.Background(), Request{
+					Protocol: "openai_realtime",
+					Body:     []byte(frame.body),
+				})
+
+				require.True(t, decision.AllowNextStage)
+				require.NoError(t, prompt.err)
+				require.Equal(t, int64(1), prompt.calls.Load())
+				require.Contains(t, prompt.snapshot.ScanText, frame.want)
+			})
+		}
+	}
+}
+
 func TestCoordinatorModesAndPriority(t *testing.T) {
 	tests := []struct {
 		name           string
