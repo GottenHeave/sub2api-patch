@@ -36,18 +36,15 @@ def flatten_runs(payload):
     return payload.get('check_runs') or []
 
 
-def evaluate(commit, status, runs):
-    statuses = status.get('statuses') or []
-    relevant_statuses = [s for s in statuses if s.get('context') in required_names]
+def evaluate(runs):
     relevant_runs = [r for r in runs if r.get('name') in required_names]
-    present = {s.get('context') for s in relevant_statuses} | {r.get('name') for r in relevant_runs}
+    present = {r.get('name') for r in relevant_runs}
     missing = sorted(required_names - present)
-    bad_statuses = [s for s in relevant_statuses if s.get('state') not in ('success',)]
     bad_runs = [
         r for r in relevant_runs
-        if r.get('status') != 'completed' or r.get('conclusion') not in ('success', 'skipped', 'neutral')
+        if r.get('status') != 'completed' or r.get('conclusion') != 'success'
     ]
-    return relevant_statuses, relevant_runs, missing, bad_statuses, bad_runs
+    return relevant_runs, missing, bad_runs
 
 
 def fetch_json(path, default):
@@ -67,16 +64,22 @@ def fetch_checks(target_sha):
     return flatten_runs(json.loads(raw or '[{"check_runs":[]}]'))
 
 
-def ci_ready(commit, status, runs):
-    relevant_statuses, relevant_runs, missing, bad_statuses, bad_runs = evaluate(commit, status, runs)
-    return not missing and not bad_statuses and not bad_runs and (relevant_statuses or relevant_runs)
+def ci_ready(runs):
+    relevant_runs, missing, bad_runs = evaluate(runs)
+    return not missing and not bad_runs and relevant_runs
 
 
 def is_version_only_skip_ci(commit):
     message = commit.get('commit', {}).get('message', '')
+    subject = message.splitlines()[0] if message else ''
     files = commit.get('files') or []
-    changed = {file.get('filename') for file in files}
-    return '[skip ci]' in message.lower() and changed <= {'backend/cmd/server/VERSION'}
+    parents = commit.get('parents') or []
+    return (
+        '[skip ci]' in subject.lower()
+        and len(files) == 1
+        and files[0].get('filename') == 'backend/cmd/server/VERSION'
+        and len(parents) == 1
+    )
 
 
 def parent_sha(commit):
@@ -87,10 +90,9 @@ def parent_sha(commit):
 commit = load(commit_path, {})
 while commit:
     sha = commit['sha']
-    status = fetch_json(f'repos/{repo}/commits/{sha}/status', {})
     runs = fetch_checks(sha)
 
-    if ci_ready(commit, status, runs):
+    if ci_ready(runs):
         print(f'using upstream commit {sha[:12]} with passing required CI', file=sys.stderr)
         print(sha)
         break
@@ -100,12 +102,11 @@ while commit:
         print('no upstream commit with passing required CI was found', file=sys.stderr)
         sys.exit(1)
 
-    relevant_statuses, relevant_runs, _, _, _ = evaluate(commit, status, runs)
-    if not relevant_statuses and not relevant_runs and is_version_only_skip_ci(commit):
+    relevant_runs, _, _ = evaluate(runs)
+    if not relevant_runs and is_version_only_skip_ci(commit):
         parent_commit = fetch_json(f'repos/{repo}/commits/{parent}', {})
-        parent_status = fetch_json(f'repos/{repo}/commits/{parent}/status', {})
         parent_runs = fetch_checks(parent)
-        if ci_ready(parent_commit, parent_status, parent_runs):
+        if parent_commit.get('sha') == parent and ci_ready(parent_runs):
             print(
                 f'using version-only upstream commit {sha[:12]} with parent {parent[:12]} CI',
                 file=sys.stderr,
