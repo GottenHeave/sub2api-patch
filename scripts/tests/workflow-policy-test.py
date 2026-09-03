@@ -43,9 +43,21 @@ TOPICS = (
     "preserve caller Codex system prompts",
 )
 
+PROVENANCE_FIELDS = (
+    "patchset_sha",
+    "upstream_source_sha",
+    "mirror_candidate_sha",
+    "replay_tree_sha",
+    "validation_conclusion",
+    "originating_repository",
+    "originating_workflow_path",
+    "originating_run_id",
+    "originating_run_attempt",
+)
+
 MUTATION_RE = re.compile(
     r"(?:"
-    r"\bgit\s+push\b|"
+    r"\bgit(?:\s+-C\s+\S+)?\s+push\b|"
     r"\bgh\s+(?:pr\s+(?:create|edit|merge)|release\s+create|workflow\s+run)\b|"
     r"\bgh\s+api\b[^\n]*(?:--method|-X)\s+(?:POST|PUT|PATCH|DELETE)\b|"
     r"\bdocker\s+(?:push|buildx\s+build\b[^\n]*--push)\b"
@@ -296,6 +308,9 @@ class WorkflowModel:
                     raise AssertionError(f"step in {job_id} must be a mapping")
                 yield job_id, step
 
+    def job_steps(self, job_id: str) -> list[dict[str, Any]]:
+        return [step for current_id, step in self.all_steps() if current_id == job_id]
+
     def job_text(self, job_id: str) -> str:
         job = self.jobs[job_id]
         parts = [job_id, str(job.get("name") or ""), str(job.get("uses") or "")]
@@ -400,6 +415,49 @@ def assert_full_sha(test: unittest.TestCase, expression: str, field: str) -> Non
     test.assertRegex(expression, r"[0-9a-f]{40}|github\.(?:event\.after|sha)|needs\.")
 
 
+def step_mutates(step: dict[str, Any]) -> bool:
+    if MUTATION_RE.search(str(step.get("run") or "")):
+        return True
+    uses = str(step.get("uses") or "")
+    options = step.get("with") or {}
+    return (
+        "docker/build-push-action" in uses
+        and isinstance(options, dict)
+        and options.get("push") is True
+    )
+
+
+def concurrency_cancel_value(value: Any, invocation_mode: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    expression = re.sub(r"^\s*\$\{\{|\}\}\s*$", "", str(value)).strip()
+    not_sync = re.fullmatch(
+        r"inputs\.invocation_mode\s*!=\s*['\"]sync['\"]", expression
+    )
+    if not_sync:
+        return invocation_mode != "sync"
+    is_sync = re.fullmatch(
+        r"inputs\.invocation_mode\s*==\s*['\"]sync['\"]", expression
+    )
+    if is_sync:
+        return invocation_mode == "sync"
+    raise AssertionError(f"unsupported cancel-in-progress expression: {value}")
+
+
+def concurrency_group_value(
+    value: Any, invocation_mode: str, immutable_id: str
+) -> str:
+    expression = str(value)
+    groups = re.findall(r"format\(['\"]([^'\"]+)['\"]", expression)
+    if invocation_mode == "sync":
+        choices = [group for group in groups if "sync-validation" in group]
+    else:
+        choices = [group for group in groups if "patch-validation" in group]
+    if len(choices) != 1 or "inputs.invocation_mode" not in expression:
+        raise AssertionError(f"unmodelled validation concurrency group: {value}")
+    return choices[0].replace("{0}", immutable_id)
+
+
 class WorkflowPolicyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -479,24 +537,10 @@ class WorkflowPolicyTest(unittest.TestCase):
         self.assertEqual(selected, event_sha)
 
     def test_provenance_bundle_has_distinct_typed_identities(self) -> None:
-        fields = (
-            "patchset_sha",
-            "upstream_source_sha",
-            "mirror_candidate_sha",
-            "replay_tree_sha",
-        )
         validation_text = self.validation.text
-        for field in fields:
+        for field in PROVENANCE_FIELDS:
             with self.subTest(field=field):
                 self.assertIn(field, validation_text)
-        for field in (
-            "repository",
-            "workflow",
-            "run_id",
-            "run_attempt",
-            "conclusion",
-        ):
-            self.assertRegex(validation_text, rf"\b{field}\b")
         self.assertRegex(validation_text, r"full_sha[^\n]*\[0-9a-f\]\{40\}")
         self.assertIn("GITHUB_STEP_SUMMARY", validation_text)
         self.assertIn("actions/upload-artifact", validation_text)
@@ -510,6 +554,66 @@ class WorkflowPolicyTest(unittest.TestCase):
         self.assertEqual(len(set(fixture.values())), len(fixture))
         for field, value in fixture.items():
             assert_full_sha(self, f"{field}={value}", field)
+
+    def test_provenance_outputs_are_continuous_through_reusable_calls(self) -> None:
+        workflow_call = self.validation.triggers.get("workflow_call") or {}
+        self.assertIsInstance(workflow_call, dict)
+        call_outputs = workflow_call.get("outputs") or {}
+        validation_job_outputs = self.validation.jobs["validate"].get("outputs") or {}
+        release_job = find_call(self.sync, "auto-release.yml")
+        release_with = self.sync.jobs[release_job].get("with") or {}
+        release_call = self.release.triggers.get("workflow_call") or {}
+        release_inputs = release_call.get("inputs") or {}
+
+        for field in PROVENANCE_FIELDS:
+            with self.subTest(field=field):
+                self.assertIn(field, call_outputs)
+                self.assertIn(field, validation_job_outputs)
+                self.assertRegex(
+                    str(call_outputs[field].get("value") or ""),
+                    rf"jobs\.validate\.outputs\.{re.escape(field)}",
+                )
+                self.assertIn(field, release_with)
+                self.assertEqual(
+                    str(release_with[field]),
+                    f"${{{{ needs.validate.outputs.{field} }}}}",
+                )
+                self.assertIn(field, release_inputs)
+
+        release_guard = self.release.job_text("prepare-release")
+        origin_checks = {
+            "originating_repository": r"ORIGINATING_REPOSITORY.*GITHUB_REPOSITORY",
+            "originating_workflow_path": r"ORIGINATING_WORKFLOW_PATH.*sync-upstream\.yml",
+            "originating_run_id": r"ORIGINATING_RUN_ID.*GITHUB_RUN_ID",
+            "originating_run_attempt": r"ORIGINATING_RUN_ATTEMPT.*GITHUB_RUN_ATTEMPT",
+        }
+        for field, pattern in origin_checks.items():
+            with self.subTest(release_guard=field):
+                self.assertRegex(release_guard, re.compile(pattern, re.S))
+
+    def test_sync_patchset_resolution_is_bound_to_caller_sha(self) -> None:
+        prepare_text = self.sync.job_text("prepare-candidate")
+        self.assertRegex(
+            prepare_text,
+            r"(?:github\.sha|GITHUB_SHA)",
+        )
+        self.assertRegex(
+            prepare_text,
+            re.compile(
+                r"patchset_sha=.*(?:git/ref/heads/patchset|refs/heads/patchset)"
+                r".*\[\s*['\"]?\$patchset_sha['\"]?\s*=\s*['\"]?\$GITHUB_SHA",
+                re.S,
+            ),
+        )
+        checkout_refs = []
+        for step in self.sync.job_steps("prepare-candidate"):
+            if not str(step.get("uses") or "").startswith("actions/checkout@"):
+                continue
+            options = step.get("with") or {}
+            if options.get("path") == "sub2api-patch":
+                checkout_refs.append(str(options.get("ref") or ""))
+        self.assertEqual(len(checkout_refs), 1)
+        self.assertRegex(checkout_refs[0], r"steps\..*\.outputs\.patchset_sha")
 
     def test_trusted_sync_dag_and_gate_failure_reachability(self) -> None:
         validation_job = find_call(self.sync, "upstream-pr-check.yml")
@@ -609,11 +713,19 @@ class WorkflowPolicyTest(unittest.TestCase):
         self.assertIs(sync_concurrency.get("cancel-in-progress"), False)
 
         validation_concurrency = self.validation.concurrency
-        validation_group = str(validation_concurrency.get("group") or "")
-        self.assertIn("sub2api-patch-validation-", validation_group)
-        self.assertRegex(validation_group, r"patchset_sha|event\.after|github\.sha")
-        self.assertIs(validation_concurrency.get("cancel-in-progress"), True)
-        self.assertNotEqual(validation_group, sync_concurrency.get("group"))
+        group_expression = validation_concurrency.get("group")
+        cancel_expression = validation_concurrency.get("cancel-in-progress")
+        standalone_group = concurrency_group_value(
+            group_expression, "", "1" * 40
+        )
+        called_group = concurrency_group_value(group_expression, "sync", "12345")
+        self.assertTrue(concurrency_cancel_value(cancel_expression, ""))
+        self.assertFalse(concurrency_cancel_value(cancel_expression, "sync"))
+        self.assertIn("sub2api-patch-validation-", standalone_group)
+        self.assertIn("sub2api-sync-validation-", called_group)
+        self.assertNotEqual(standalone_group, called_group)
+        self.assertNotEqual(standalone_group, sync_concurrency.get("group"))
+        self.assertNotEqual(called_group, sync_concurrency.get("group"))
 
         running_sync = {
             "group": sync_concurrency["group"],
@@ -622,14 +734,93 @@ class WorkflowPolicyTest(unittest.TestCase):
         }
         later_sync = dict(running_sync, state="pending")
         push_validation = {
-            "group": validation_group.replace("patchset_sha", "1" * 40),
-            "cancel": validation_concurrency["cancel-in-progress"],
+            "group": standalone_group,
+            "cancel": concurrency_cancel_value(cancel_expression, ""),
             "state": "running",
         }
         self.assertFalse(running_sync["cancel"])
         self.assertEqual(running_sync["group"], later_sync["group"])
         self.assertNotEqual(running_sync["group"], push_validation["group"])
         self.assertIn(find_call(self.sync, "auto-release.yml"), self.sync.jobs)
+
+    def test_artifact_names_bind_run_id_and_attempt(self) -> None:
+        artifact_steps: list[tuple[str, str, dict[str, Any]]] = []
+        for model in self.models:
+            for _, step in model.all_steps():
+                uses = str(step.get("uses") or "")
+                if uses.startswith(("actions/upload-artifact@", "actions/download-artifact@")):
+                    artifact_steps.append((model.path.name, uses, step))
+        self.assertTrue(artifact_steps)
+        for workflow_name, uses, step in artifact_steps:
+            artifact_name = str((step.get("with") or {}).get("name") or "")
+            with self.subTest(workflow=workflow_name, action=uses, name=artifact_name):
+                self.assertIn("github.run_id", artifact_name)
+                self.assertIn("github.run_attempt", artifact_name)
+
+    def test_publication_prerequisites_and_late_identity_rechecks(self) -> None:
+        mutation_jobs = self.release.mutating_jobs()
+        self.assertEqual(len(mutation_jobs), 1)
+        mutation_job = next(iter(mutation_jobs))
+        mutation_steps = self.release.job_steps(mutation_job)
+        first_mutation = next(
+            index for index, step in enumerate(mutation_steps) if step_mutates(step)
+        )
+        ancestor_jobs = self.release.ancestors(mutation_job)
+
+        def action_precedes_mutation(action: str) -> bool:
+            for job_id, step in self.release.all_steps():
+                if action not in str(step.get("uses") or ""):
+                    continue
+                if job_id in ancestor_jobs:
+                    return True
+                if job_id == mutation_job and mutation_steps.index(step) < first_mutation:
+                    return True
+            return False
+
+        self.assertTrue(action_precedes_mutation("docker/setup-buildx-action"))
+        self.assertTrue(action_precedes_mutation("docker/login-action"))
+
+        image_index = next(
+            index
+            for index, step in enumerate(mutation_steps)
+            if "docker/build-push-action" in str(step.get("uses") or "")
+            and (step.get("with") or {}).get("push") is True
+        )
+        branch_tag_index = max(
+            index
+            for index, step in enumerate(mutation_steps[:image_index])
+            if re.search(
+                r"refs/heads/(?:\$\{?PATCHED_BRANCH\}?|patched)|refs/tags/\$?\{?VERSION",
+                str(step.get("run") or ""),
+            )
+            and step_mutates(step)
+        )
+        before_image = "\n".join(
+            str(step.get("run") or "")
+            for step in mutation_steps[branch_tag_index + 1 : image_index]
+        )
+        self.assertRegex(before_image, r"ls-remote[^\n]*(?:patched|PATCHED_BRANCH)")
+        self.assertRegex(
+            before_image,
+            r"(?:ls-remote|show-ref|gh api)[^\n]*(?:refs/tags|VERSION)",
+        )
+
+        release_index = next(
+            index
+            for index, step in enumerate(mutation_steps)
+            if re.search(r"\bgh release create\b", str(step.get("run") or ""))
+        )
+        release_step_run = str(mutation_steps[release_index].get("run") or "")
+        release_step_prefix = release_step_run.partition("gh release create")[0]
+        before_release = "\n".join(
+            str(step.get("run") or "")
+            for step in mutation_steps[branch_tag_index + 1 : release_index]
+        ) + "\n" + release_step_prefix
+        self.assertRegex(before_release, r"gh release list|repos/.*/releases")
+        self.assertRegex(
+            before_release,
+            r"(?:ls-remote|show-ref|gh api)[^\n]*(?:refs/tags|VERSION)",
+        )
 
     def test_post_validation_rechecks_and_compare_and_swap_guards(self) -> None:
         mutation_text = "\n".join(
