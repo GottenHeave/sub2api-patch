@@ -19,15 +19,42 @@ cat > "$fake_bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
-case "${1:-}:${2:-}" in
-  release:list)
+has_arg() {
+  local expected="$1"
+  shift
+  local arg
+  for arg in "$@"; do
+    [ "$arg" = "$expected" ] && return 0
+  done
+  return 1
+}
+
+[ "${1:-}" = api ] || {
+  printf 'expected gh api, got: %s\n' "$*" >&2
+  exit 43
+}
+has_arg --paginate "$@" || {
+  printf 'missing --paginate: %s\n' "$*" >&2
+  exit 44
+}
+
+case "${2:-}" in
+  'repos/example/downstream/releases?per_page=100')
+    has_arg '.[].tag_name' "$@" || {
+      printf 'release query does not select tag_name: %s\n' "$*" >&2
+      exit 45
+    }
     if [ "${FAKE_RELEASE_FAILURE:-false}" = true ]; then
       echo 'release lookup failed' >&2
       exit 41
     fi
     printf '%s' "${FAKE_RELEASES:-}"
     ;;
-  api:*)
+  'repos/example/downstream/git/matching-refs/tags/v0.2.0-patch.?per_page=100')
+    has_arg '.[].ref' "$@" || {
+      printf 'tag query does not select ref: %s\n' "$*" >&2
+      exit 46
+    }
     if [ "${FAKE_TAG_FAILURE:-false}" = true ]; then
       echo 'tag lookup failed' >&2
       exit 42
@@ -35,8 +62,8 @@ case "${1:-}:${2:-}" in
     printf '%s' "${FAKE_TAGS:-}"
     ;;
   *)
-    printf 'unexpected gh invocation: %s\n' "$*" >&2
-    exit 43
+    printf 'unexpected gh API endpoint: %s\n' "$*" >&2
+    exit 47
     ;;
 esac
 SH
@@ -73,6 +100,14 @@ FAKE_RELEASES='' FAKE_TAGS='' assert_version 'v0.2.0-patch.1'
 FAKE_RELEASES=$'v0.2.0-patch.2\nv0.2.0-patch.7\n' \
   FAKE_TAGS=$'refs/tags/v0.2.0-patch.4\nrefs/tags/v0.2.0-patch.9\n' \
   assert_version 'v0.2.0-patch.10'
+
+# Namespace checks must consume inputs larger than a pipe buffer completely.
+large_tags=''
+for counter in $(seq 1 2000); do
+  large_tags+="refs/tags/v0.2.0-patch.${counter}"$'\n'
+done
+FAKE_RELEASES='' FAKE_TAGS="$large_tags" \
+  assert_version 'v0.2.0-patch.2001'
 
 # Fetched local tags participate in collision avoidance too.
 git -C "$worktree" tag v0.2.0-patch.12

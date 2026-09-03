@@ -34,9 +34,11 @@ filter_versions() {
 }
 
 # A failed query leaves the namespace unknown, so it must stop versioning.
-release_rows="$(gh release list --repo "$release_repo" --limit 1000 \
-  --json tagName --jq '.[].tagName')"
-remote_tag_refs="$(gh api "repos/${release_repo}/git/matching-refs/tags/${prefix}" --jq '.[].ref')"
+release_rows="$(gh api "repos/${release_repo}/releases?per_page=100" \
+  --paginate --jq '.[].tag_name')"
+remote_tag_refs="$(gh api \
+  "repos/${release_repo}/git/matching-refs/tags/${prefix}?per_page=100" \
+  --paginate --jq '.[].ref')"
 local_tag_names="$(git tag --list "${prefix}*")"
 
 release_versions="$(filter_versions "$release_rows")"
@@ -53,7 +55,7 @@ else
 fi
 candidate="${base}-patch.${next}"
 
-if printf '%s\n' "$all_versions" | grep -Fxq "$candidate"; then
+if grep -Fxq "$candidate" <<< "$all_versions"; then
   echo "computed version already exists in ${release_repo}: ${candidate}" >&2
   exit 1
 fi

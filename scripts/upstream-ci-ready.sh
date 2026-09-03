@@ -60,7 +60,8 @@ def fetch_checks(target_sha):
             'gh', 'api', f'repos/{repo}/commits/{target_sha}/check-runs', '--paginate', '--slurp'
         ], text=True)
     except subprocess.CalledProcessError:
-        return []
+        print(f'failed to fetch check runs for {target_sha}', file=sys.stderr)
+        sys.exit(1)
     return flatten_runs(json.loads(raw or '[{"check_runs":[]}]'))
 
 
@@ -78,6 +79,7 @@ def is_version_only_skip_ci(commit):
         '[skip ci]' in subject.lower()
         and len(files) == 1
         and files[0].get('filename') == 'backend/cmd/server/VERSION'
+        and 'previous_filename' not in files[0]
         and len(parents) == 1
     )
 

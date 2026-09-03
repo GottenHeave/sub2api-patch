@@ -63,15 +63,19 @@ write_checks() {
   for entry in "test:$test_result" "frontend:$frontend_result" "golangci-lint:$lint_result"; do
     name="${entry%%:*}"
     result="${entry#*:}"
-    test "$result" != missing || continue
-    status=completed
-    conclusion="$result"
-    if test "$result" = pending; then
-      status=in_progress
-      conclusion=null
-    else
-      conclusion="\"$conclusion\""
-    fi
+    case "$result" in
+      missing)
+        continue
+        ;;
+      queued | in_progress)
+        status="$result"
+        conclusion=null
+        ;;
+      *)
+        status=completed
+        conclusion="\"$result\""
+        ;;
+    esac
     runs="${runs}${runs:+,}{\"name\":\"$name\",\"status\":\"$status\",\"conclusion\":$conclusion}"
   done
   printf '[{"check_runs":[%s]}]\n' "$runs" \
@@ -105,6 +109,18 @@ assert_rejected() {
 
 version_file='[{"filename":"backend/cmd/server/VERSION"}]'
 other_file='[{"filename":"backend/main.go"}]'
+non_success_results=(
+  neutral
+  skipped
+  cancelled
+  timed_out
+  action_required
+  failure
+  stale
+  queued
+  in_progress
+  missing
+)
 
 # A normal candidate needs all three required checks to complete successfully.
 reset_fixtures
@@ -112,7 +128,7 @@ write_commit normal-success normal "$other_file" '[]'
 write_checks normal-success success success success
 assert_selected normal-success normal-success
 
-for result in pending failure skipped neutral; do
+for result in "${non_success_results[@]}"; do
   reset_fixtures
   write_commit "normal-$result" normal "$other_file" '[{"sha":"normal-parent"}]'
   write_checks "normal-$result" "$result" success success
@@ -120,13 +136,6 @@ for result in pending failure skipped neutral; do
   write_checks normal-parent success success success
   assert_selected normal-parent "normal-$result"
 done
-
-reset_fixtures
-write_commit normal-missing normal "$other_file" '[{"sha":"normal-parent"}]'
-write_checks normal-missing missing success success
-write_commit normal-parent normal "$other_file" '[]'
-write_checks normal-parent success success success
-assert_selected normal-parent normal-missing
 
 # Legacy commit statuses cannot qualify a commit or replace a required check run.
 reset_fixtures
@@ -153,6 +162,24 @@ write_commit version-parent normal "$other_file" '[]'
 write_checks version-parent success success success
 assert_selected version-skip version-skip
 
+# A Checks API failure is not evidence that a commit intentionally has no runs.
+reset_fixtures
+write_commit candidate-checks-error 'release [skip ci]' "$version_file" \
+  '[{"sha":"candidate-error-parent"}]'
+write_commit candidate-error-parent normal "$other_file" '[]'
+write_checks candidate-error-parent success success success
+assert_rejected candidate-checks-error
+
+reset_fixtures
+write_commit parent-checks-error 'release [skip ci]' "$version_file" \
+  '[{"sha":"unreadable-parent-checks"}]'
+write_checks parent-checks-error missing missing missing
+write_commit unreadable-parent-checks normal "$other_file" \
+  '[{"sha":"checks-error-grandparent"}]'
+write_commit checks-error-grandparent normal "$other_file" '[]'
+write_checks checks-error-grandparent success success success
+assert_rejected parent-checks-error
+
 reset_fixtures
 write_commit body-only-skip 'release\n\n[skip ci]' "$version_file" '[{"sha":"body-parent"}]'
 write_checks body-only-skip missing missing missing
@@ -164,6 +191,7 @@ assert_selected body-parent body-only-skip
 for files in \
   '[]' \
   '[{"filename":"backend/cmd/server/VERSION"},{"filename":"backend/cmd/server/VERSION"}]' \
+  '[{"filename":"backend/cmd/server/VERSION","previous_filename":"backend/cmd/server/OLD_VERSION"}]' \
   '[{"filename":"backend/cmd/server/VERSION"},{"filename":"README.md"}]'; do
   reset_fixtures
   write_commit invalid-files 'release [skip ci]' "$files" '[{"sha":"files-parent"}]'
@@ -190,7 +218,7 @@ write_checks no-parent missing missing missing
 assert_rejected no-parent
 
 # The exception requires the direct parent itself to have successful CI.
-for parent_result in pending failure; do
+for parent_result in "${non_success_results[@]}"; do
   reset_fixtures
   write_commit "skip-$parent_result-parent" 'release [skip ci]' "$version_file" \
     '[{"sha":"unready-parent"}]'
