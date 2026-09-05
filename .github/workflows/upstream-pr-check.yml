@@ -67,11 +67,20 @@ jobs:
         run: sub2api-patch/scripts/apply-patches.sh worktree
 
       - name: Sanitize patch references
-        run: sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
+        run: |
+          PATCH_BASE_REPO=worktree EXPECTED_BASE_SHA="$VALIDATED_CANDIDATE" \
+            sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
 
       - name: Backend tests
         run: go test ./...
         working-directory: worktree/backend
+
+      - name: Backend lint and format checks
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+          args: --timeout=30m
+          working-directory: worktree/backend
 
       - name: Frontend checks
         working-directory: worktree
