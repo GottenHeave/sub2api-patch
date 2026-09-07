@@ -26,27 +26,15 @@ grant authority. `Auto release` has no standalone trigger.
 ## Upstream candidate policy
 
 Selection walks the first-parent history of `Wei-Shaw/sub2api/main` and returns the
-newest eligible commit. A normal candidate must have completed check runs named
+newest eligible commit. Every candidate must have completed check runs named
 `test`, `frontend`, and `golangci-lint`, each with conclusion `success`. Missing,
 pending, queued, `neutral`, `skipped`, `cancelled`, `timed_out`,
 `action_required`, `failure`, `stale`, and every other non-success state are
 ineligible.
 
-One `[skip ci]` exception exists. A commit may inherit the required-check result of
-its first parent only when all of these conditions hold:
-
-1. Its subject contains `[skip ci]`.
-2. It is not a merge and has exactly one parent.
-3. Its nonempty first-parent changed-path set is exactly
-   `{backend/cmd/server/VERSION}`.
-4. Its own required check runs are absent.
-5. All three required checks on its immediate first parent completed with
-   `success`.
-
-The exception rejects empty diffs, additional paths, absent parents, merge commits,
-failed or incomplete parent checks, and skip markers on every other kind of
-commit. Inheritance stops after one VERSION-only commit; it cannot pass through a
-chain of such commits.
+Check results belong only to the commit on which they ran. A candidate cannot
+inherit a parent's results, including when it changes only
+`backend/cmd/server/VERSION` or contains `[skip ci]`.
 
 ## Immutable provenance
 

@@ -14,9 +14,8 @@ trusted `Sync upstream` workflow after all gates pass.
 - Do not mention upstream maintainers or users in generated text.
 - Do not include pull request or issue references in patches, comments, or release notes.
 - Use upstream tags and commit SHAs only.
-- Only sync upstream commits whose required upstream checks pass, except for the
-  single VERSION-only `[skip ci]` inheritance case documented in
-  [RELEASE_POLICY.md](RELEASE_POLICY.md).
+- Only sync upstream commits whose own required upstream checks pass. Check
+  results cannot be inherited from a parent commit.
 
 ## Remote validation
 

@@ -70,20 +70,6 @@ def ci_ready(runs):
     return not missing and not bad_runs and relevant_runs
 
 
-def is_version_only_skip_ci(commit):
-    message = commit.get('commit', {}).get('message', '')
-    subject = message.splitlines()[0] if message else ''
-    files = commit.get('files') or []
-    parents = commit.get('parents') or []
-    return (
-        '[skip ci]' in subject.lower()
-        and len(files) == 1
-        and files[0].get('filename') == 'backend/cmd/server/VERSION'
-        and 'previous_filename' not in files[0]
-        and len(parents) == 1
-    )
-
-
 def parent_sha(commit):
     parents = commit.get('parents') or []
     return parents[0].get('sha') if parents else None
@@ -103,18 +89,6 @@ while commit:
     if not parent:
         print('no upstream commit with passing required CI was found', file=sys.stderr)
         sys.exit(1)
-
-    relevant_runs, _, _ = evaluate(runs)
-    if not relevant_runs and is_version_only_skip_ci(commit):
-        parent_commit = fetch_json(f'repos/{repo}/commits/{parent}', {})
-        parent_runs = fetch_checks(parent)
-        if parent_commit.get('sha') == parent and ci_ready(parent_runs):
-            print(
-                f'using version-only upstream commit {sha[:12]} with parent {parent[:12]} CI',
-                file=sys.stderr,
-            )
-            print(sha)
-            break
 
     print(f'upstream commit {sha[:12]} is not ready; checking parent {parent[:12]}', file=sys.stderr)
     commit = fetch_json(f'repos/{repo}/commits/{parent}', {})

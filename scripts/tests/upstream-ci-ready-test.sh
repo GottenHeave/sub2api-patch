@@ -154,13 +154,19 @@ write_commit checks-parent normal "$other_file" '[]'
 write_checks checks-parent success success success
 assert_selected checks-parent status-substitution
 
-# A single-parent VERSION-only skip commit may use its direct parent's CI.
+# A VERSION-only skip commit without its own checks is ineligible.
 reset_fixtures
 write_commit version-skip 'release [skip ci]' "$version_file" '[{"sha":"version-parent"}]'
 write_checks version-skip missing missing missing
 write_commit version-parent normal "$other_file" '[]'
 write_checks version-parent success success success
-assert_selected version-skip version-skip
+assert_selected version-parent version-skip
+
+# A VERSION-only skip commit remains eligible when its own checks pass.
+reset_fixtures
+write_commit checked-version-skip 'release [skip ci]' "$version_file" '[]'
+write_checks checked-version-skip success success success
+assert_selected checked-version-skip checked-version-skip
 
 # A Checks API failure is not evidence that a commit intentionally has no runs.
 reset_fixtures
@@ -171,37 +177,15 @@ write_checks candidate-error-parent success success success
 assert_rejected candidate-checks-error
 
 reset_fixtures
-write_commit parent-checks-error 'release [skip ci]' "$version_file" \
-  '[{"sha":"unreadable-parent-checks"}]'
-write_checks parent-checks-error missing missing missing
+write_commit unready-candidate normal "$other_file" '[{"sha":"unreadable-parent-checks"}]'
+write_checks unready-candidate missing missing missing
 write_commit unreadable-parent-checks normal "$other_file" \
   '[{"sha":"checks-error-grandparent"}]'
 write_commit checks-error-grandparent normal "$other_file" '[]'
 write_checks checks-error-grandparent success success success
-assert_rejected parent-checks-error
+assert_rejected unready-candidate
 
-reset_fixtures
-write_commit body-only-skip 'release\n\n[skip ci]' "$version_file" '[{"sha":"body-parent"}]'
-write_checks body-only-skip missing missing missing
-write_commit body-parent normal "$other_file" '[]'
-write_checks body-parent success success success
-assert_selected body-parent body-only-skip
-
-# Empty, duplicate, or additional changed paths are not VERSION-only commits.
-for files in \
-  '[]' \
-  '[{"filename":"backend/cmd/server/VERSION"},{"filename":"backend/cmd/server/VERSION"}]' \
-  '[{"filename":"backend/cmd/server/VERSION","previous_filename":"backend/cmd/server/OLD_VERSION"}]' \
-  '[{"filename":"backend/cmd/server/VERSION"},{"filename":"README.md"}]'; do
-  reset_fixtures
-  write_commit invalid-files 'release [skip ci]' "$files" '[{"sha":"files-parent"}]'
-  write_checks invalid-files missing missing missing
-  write_commit files-parent normal "$other_file" '[]'
-  write_checks files-parent success success success
-  assert_selected files-parent invalid-files
-done
-
-# Merge commits cannot use the VERSION-only exception, and traversal is first-parent only.
+# Traversal follows only the first parent of a merge commit.
 reset_fixtures
 write_commit version-merge 'release [skip ci]' "$version_file" \
   '[{"sha":"first-parent"},{"sha":"second-parent"}]'
@@ -217,20 +201,7 @@ write_commit no-parent 'release [skip ci]' "$version_file" '[]'
 write_checks no-parent missing missing missing
 assert_rejected no-parent
 
-# The exception requires the direct parent itself to have successful CI.
-for parent_result in "${non_success_results[@]}"; do
-  reset_fixtures
-  write_commit "skip-$parent_result-parent" 'release [skip ci]' "$version_file" \
-    '[{"sha":"unready-parent"}]'
-  write_checks "skip-$parent_result-parent" missing missing missing
-  write_commit unready-parent normal "$other_file" '[{"sha":"ready-grandparent"}]'
-  write_checks unready-parent "$parent_result" success success
-  write_commit ready-grandparent normal "$other_file" '[]'
-  write_checks ready-grandparent success success success
-  assert_selected ready-grandparent "skip-$parent_result-parent"
-done
-
-# Readiness cannot chain across consecutive VERSION-only skip commits.
+# Consecutive VERSION-only skip commits are each ineligible without their own checks.
 reset_fixtures
 write_commit newest-skip 'release [skip ci]' "$version_file" '[{"sha":"older-skip"}]'
 write_checks newest-skip missing missing missing
@@ -238,6 +209,6 @@ write_commit older-skip 'release [skip ci]' "$version_file" '[{"sha":"checked-pa
 write_checks older-skip missing missing missing
 write_commit checked-parent normal "$other_file" '[]'
 write_checks checked-parent success success success
-assert_selected older-skip newest-skip
+assert_selected checked-parent newest-skip
 
 echo 'upstream CI readiness policy regressions passed'
