@@ -4,19 +4,19 @@ Date: Wed, 2 Sep 2026 14:03:18 +0000
 Subject: [PATCH 11/11] fix: preserve caller Codex system prompts
 
 ---
- .../openai_codex_prompt_injection_test.go     | 200 ++++++++++++++++++
- .../service/openai_codex_transform.go         |  50 +++--
+ .../openai_codex_prompt_injection_test.go     | 230 ++++++++++++++++++
+ .../service/openai_codex_transform.go         |  51 +++-
  .../service/openai_gateway_forward.go         |   2 +-
  .../service/openai_gateway_passthrough.go     |   2 +-
- .../service/openai_gateway_request_body.go    |  41 ++++
- 5 files changed, 281 insertions(+), 14 deletions(-)
+ .../service/openai_gateway_request_body.go    |  42 ++++
+ 5 files changed, 313 insertions(+), 14 deletions(-)
 
 diff --git a/backend/internal/service/openai_codex_prompt_injection_test.go b/backend/internal/service/openai_codex_prompt_injection_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..00a0c708d5d10299e9b92472e2f135fa3dbddd02
+index 0000000000000000000000000000000000000000..0c56f6de9416503c4adb8fc25c49f1b43ac91a36
 --- /dev/null
 +++ b/backend/internal/service/openai_codex_prompt_injection_test.go
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,230 @@
 +package service
 +
 +import (
@@ -49,12 +49,17 @@ index 0000000000000000000000000000000000000000..00a0c708d5d10299e9b92472e2f135fa
 +		{name: "system input string", body: `{"input":[{"type":"message","role":"system","content":"` + prompt + `"}]}`, want: true},
 +		{name: "system input array", body: `{"input":[{"type":"message","role":"system","content":[{"type":"input_text","text":"` + prompt + `"}]}]}`, want: true},
 +		{name: "system input structured object", body: `{"input":[{"type":"message","role":"system","content":{"type":"text","text":"` + prompt + `"}}]}`, want: true},
++		{name: "developer input string", body: `{"input":[{"type":"message","role":"developer","content":"` + prompt + `"}]}`, want: true},
++		{name: "developer input array", body: `{"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"` + prompt + `"}]}]}`, want: true},
++		{name: "developer input structured object", body: `{"input":[{"type":"message","role":"developer","content":{"type":"text","text":"` + prompt + `"}}]}`, want: true},
 +		{name: "missing", body: `{}`, want: false},
 +		{name: "null", body: `{"system_prompt":null}`, want: false},
 +		{name: "whitespace-only string", body: `{"system_prompt":"  \t\n"}`, want: false},
 +		{name: "empty array", body: `{"system_prompt":[]}`, want: false},
 +		{name: "empty object", body: `{"system_prompt":{}}`, want: false},
 +		{name: "empty system input content", body: `{"input":[{"type":"message","role":"system","content":[]}]}`, want: false},
++		{name: "empty developer input content", body: `{"input":[{"type":"message","role":"developer","content":[]}]}`, want: false},
++		{name: "whitespace developer input content", body: `{"input":[{"type":"message","role":"developer","content":" \t\n"}]}`, want: false},
 +	}
 +
 +	for _, tt := range tests {
@@ -63,6 +68,9 @@ index 0000000000000000000000000000000000000000..00a0c708d5d10299e9b92472e2f135fa
 +			original := append([]byte(nil), body...)
 +			require.Equal(t, tt.want, hasOpenAICodexExplicitSystemPromptBody(body))
 +			require.Equal(t, original, body)
++			var reqBody map[string]any
++			require.NoError(t, json.Unmarshal(body, &reqBody))
++			require.Equal(t, tt.want, hasOpenAICodexExplicitSystemPrompt(reqBody))
 +		})
 +	}
 +}
@@ -79,6 +87,8 @@ index 0000000000000000000000000000000000000000..00a0c708d5d10299e9b92472e2f135fa
 +		{name: "array", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": []any{map[string]any{"type": "text", "text": prompt}}}, wantInject: false},
 +		{name: "structured object", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": map[string]any{"type": "text", "text": prompt}}, wantInject: false},
 +		{name: "responses system input", reqBody: map[string]any{"model": "gpt-5.4", "input": []any{map[string]any{"type": "message", "role": "system", "content": prompt}}}, wantInject: false},
++		{name: "responses developer input", reqBody: map[string]any{"model": "gpt-5.4", "input": []any{map[string]any{"type": "message", "role": "developer", "content": prompt}}}, wantInject: false},
++		{name: "empty responses developer input", reqBody: map[string]any{"model": "gpt-5.4", "input": []any{map[string]any{"type": "message", "role": "developer", "content": "  "}}}, wantInject: true},
 +		{name: "null", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": nil}, wantInject: true},
 +		{name: "whitespace", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": "  "}, wantInject: true},
 +		{name: "empty array", reqBody: map[string]any{"model": "gpt-5.4", "system_prompt": []any{}}, wantInject: true},
@@ -137,7 +147,6 @@ index 0000000000000000000000000000000000000000..00a0c708d5d10299e9b92472e2f135fa
 +	upstream := &httpUpstreamRecorder{resp: &http.Response{
 +		StatusCode: http.StatusOK,
 +		Header:     http.Header{"Content-Type": []string{"application/json"}},
-+		Body:       io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":1,"output_tokens":1}}`)),
 +	}}
 +	cfg := &config.Config{}
 +	cfg.Security.URLAllowlist.Enabled = false
@@ -147,17 +156,28 @@ index 0000000000000000000000000000000000000000..00a0c708d5d10299e9b92472e2f135fa
 +		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com"},
 +		Extra:       map[string]any{"use_responses_api": true},
 +	}
-+	rec := httptest.NewRecorder()
-+	c, _ := gin.CreateTestContext(rec)
-+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
-+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
++	for _, tt := range []struct {
++		name       string
++		body       string
++		promptPath string
++	}{
++		{"system prompt", `{"model":"gpt-5.4","stream":false,"system_prompt":{"type":"text","text":"` + prompt + `"},"input":[{"type":"message","content":"hi"}]}`, "system_prompt.text"},
++		{"developer input", `{"model":"gpt-5.4","stream":false,"input":[{"type":"message","role":"developer","content":"` + prompt + `"},{"type":"message","role":"user","content":"hi"}]}`, "input.0.content"},
++	} {
++		t.Run(tt.name, func(t *testing.T) {
++			upstream.resp.Body = io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":1,"output_tokens":1}}`))
++			rec := httptest.NewRecorder()
++			c, _ := gin.CreateTestContext(rec)
++			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
++			SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
 +
-+	body := []byte(`{"model":"gpt-5.4","stream":false,"system_prompt":{"type":"text","text":"` + prompt + `"},"input":[{"type":"message","content":"hi"}]}`)
-+	result, err := svc.Forward(context.Background(), c, account, body)
-+	require.NoError(t, err)
-+	require.NotNil(t, result)
-+	require.Equal(t, prompt, gjson.GetBytes(upstream.lastBody, "system_prompt.text").String())
-+	require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
++			result, err := svc.Forward(context.Background(), c, account, []byte(tt.body))
++			require.NoError(t, err)
++			require.NotNil(t, result)
++			require.Equal(t, prompt, gjson.GetBytes(upstream.lastBody, tt.promptPath).String())
++			require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
++		})
++	}
 +}
 +
 +func TestOpenAIGatewayPassthroughPreservesRawSystemPrompt(t *testing.T) {
@@ -166,10 +186,6 @@ index 0000000000000000000000000000000000000000..00a0c708d5d10299e9b92472e2f135fa
 +	upstream := &httpUpstreamRecorder{resp: &http.Response{
 +		StatusCode: http.StatusOK,
 +		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
-+			`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
-+			"", "data: [DONE]", "",
-+		}, "\n"))),
 +	}}
 +	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
 +	account := &Account{
@@ -178,17 +194,31 @@ index 0000000000000000000000000000000000000000..00a0c708d5d10299e9b92472e2f135fa
 +		Extra:       map[string]any{"openai_passthrough": true, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
 +		Status:      StatusActive, Schedulable: true, RateMultiplier: f64p(1),
 +	}
-+	rec := httptest.NewRecorder()
-+	c, _ := gin.CreateTestContext(rec)
-+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
-+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
++	for _, tt := range []struct {
++		name       string
++		body       string
++		promptPath string
++	}{
++		{"system prompt", `{"model":"gpt-5.4","stream":true,"system_prompt":[{"type":"text","text":"` + prompt + `"}],"input":[{"type":"text","text":"hi"}]}`, "system_prompt.0.text"},
++		{"developer input", `{"model":"gpt-5.4","stream":true,"input":[{"type":"message","role":"developer","content":"` + prompt + `"},{"type":"message","role":"user","content":"hi"}]}`, "input.0.content"},
++	} {
++		t.Run(tt.name, func(t *testing.T) {
++			upstream.resp.Body = io.NopCloser(strings.NewReader(strings.Join([]string{
++				`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
++				"", "data: [DONE]", "",
++			}, "\n")))
++			rec := httptest.NewRecorder()
++			c, _ := gin.CreateTestContext(rec)
++			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
++			c.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
 +
-+	body := []byte(`{"model":"gpt-5.4","stream":true,"system_prompt":[{"type":"text","text":"` + prompt + `"}],"input":[{"type":"text","text":"hi"}]}`)
-+	result, err := svc.Forward(context.Background(), c, account, body)
-+	require.NoError(t, err)
-+	require.NotNil(t, result)
-+	require.Equal(t, prompt, gjson.GetBytes(upstream.lastBody, "system_prompt.0.text").String())
-+	require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
++			result, err := svc.Forward(context.Background(), c, account, []byte(tt.body))
++			require.NoError(t, err)
++			require.NotNil(t, result)
++			require.Equal(t, prompt, gjson.GetBytes(upstream.lastBody, tt.promptPath).String())
++			require.False(t, gjson.GetBytes(upstream.lastBody, "instructions").Exists())
++		})
++	}
 +}
 +
 +func TestForwardAsChatCompletionsPreservesResponsesShapeSystemPrompt(t *testing.T) {
@@ -218,7 +248,7 @@ index 0000000000000000000000000000000000000000..00a0c708d5d10299e9b92472e2f135fa
 +	require.Equal(t, prompt, gjson.GetBytes(upstream.lastBody, "input.0.content.text").String())
 +}
 diff --git a/backend/internal/service/openai_codex_transform.go b/backend/internal/service/openai_codex_transform.go
-index a67d626a23d7275ca2a99d73f3c4741077aa8ac0..9aebb12ee7c2f6cd6029a023212d975c316e801f 100644
+index a67d626a23d7275ca2a99d73f3c4741077aa8ac0..4bf92616d15669b58533eb0ae877bf333e430532 100644
 --- a/backend/internal/service/openai_codex_transform.go
 +++ b/backend/internal/service/openai_codex_transform.go
 @@ -1266,4 +1266,4 @@ func getNormalizedCodexModel(modelID string) string {
@@ -255,11 +285,11 @@ index a67d626a23d7275ca2a99d73f3c4741077aa8ac0..9aebb12ee7c2f6cd6029a023212d975c
 -	if !isInstructionsEmpty(reqBody) {
 +	if !isInstructionsEmpty(reqBody) || hasOpenAICodexExplicitSystemPrompt(reqBody) {
  		return false
-@@ -1488,2 +1486,30 @@ func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
+@@ -1488,2 +1486,31 @@ func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
  
 +// hasOpenAICodexExplicitSystemPrompt recognizes caller-owned prompt text in
 +// the legacy top-level system_prompt field or a Responses input item with
-+// role=system. Detection does not rewrite the caller's value.
++// role=system or role=developer. Detection does not rewrite the caller's value.
 +func hasOpenAICodexExplicitSystemPrompt(reqBody map[string]any) bool {
 +	if reqBody == nil {
 +		return false
@@ -277,7 +307,8 @@ index a67d626a23d7275ca2a99d73f3c4741077aa8ac0..9aebb12ee7c2f6cd6029a023212d975c
 +			continue
 +		}
 +		role, _ := item["role"].(string)
-+		if strings.EqualFold(strings.TrimSpace(role), "system") &&
++		role = strings.TrimSpace(role)
++		if (strings.EqualFold(role, "system") || strings.EqualFold(role, "developer")) &&
 +			strings.TrimSpace(extractTextFromContent(item["content"])) != "" {
 +			return true
 +		}
@@ -305,10 +336,10 @@ index dfebb47a50efa054e945a27e2bf6ad40c62bc901..d88b8df16c9dcd42782ae4028333ba9e
 +		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() && !hasOpenAICodexExplicitSystemPromptBody(body) {
  			nextBody, setErr := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(reqModel))
 diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
-index af4825762b2a753080bb37f68f92320bfd28a6a1..c4b5f402fd1c2c7f07f0fc1ad044f8d41806c834 100644
+index af4825762b2a753080bb37f68f92320bfd28a6a1..03f37f603d880af95faccc2092c669aae76e64b4 100644
 --- a/backend/internal/service/openai_gateway_request_body.go
 +++ b/backend/internal/service/openai_gateway_request_body.go
-@@ -1335,2 +1335,43 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
+@@ -1335,2 +1335,44 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
  
 +// hasOpenAICodexExplicitSystemPromptBody is the raw-body counterpart of
 +// hasOpenAICodexExplicitSystemPrompt. It prevents a default instruction from
@@ -318,7 +349,8 @@ index af4825762b2a753080bb37f68f92320bfd28a6a1..c4b5f402fd1c2c7f07f0fc1ad044f8d4
 +		return true
 +	}
 +	for _, item := range gjson.GetBytes(body, "input").Array() {
-+		if !strings.EqualFold(strings.TrimSpace(item.Get("role").String()), "system") {
++		role := strings.TrimSpace(item.Get("role").String())
++		if !strings.EqualFold(role, "system") && !strings.EqualFold(role, "developer") {
 +			continue
 +		}
 +		if openAIJSONValueHasText(item.Get("content")) {

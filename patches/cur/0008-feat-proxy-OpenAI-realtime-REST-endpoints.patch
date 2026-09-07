@@ -5,14 +5,14 @@ Subject: [PATCH 08/11] feat: proxy OpenAI realtime REST endpoints
 
 ---
  backend/internal/handler/endpoint.go          |  41 ++
- .../internal/handler/openai_realtime_calls.go | 229 ++++++++++
- .../handler/openai_realtime_calls_test.go     | 302 +++++++++++++
+ .../internal/handler/openai_realtime_calls.go | 246 +++++++++
+ .../handler/openai_realtime_calls_test.go     | 325 ++++++++++++
  backend/internal/server/routes/gateway.go     |  22 +
  .../internal/server/routes/gateway_test.go    |  29 ++
  .../prompt_audit_route_coverage_test.go       |  10 +
- .../internal/service/openai_realtime_calls.go | 380 ++++++++++++++++
- .../service/openai_realtime_calls_test.go     | 412 ++++++++++++++++++
- 8 files changed, 1425 insertions(+)
+ .../internal/service/openai_realtime_calls.go | 465 +++++++++++++++++
+ .../service/openai_realtime_calls_test.go     | 477 ++++++++++++++++++
+ 8 files changed, 1615 insertions(+)
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
 index 8ee8928b2540bdb8d3712a4318f64d7767f2b5cc..80ad3e686ce6474dfc7c951ee1f7486c6c822dee 100644
@@ -73,16 +73,18 @@ index 8ee8928b2540bdb8d3712a4318f64d7767f2b5cc..80ad3e686ce6474dfc7c951ee1f7486c
  // ──────────────────────────────────────────────────────────
 diff --git a/backend/internal/handler/openai_realtime_calls.go b/backend/internal/handler/openai_realtime_calls.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd6a1ea61f
+index 0000000000000000000000000000000000000000..512418e14012f2e631aa081523fdb427c47da92b
 --- /dev/null
 +++ b/backend/internal/handler/openai_realtime_calls.go
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,246 @@
 +package handler
 +
 +import (
 +	"errors"
 +	"net/http"
++	"net/url"
 +	"strconv"
++	"strings"
 +	"time"
 +
 +	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
@@ -157,6 +159,10 @@ index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd
 +		channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, ref.Value)
 +		channelMappedModels[ref.Path] = channelMapping.MappedModel
 +	}
++	selectionModel := parsed.Model
++	if mapped := strings.TrimSpace(channelMappedModels[parsed.ScheduleModelPath]); mapped != "" {
++		selectionModel = mapped
++	}
 +	if h.errorPassthroughService != nil {
 +		service.BindErrorPassthroughService(c, h.errorPassthroughService)
 +	}
@@ -183,6 +189,8 @@ index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd
 +	}
 +
 +	sessionHash := parsed.StickySessionSeed()
++	routingCtx := h.gatewayService.WithOpenAIRealtimeCallAccount(c.Request.Context(), apiKey.GroupID, parsed.CallID)
++	c.Request = c.Request.WithContext(routingCtx)
 +	maxAccountSwitches := h.maxAccountSwitches
 +	switchCount := 0
 +	failedAccountIDs := make(map[int64]struct{})
@@ -194,6 +202,7 @@ index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd
 +			c.Request.Context(),
 +			apiKey.GroupID,
 +			sessionHash,
++			selectionModel,
 +			failedAccountIDs,
 +		)
 +		if err != nil {
@@ -203,7 +212,7 @@ index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd
 +			)
 +			if len(failedAccountIDs) == 0 {
 +				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-+				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
++				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available OpenAI API key accounts supporting this Realtime request", streamStarted)
 +				return
 +			}
 +			if lastFailoverErr != nil {
@@ -215,7 +224,7 @@ index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd
 +		}
 +		if selection == nil || selection.Account == nil {
 +			markOpsRoutingCapacityLimited(c)
-+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
++			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available OpenAI API key accounts supporting this Realtime request", streamStarted)
 +			return
 +		}
 +		reqLog.Debug("openai.realtime_rest.account_schedule_decision",
@@ -228,7 +237,7 @@ index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd
 +		)
 +
 +		account := selection.Account
-+		scheduledModel := account.GetMappedModel(parsed.Model)
++		scheduledModel := account.GetMappedModel(selectionModel)
 +		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 +		setOpsSelectedAccount(c, account.ID, account.Platform)
 +
@@ -276,7 +285,7 @@ index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd
 +				h.gatewayService.RecordOpenAIAccountSwitch()
 +				failedAccountIDs[account.ID] = struct{}{}
 +				lastFailoverErr = failoverErr
-+				if switchCount >= maxAccountSwitches {
++				if parsed.CallID != "" || switchCount >= maxAccountSwitches {
 +					h.handleFailoverExhausted(c, failoverErr, streamStarted)
 +					return
 +				}
@@ -299,6 +308,14 @@ index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd
 +		}
 +
 +		if result != nil {
++			if location, err := url.Parse(result.ResponseHeaders.Get("Location")); err == nil && strings.Contains(location.Path, "/realtime/calls/") {
++				callID := strings.TrimPrefix(location.Path[strings.LastIndex(location.Path, "/realtime/calls/"):], "/realtime/calls/")
++				if callID != "" && !strings.Contains(callID, "/") {
++					if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, service.OpenAIRealtimeCallSessionHash(callID), account.ID); err != nil {
++						reqLog.Warn("openai.realtime_rest.bind_call_account_failed", zap.Error(err))
++					}
++				}
++			}
 +			h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduledModel, true, result.FirstTokenMs)
 +		} else {
 +			h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduledModel, true, nil)
@@ -308,10 +325,10 @@ index 0000000000000000000000000000000000000000..4485f3301a4550210fba425a4618eacd
 +}
 diff --git a/backend/internal/handler/openai_realtime_calls_test.go b/backend/internal/handler/openai_realtime_calls_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..d3cf895bacca892b6d541f91bc8e5238ed71e805
+index 0000000000000000000000000000000000000000..3759c23f4fbb8087b24d5055c701d1e4953f37ab
 --- /dev/null
 +++ b/backend/internal/handler/openai_realtime_calls_test.go
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,325 @@
 +package handler
 +
 +import (
@@ -432,13 +449,13 @@ index 0000000000000000000000000000000000000000..d3cf895bacca892b6d541f91bc8e5238
 +	require.Equal(t, "gpt-realtime", gjson.GetBytes(upstream.bodies[0], "model").String())
 +}
 +
-+func TestOpenAIGatewayHandlerRealtimeREST_AcceptActionAccountSwitch(t *testing.T) {
++func TestOpenAIGatewayHandlerRealtimeREST_CreateCallAccountSwitch(t *testing.T) {
 +	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusTooManyRequests, http.StatusOK}}
 +	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{
 +		newRealtimeCallsHandlerAccount(1),
 +		newRealtimeCallsHandlerAccount(2),
 +	})
-+	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/calls/call_123/accept", []byte(`{"type":"realtime","model":"gpt-realtime"}`))
++	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/calls", []byte(`{"type":"realtime","model":"gpt-realtime"}`))
 +
 +	handler.RealtimeREST(c)
 +
@@ -446,13 +463,42 @@ index 0000000000000000000000000000000000000000..d3cf895bacca892b6d541f91bc8e5238
 +	require.Equal(t, []int64{1, 2}, upstream.accountIDs)
 +}
 +
++func TestOpenAIGatewayHandlerRealtimeREST_CallControlDoesNotSwitchAccounts(t *testing.T) {
++	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusTooManyRequests, http.StatusOK}}
++	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{
++		newRealtimeCallsHandlerAccount(1), newRealtimeCallsHandlerAccount(2),
++	})
++	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/calls/call_123/reject", []byte(`{"status_code":603}`))
++	handler.RealtimeREST(c)
++	require.NotEqual(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{1}, upstream.accountIDs)
++}
++
++func TestOpenAIGatewayHandlerRealtimeREST_SelectsAccountSupportingRequestedModel(t *testing.T) {
++	upstream := &realtimeCallsHandlerUpstream{}
++	unsupported := newRealtimeCallsHandlerAccount(1)
++	unsupported.Credentials["model_mapping"] = map[string]any{"other-model": "other-model"}
++	supported := newRealtimeCallsHandlerAccount(2)
++	supported.Credentials["model_mapping"] = map[string]any{"client-realtime": "gpt-realtime"}
++	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{unsupported, supported})
++	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/calls", []byte(`{"session":{"model":"client-realtime"}}`))
++	handler.RealtimeREST(c)
++	require.Equal(t, http.StatusOK, rec.Code)
++	require.Equal(t, []int64{2}, upstream.accountIDs)
++	require.Equal(t, "gpt-realtime", gjson.GetBytes(upstream.bodies[0], "session.model").String())
++}
++
 +func TestOpenAIGatewayHandlerRealtimeREST_SkipsUnsupportedAccountTypes(t *testing.T) {
 +	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusOK}}
 +	unsupported := newRealtimeCallsHandlerAccount(1)
 +	unsupported.Type = service.AccountTypeSetupToken
 +	unsupported.Credentials = map[string]any{"access_token": "setup-token"}
++	oauth := newRealtimeCallsHandlerAccount(3)
++	oauth.Type = service.AccountTypeOAuth
++	oauth.Credentials = map[string]any{"access_token": "oauth-token"}
 +	handler := newRealtimeCallsHandlerForTest(t, upstream, []service.Account{
 +		unsupported,
++		oauth,
 +		newRealtimeCallsHandlerAccount(2),
 +	})
 +	c, rec := newRealtimeCallsHandlerContext(t, "/v1/realtime/calls/call_123/accept", []byte(`{"type":"realtime","model":"gpt-realtime"}`))
@@ -480,13 +526,11 @@ index 0000000000000000000000000000000000000000..d3cf895bacca892b6d541f91bc8e5238
 +	require.Equal(t, "gpt-4o-transcribe", gjson.GetBytes(upstream.bodies[0], "session.audio.input.transcription.model").String())
 +}
 +
-+func TestOpenAIGatewayHandlerRealtimeREST_TranslationClientSecretDoesNotFilterBySessionModel(t *testing.T) {
++func TestOpenAIGatewayHandlerRealtimeREST_TranslationClientSecretFiltersBySessionModel(t *testing.T) {
 +	upstream := &realtimeCallsHandlerUpstream{statuses: []int{http.StatusOK}}
 +	account := newRealtimeCallsHandlerAccount(1)
-+	account.Type = service.AccountTypeOAuth
 +	account.Credentials = map[string]any{
-+		"access_token":       "oauth-token",
-+		"chatgpt_account_id": "chatgpt-acc",
++		"api_key": "test-key",
 +		"model_mapping": map[string]any{
 +			"client-transcribe": "gpt-4o-transcribe",
 +		},
@@ -497,12 +541,8 @@ index 0000000000000000000000000000000000000000..d3cf895bacca892b6d541f91bc8e5238
 +
 +	handler.RealtimeREST(c)
 +
-+	require.Equal(t, http.StatusOK, rec.Code)
-+	require.Equal(t, []int64{1}, upstream.accountIDs)
-+	require.Len(t, upstream.bodies, 1)
-+	require.Equal(t, "https://api.openai.com/v1/realtime/translations/client_secrets", upstream.urls[0])
-+	require.Equal(t, "gpt-realtime-translate", gjson.GetBytes(upstream.bodies[0], "session.model").String())
-+	require.Equal(t, "gpt-4o-transcribe", gjson.GetBytes(upstream.bodies[0], "session.audio.input.transcription.model").String())
++	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
++	require.Empty(t, upstream.accountIDs)
 +}
 +
 +func TestOpenAIGatewayHandlerRealtimeREST_CallControlNoModelDispatchesAccount(t *testing.T) {
@@ -697,10 +737,10 @@ index 0083c8b95544bbccad5652a8709c1b39e29cbe6a..f954e135142f467ec400f2b199789e1e
  	}
 diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2e89525fe
+index 0000000000000000000000000000000000000000..111de5251daab54e1c087f4551c9c2e5f9424acd
 --- /dev/null
 +++ b/backend/internal/service/openai_realtime_calls.go
-@@ -0,0 +1,380 @@
+@@ -0,0 +1,465 @@
 +package service
 +
 +import (
@@ -708,11 +748,13 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +	"context"
 +	"fmt"
 +	"io"
++	"mime"
++	"mime/multipart"
 +	"net/http"
++	"net/textproto"
 +	"strings"
 +	"time"
 +
-+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 +	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 +	"github.com/gin-gonic/gin"
 +	"github.com/tidwall/gjson"
@@ -728,6 +770,12 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +	Value string
 +}
 +
++type openAIRealtimeRESTPart struct {
++	header textproto.MIMEHeader
++	body   []byte
++	name   string
++}
++
 +type OpenAIRealtimeRESTRequest struct {
 +	CallID            string
 +	Body              []byte
@@ -736,11 +784,16 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +	Action            string
 +	ScheduleModelPath string
 +	ModelRefs         []OpenAIRealtimeRESTModelRef
++	multipartBoundary string
++	multipartParts    []openAIRealtimeRESTPart
 +}
 +
 +func (r *OpenAIRealtimeRESTRequest) StickySessionSeed() string {
 +	if r == nil {
 +		return ""
++	}
++	if r.CallID != "" {
++		return OpenAIRealtimeCallSessionHash(r.CallID)
 +	}
 +	return strings.Join([]string{
 +		"openai-realtime-rest",
@@ -783,6 +836,44 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +		parsed.Model = model
 +		parsed.ScheduleModelPath = "model"
 +		parsed.ModelRefs = []OpenAIRealtimeRESTModelRef{{Path: "model", Value: model}}
++		return parsed, nil
++	}
++	mediaType, params, contentTypeErr := mime.ParseMediaType(c.GetHeader("Content-Type"))
++	if strings.EqualFold(mediaType, "multipart/form-data") {
++		if contentTypeErr != nil || params["boundary"] == "" {
++			return nil, fmt.Errorf("multipart boundary is required")
++		}
++		parsed.multipartBoundary = params["boundary"]
++		reader := multipart.NewReader(bytes.NewReader(body), parsed.multipartBoundary)
++		for {
++			part, err := reader.NextRawPart()
++			if err == io.EOF {
++				break
++			}
++			if err != nil {
++				return nil, fmt.Errorf("read multipart body: %w", err)
++			}
++			partBody, err := io.ReadAll(part)
++			_ = part.Close()
++			if err != nil {
++				return nil, fmt.Errorf("read multipart part: %w", err)
++			}
++			parsed.multipartParts = append(parsed.multipartParts, openAIRealtimeRESTPart{header: part.Header, body: partBody, name: part.FormName()})
++			if part.FormName() == "session" {
++				if !gjson.ValidBytes(partBody) {
++					return nil, fmt.Errorf("failed to parse session body")
++				}
++				for _, path := range []string{"model", "audio.input.transcription.model"} {
++					if model := strings.TrimSpace(gjson.GetBytes(partBody, path).String()); model != "" {
++						parsed.ModelRefs = append(parsed.ModelRefs, OpenAIRealtimeRESTModelRef{Path: "session." + path, Value: model})
++					}
++				}
++			}
++		}
++		if len(parsed.ModelRefs) > 0 {
++			parsed.Model = parsed.ModelRefs[0].Value
++			parsed.ScheduleModelPath = parsed.ModelRefs[0].Path
++		}
 +		return parsed, nil
 +	}
 +
@@ -879,12 +970,15 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +	if account == nil {
 +		return nil, fmt.Errorf("account is required")
 +	}
-+	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
-+		return nil, fmt.Errorf("realtime REST endpoint requires an OpenAI API key or OAuth account")
++	if account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
++		return nil, fmt.Errorf("realtime REST endpoint requires an OpenAI API key account")
 +	}
 +
 +	startTime := time.Now()
-+	requestModel, upstreamModel, forwardBody := buildOpenAIRealtimeRESTForwardBody(parsed, account, channelMappedModels)
++	requestModel, upstreamModel, forwardBody, err := buildOpenAIRealtimeRESTForwardBody(parsed, account, channelMappedModels)
++	if err != nil {
++		return nil, err
++	}
 +
 +	token, _, err := s.GetAccessToken(ctx, account)
 +	if err != nil {
@@ -969,9 +1063,9 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +	parsed *OpenAIRealtimeRESTRequest,
 +	account *Account,
 +	channelMappedModels map[string]string,
-+) (requestModel string, upstreamModel string, body []byte) {
++) (requestModel string, upstreamModel string, body []byte, err error) {
 +	if parsed == nil {
-+		return "", "", nil
++		return "", "", nil, nil
 +	}
 +	body = parsed.Body
 +	requestModel = strings.TrimSpace(parsed.Model)
@@ -980,6 +1074,7 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +		upstreamModel = ""
 +	}
 +
++	mappedModels := make(map[string]string, len(parsed.ModelRefs))
 +	for _, ref := range parsed.ModelRefs {
 +		original := strings.TrimSpace(ref.Value)
 +		if original == "" || strings.TrimSpace(ref.Path) == "" {
@@ -989,16 +1084,49 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +		if nextModel == "" || nextModel == original {
 +			continue
 +		}
++		mappedModels[ref.Path] = nextModel
++		if parsed.multipartBoundary != "" {
++			continue
++		}
 +		updated, err := sjson.SetBytes(body, ref.Path, nextModel)
 +		if err != nil {
 +			continue
 +		}
 +		body = updated
 +	}
++	if parsed.multipartBoundary != "" && len(mappedModels) > 0 {
++		var buffer bytes.Buffer
++		writer := multipart.NewWriter(&buffer)
++		if err := writer.SetBoundary(parsed.multipartBoundary); err != nil {
++			return "", "", nil, err
++		}
++		for _, part := range parsed.multipartParts {
++			partBody := part.body
++			if part.name == "session" {
++				for path, model := range mappedModels {
++					partBody, err = sjson.SetBytes(partBody, strings.TrimPrefix(path, "session."), model)
++					if err != nil {
++						return "", "", nil, err
++					}
++				}
++			}
++			target, err := writer.CreatePart(part.header)
++			if err != nil {
++				return "", "", nil, err
++			}
++			if _, err := target.Write(partBody); err != nil {
++				return "", "", nil, err
++			}
++		}
++		if err := writer.Close(); err != nil {
++			return "", "", nil, err
++		}
++		body = buffer.Bytes()
++	}
 +	if upstreamModel == "" && len(parsed.ModelRefs) > 0 {
 +		upstreamModel = strings.TrimSpace(parsed.ModelRefs[0].Value)
 +	}
-+	return requestModel, upstreamModel, body
++	return requestModel, upstreamModel, body, nil
 +}
 +
 +func resolveOpenAIRealtimeRESTModel(account *Account, requestedModel string, channelMappedModel string) string {
@@ -1036,9 +1164,18 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +		return nil, err
 +	}
 +	if c != nil && c.Request != nil {
++		if c.Request.URL != nil {
++			query := req.URL.Query()
++			for _, key := range []string{"intent", "architecture"} {
++				if values, ok := c.Request.URL.Query()[key]; ok {
++					query[key] = values
++				}
++			}
++			req.URL.RawQuery = query.Encode()
++		}
 +		for key, values := range c.Request.Header {
 +			lowerKey := strings.ToLower(key)
-+			if !openaiPassthroughAllowedHeaders[lowerKey] {
++			if !openaiPassthroughAllowedHeaders[lowerKey] && lowerKey != "openai-alpha" && lowerKey != "x-session-id" {
 +				continue
 +			}
 +			for _, value := range values {
@@ -1053,20 +1190,8 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +	if strings.TrimSpace(req.Header.Get("Content-Type")) == "" {
 +		req.Header.Set("Content-Type", "application/json")
 +	}
-+	if account.Type == AccountTypeOAuth {
-+		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
-+			req.Header.Set("chatgpt-account-id", chatgptAccountID)
-+		}
-+		isCodexOfficialClient := false
-+		if c != nil {
-+			isCodexOfficialClient = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
-+		}
-+		req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexOfficialClient))
-+	}
 +	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
 +		req.Header.Set("User-Agent", customUA)
-+	} else if account.Type == AccountTypeOAuth {
-+		req.Header.Set("User-Agent", codexCLIUserAgent)
 +	}
 +	return req, nil
 +}
@@ -1083,18 +1208,20 @@ index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2
 +}
 diff --git a/backend/internal/service/openai_realtime_calls_test.go b/backend/internal/service/openai_realtime_calls_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..336f0382b7adfb935da2dcdd997502d46178985d
+index 0000000000000000000000000000000000000000..485d7e274689a6ad1f5ccd04a01d1d445dc2f94e
 --- /dev/null
 +++ b/backend/internal/service/openai_realtime_calls_test.go
-@@ -0,0 +1,412 @@
+@@ -0,0 +1,477 @@
 +package service
 +
 +import (
 +	"bytes"
 +	"context"
 +	"io"
++	"mime/multipart"
 +	"net/http"
 +	"net/http/httptest"
++	"net/textproto"
 +	"testing"
 +
 +	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -1102,6 +1229,75 @@ index 0000000000000000000000000000000000000000..336f0382b7adfb935da2dcdd997502d4
 +	"github.com/stretchr/testify/require"
 +	"github.com/tidwall/gjson"
 +)
++
++func TestOpenAIRealtimeRESTMultipartMapsSessionAndPreservesSDP(t *testing.T) {
++	var body bytes.Buffer
++	writer := multipart.NewWriter(&body)
++	sdp := "v=0\r\no=- 123 2 IN IP4 127.0.0.1\r\n"
++	require.NoError(t, writer.WriteField("sdp", sdp))
++	part, err := writer.CreatePart(textproto.MIMEHeader{
++		"Content-Disposition": {`form-data; name="session"`},
++		"Content-Type":        {"application/json"},
++	})
++	require.NoError(t, err)
++	_, err = io.WriteString(part, `{"type":"realtime","model":"client-realtime","instructions":"keep me"}`)
++	require.NoError(t, err)
++	require.NoError(t, writer.Close())
++	c, _ := gin.CreateTestContext(httptest.NewRecorder())
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/calls?intent=quicksilver&architecture=avas", bytes.NewReader(body.Bytes()))
++	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
++	c.Request.Header.Set("OpenAI-Alpha", "realtime=v2")
++	c.Request.Header.Set("X-Session-Id", "session-123")
++	parsed, err := ParseOpenAIRealtimeRESTRequest(c, body.Bytes())
++	require.NoError(t, err)
++	require.Equal(t, "client-realtime", parsed.Model)
++	require.Equal(t, "session.model", parsed.ScheduleModelPath)
++	_, _, unchangedBody, err := buildOpenAIRealtimeRESTForwardBody(parsed, nil, nil)
++	require.NoError(t, err)
++	require.Equal(t, body.Bytes(), unchangedBody)
++	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
++		"api_key": "test-key", "model_mapping": map[string]any{"channel-realtime": "gpt-realtime"},
++	}}
++	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusCreated,
++		Header: http.Header{"Content-Type": {"application/sdp"}}, Body: io.NopCloser(bytes.NewBufferString(sdp))}}
++	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
++	result, err := svc.ForwardRealtimeREST(context.Background(), c, account, parsed, map[string]string{"session.model": "channel-realtime"})
++	require.NoError(t, err)
++	require.Equal(t, "client-realtime", result.Model)
++	require.Equal(t, "gpt-realtime", result.UpstreamModel)
++	require.Equal(t, "quicksilver", upstream.lastReq.URL.Query().Get("intent"))
++	require.Equal(t, "avas", upstream.lastReq.URL.Query().Get("architecture"))
++	require.Equal(t, "realtime=v2", upstream.lastReq.Header.Get("OpenAI-Alpha"))
++	require.Equal(t, "session-123", upstream.lastReq.Header.Get("X-Session-Id"))
++	require.Equal(t, writer.FormDataContentType(), upstream.lastReq.Header.Get("Content-Type"))
++	reader := multipart.NewReader(bytes.NewReader(upstream.lastBody), writer.Boundary())
++	sdpPart, err := reader.NextPart()
++	require.NoError(t, err)
++	sdpBody, err := io.ReadAll(sdpPart)
++	require.NoError(t, err)
++	require.Equal(t, sdp, string(sdpBody))
++	sessionPart, err := reader.NextPart()
++	require.NoError(t, err)
++	require.Equal(t, "application/json", sessionPart.Header.Get("Content-Type"))
++	sessionBody, err := io.ReadAll(sessionPart)
++	require.NoError(t, err)
++	require.JSONEq(t, `{"type":"realtime","model":"gpt-realtime","instructions":"keep me"}`, string(sessionBody))
++}
++
++func TestParseOpenAIRealtimeRESTRequestMalformedMultipart(t *testing.T) {
++	c, _ := gin.CreateTestContext(httptest.NewRecorder())
++	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/calls", nil)
++	c.Request.Header.Set("Content-Type", "multipart/form-data; boundary=test")
++	_, err := ParseOpenAIRealtimeRESTRequest(c, []byte("--test\r\nContent-Disposition: form-data; name=\"session\"\r\n\r\n{"))
++	require.Error(t, err)
++}
++
++func TestOpenAIRealtimeRESTCallControlSharesCallSessionHash(t *testing.T) {
++	accept := &OpenAIRealtimeRESTRequest{CallID: "call_123", Endpoint: "/v1/realtime/calls/call_123/accept", Model: "gpt-realtime"}
++	hangup := &OpenAIRealtimeRESTRequest{CallID: "call_123", Endpoint: "/v1/realtime/calls/call_123/hangup"}
++	require.Equal(t, OpenAIRealtimeCallSessionHash("call_123"), accept.StickySessionSeed())
++	require.Equal(t, accept.StickySessionSeed(), hangup.StickySessionSeed())
++}
 +
 +func TestParseOpenAIRealtimeRESTRequest_AcceptAction(t *testing.T) {
 +	gin.SetMode(gin.TestMode)
@@ -1190,7 +1386,7 @@ index 0000000000000000000000000000000000000000..336f0382b7adfb935da2dcdd997502d4
 +	require.JSONEq(t, `{"id":"call_123"}`, rec.Body.String())
 +}
 +
-+func TestOpenAIGatewayService_ForwardRealtimeREST_AcceptActionOAuthURLBodyAndHeaders(t *testing.T) {
++func TestOpenAIGatewayService_ForwardRealtimeREST_RejectsOAuth(t *testing.T) {
 +	gin.SetMode(gin.TestMode)
 +	rec := httptest.NewRecorder()
 +	c, _ := gin.CreateTestContext(rec)
@@ -1228,15 +1424,9 @@ index 0000000000000000000000000000000000000000..336f0382b7adfb935da2dcdd997502d4
 +
 +	result, err := svc.ForwardRealtimeREST(context.Background(), c, account, parsed, nil)
 +
-+	require.NoError(t, err)
-+	require.NotNil(t, result)
-+	require.NotNil(t, upstream.lastReq)
-+	require.Equal(t, "https://api.openai.com/v1/realtime/calls/call_123/accept", upstream.lastReq.URL.String())
-+	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
-+	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
-+	require.Equal(t, "codex_cli_rs", upstream.lastReq.Header.Get("originator"))
-+	require.Equal(t, "gpt-realtime", gjson.GetBytes(upstream.lastBody, "model").String())
-+	require.JSONEq(t, `{"id":"call_123"}`, rec.Body.String())
++	require.ErrorContains(t, err, "requires an OpenAI API key account")
++	require.Nil(t, result)
++	require.Nil(t, upstream.lastReq)
 +}
 +
 +func TestOpenAIGatewayService_ForwardRealtimeREST_ClientSecretMapsTranscriptionModel(t *testing.T) {

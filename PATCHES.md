@@ -29,7 +29,8 @@ not claim that a later upstream branch or release has accepted the capability.
     - Patch 4 adds request-context markers for Realtime REST and audio
       transcription selection.
   - Account eligibility
-    - Patch 4 limits both endpoint families to API-key and OAuth accounts.
+    - Patch 4 limits public Realtime REST to API-key accounts. Audio
+      transcription retains API-key and OAuth account support.
     - It requires explicit account model support for unknown transcription
       models while allowing the known transcription fallback model.
   - Endpoint selectors
@@ -56,12 +57,19 @@ not claim that a later upstream branch or release has accepted the capability.
   - WebSocket transport
     - Patch 7 adds `/v1/realtime` session and translation WebSocket dispatch,
       upstream URL construction, model mapping, and relay behavior.
+    - Realtime uses API-key accounts independently of Responses WebSocket
+      settings, preserves caller session aliases and Codex protocol headers,
+      and holds concurrency for the connection to cover server VAD responses.
     - It preserves Grok dispatch on the shared `/v1/realtime` route and leaves
       the root `/realtime` route Grok-only.
   - REST transport
     - Patch 8 adds session, transcription-session, client-secret, call, and
       translation REST paths, including selection, failover, forwarding, and
       model mapping.
+    - Multipart call requests retain SDP and map their JSON session models.
+      Scheduling uses the requested model after channel mapping. Created calls
+      bind subsequent sideband and control requests to the selected account
+      through the existing sticky cache.
     - Patch 8 also classifies its POST routes as bypassing the Codex Chat and
       Responses prompt transformers. It does not claim WebSocket coverage.
     - Its audit call uses the literal protocol value `openai_realtime`, so the
@@ -72,6 +80,11 @@ not claim that a later upstream branch or release has accepted the capability.
       handler integration.
     - Patch 10 is the single-file integration hook that makes the Realtime REST
       handler use the moderation constant from patch 9.
+  - Authentication and protocol boundary
+    - Public Realtime endpoints require OpenAI API-key accounts. ChatGPT OAuth
+      voice uses a separate backend protocol and is not implemented here.
+    - Codex V1 and default V2 use the retained Realtime endpoints. Opt-in V3
+      `/live` is outside this capability.
 - Codex prompt handling
   - Caller prompt preservation
     - Patch 11 suppresses default prompt injection only when the caller already
@@ -128,8 +141,12 @@ test. It remains independent of audio pricing and accounting.
 
 The complete 11-patch series cleanly replays from the selected upstream commit.
 The replay produces tree
-`f189f1721a9eeb2973c4347aefede025bf728b8d`, exactly matching the refreshed
+`a0defeaaf3a4ee6b2e9fc931a8dc31bf107d93b0`, exactly matching the refreshed
 integration tree.
+
+The functional follow-up adds regression coverage for protocol-preserving
+Realtime relay, session aliases, multipart model mapping, and account
+selection. Runtime verification of these changes is performed in CI.
 
 Verification recorded during the rebuild covers Docker publication, the
 pnpm cache, the singular cached-token parser, Realtime transport without

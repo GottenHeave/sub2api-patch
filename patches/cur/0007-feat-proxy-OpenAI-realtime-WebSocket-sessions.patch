@@ -5,18 +5,22 @@ Subject: [PATCH 07/11] feat: proxy OpenAI realtime WebSocket sessions
 
 ---
  backend/internal/handler/endpoint.go          |   6 +
- .../handler/openai_gateway_handler.go         | 161 ++++++++++++++----
- backend/internal/server/routes/gateway.go     |  39 ++++-
+ .../handler/openai_gateway_handler.go         | 187 ++++++++++++++----
+ backend/internal/server/routes/gateway.go     |  39 +++-
  .../internal/server/routes/gateway_test.go    |  27 +++
+ .../service/openai_account_scheduler.go       |   6 +
  .../service/openai_fast_policy_ws_test.go     |  14 ++
+ .../service/openai_gateway_scheduling.go      |   3 +
  .../internal/service/openai_ws_forwarder.go   |   3 +-
- .../service/openai_ws_forwarder_ingress.go    |  48 ++++++
- .../service/openai_ws_forwarder_payload.go    |  75 +++++++-
- .../openai_ws_forwarder_success_test.go       |  28 +++
- .../service/openai_ws_v2/passthrough_relay.go |  97 +++++++++--
- .../passthrough_relay_internal_test.go        |  60 +++++++
- .../openai_ws_v2_passthrough_adapter.go       |  71 ++++++--
- 12 files changed, 554 insertions(+), 75 deletions(-)
+ .../service/openai_ws_forwarder_ingress.go    |  45 +++++
+ .../service/openai_ws_forwarder_payload.go    | 119 ++++++++++-
+ .../openai_ws_forwarder_success_test.go       |  44 +++++
+ .../service/openai_ws_protocol_resolver.go    |   1 +
+ .../service/openai_ws_v2/passthrough_relay.go |  97 +++++++--
+ .../passthrough_relay_internal_test.go        |  60 ++++++
+ .../openai_ws_v2_passthrough_adapter.go       | 183 +++++++++++++----
+ .../openai_ws_v2_realtime_relay_test.go       | 127 ++++++++++++
+ 16 files changed, 859 insertions(+), 102 deletions(-)
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
 index b45b101d890eb59fbeeee0814c4fcb646e8afc2c..8ee8928b2540bdb8d3712a4318f64d7767f2b5cc 100644
@@ -38,7 +42,7 @@ index b45b101d890eb59fbeeee0814c4fcb646e8afc2c..8ee8928b2540bdb8d3712a4318f64d77
 +		}
  		// OpenAI forwards everything to the Responses API.
 diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
-index 741379e63169a262aef4c3b82965fc8f772f2178..35dd4c3a8f6a2c637092897b01fb0a5a7eddbad2 100644
+index 741379e63169a262aef4c3b82965fc8f772f2178..bcbfa2c014019f50dac3f3f2eac108b67bd46b80 100644
 --- a/backend/internal/handler/openai_gateway_handler.go
 +++ b/backend/internal/handler/openai_gateway_handler.go
 @@ -2234,2 +2234,7 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
@@ -77,7 +81,7 @@ index 741379e63169a262aef4c3b82965fc8f772f2178..35dd4c3a8f6a2c637092897b01fb0a5a
  		zap.Bool("openai_ws_mode", true),
 +		zap.Bool("realtime", opts.Realtime),
  	)
-@@ -2312,39 +2334,49 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2312,39 +2334,53 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
 -	firstMessageTimeout := service.ResolveOpenAIWSClientFirstMessageTimeout(h.cfg)
 -	msgType, firstMessage, err := service.ReadOpenAIWSClientMessage(
@@ -95,7 +99,11 @@ index 741379e63169a262aef4c3b82965fc8f772f2178..35dd4c3a8f6a2c637092897b01fb0a5a
 -			reqLog.Warn("openai.websocket_ingress_lease_lost_before_first_message", zap.Error(err))
 -			closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "websocket ingress capacity lease lost; please reconnect")
 +	queryModel := strings.TrimSpace(c.Request.URL.Query().Get("model"))
-+	if !opts.Realtime || queryModel == "" {
++	realtimeCallID := ""
++	if opts.Realtime {
++		realtimeCallID = strings.TrimSpace(c.Query("call_id"))
++	}
++	if !opts.Realtime || (queryModel == "" && realtimeCallID == "") {
 +		firstMessageTimeout := service.ResolveOpenAIWSClientFirstMessageTimeout(h.cfg)
 +		var readErr error
 +		msgType, firstMessage, readErr = service.ReadOpenAIWSClientMessage(
@@ -152,22 +160,64 @@ index 741379e63169a262aef4c3b82965fc8f772f2178..35dd4c3a8f6a2c637092897b01fb0a5a
 +		}
  	}
 -	reqModel := strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
-+	reqModel := resolveOpenAIWebSocketRequestModel(c, firstMessage, opts)
- 	if reqModel == "" {
+-	if reqModel == "" {
 -		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "model is required in first response.create payload")
++	reqModel := resolveOpenAIWebSocketRequestModel(c, firstMessage, opts)
++	if reqModel == "" && realtimeCallID == "" {
 +		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, openAIWebSocketMissingModelReason(opts))
  		return
-@@ -2394,3 +2426,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2394,3 +2430,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
 -	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 +	if !opts.Realtime && imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
  		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
-@@ -2587,3 +2619,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2478,2 +2514,5 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 	requiredTransport := service.OpenAIUpstreamTransportResponsesWebsocketV2Ingress
++	if opts.Realtime {
++		requiredTransport = service.OpenAIUpstreamTransportRealtimeWebsocket
++	}
+ 	if requestPlatform == service.PlatformGrok {
+@@ -2492,2 +2531,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 	)
++	if realtimeCallID != "" {
++		sessionHash = service.OpenAIRealtimeCallSessionHash(realtimeCallID)
++		ctx = h.gatewayService.WithOpenAIRealtimeCallAccount(ctx, apiKey.GroupID, realtimeCallID)
++	}
+ 	ctx = service.WithOpenAIGuardianParentAffinity(ctx, c, firstMessage, reqModel)
+@@ -2567,2 +2610,5 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 	requiredCapability := service.OpenAIEndpointCapabilityChatCompletions
++	if opts.Realtime {
++		requiredCapability = ""
++	}
+ 	if service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage) && requestPlatform == service.PlatformOpenAI {
+@@ -2587,3 +2633,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  			apiKey.GroupID,
 -			previousResponseID,
 +			openAIWebSocketPreviousResponseID(previousResponseID, opts),
  			sessionHash,
-@@ -2984,3 +3016,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2605,2 +2651,4 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 				closeOpenAIWSFailoverExhausted(c, wsConn, lastFailoverErr)
++			} else if opts.Realtime {
++				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "no available OpenAI API key account supports this realtime request")
+ 			} else {
+@@ -2762,3 +2810,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 				}
+-				if turn == 1 {
++				if turn == 1 && !opts.Realtime {
+ 					return nil
+@@ -2826,3 +2874,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 				turnPricing.freeze(turnAt)
+-				if turn == 1 {
++				if turn == 1 || opts.Realtime {
+ 					return nil
+@@ -2865,3 +2913,5 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+ 				}()
+-				releaseTurnSlots()
++				if !opts.Realtime {
++					releaseTurnSlots()
++				}
+ 				turnRequestedModel := reqModel
+@@ -2984,3 +3034,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  		for {
 -			err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks)
 +			var err error
@@ -181,7 +231,7 @@ index 741379e63169a262aef4c3b82965fc8f772f2178..35dd4c3a8f6a2c637092897b01fb0a5a
 +				err = h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks)
 +			}
  			if err == nil {
-@@ -3099,2 +3140,54 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -3099,2 +3158,54 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
 +func openAIWebSocketLoggerName(opts openAIWebSocketEndpointOptions) string {
 +	if opts.Realtime {
@@ -322,6 +372,22 @@ index 9ab241bdf4f5514051396a0666288e86746cf793..03f4b97fcc0d4dc8ae2fdfe10cccc3c1
 +}
 +
  func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
+diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
+index 9203f60dd799195dbe14f28ea361708d58f108c6..45aa11b9dbd380a427b55db300fdb809ca398f06 100644
+--- a/backend/internal/service/openai_account_scheduler.go
++++ b/backend/internal/service/openai_account_scheduler.go
+@@ -1837,2 +1837,5 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 	}
++	if accountID, _ := ctx.Value(openAIRealtimeCallAccountContextKey{}).(int64); accountID > 0 && account.ID != accountID {
++		return false, "realtime_call_account"
++	}
+ 	if s != nil && s.service != nil && s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.RequestedModel) {
+@@ -2513,2 +2516,5 @@ func cloneExcludedAccountIDs(excludedIDs map[int64]struct{}) map[int64]struct{}
+ func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {
++	if requiredTransport == OpenAIUpstreamTransportRealtimeWebsocket {
++		return account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey
++	}
+ 	if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
 diff --git a/backend/internal/service/openai_fast_policy_ws_test.go b/backend/internal/service/openai_fast_policy_ws_test.go
 index c154f32abfc1fb3e17db6c209ea2ea6ef19354ae..7fe0183a52a4f7990248aa140adc00f3402b50b0 100644
 --- a/backend/internal/service/openai_fast_policy_ws_test.go
@@ -343,6 +409,16 @@ index c154f32abfc1fb3e17db6c209ea2ea6ef19354ae..7fe0183a52a4f7990248aa140adc00f3
 +}
 +
  // --- Fix2: native /responses normalize "fast" → "priority" on pass ---
+diff --git a/backend/internal/service/openai_gateway_scheduling.go b/backend/internal/service/openai_gateway_scheduling.go
+index dc2eab32ccbf090f5905d4f68425e8c7f5c1d672..d9780bb0b4e6ca238a41cc7a514596a5c9065dd0 100644
+--- a/backend/internal/service/openai_gateway_scheduling.go
++++ b/backend/internal/service/openai_gateway_scheduling.go
+@@ -406,2 +406,5 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+ 	}
++	if accountID, _ := ctx.Value(openAIRealtimeCallAccountContextKey{}).(int64); accountID > 0 && account.ID != accountID {
++		return "realtime_call_account"
++	}
+ 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
 diff --git a/backend/internal/service/openai_ws_forwarder.go b/backend/internal/service/openai_ws_forwarder.go
 index b5a466949f3955c9ba5fd92be8d6cf2cec79d94e..67ebfc1b191904bb4ec220f485a8114104a788ca 100644
 --- a/backend/internal/service/openai_ws_forwarder.go
@@ -354,7 +430,7 @@ index b5a466949f3955c9ba5fd92be8d6cf2cec79d94e..67ebfc1b191904bb4ec220f485a81141
 +	// MaxReasoningEffortOverLimit controls whether an over-limit value is capped or rejected.
  	MaxReasoningEffortOverLimit string
 diff --git a/backend/internal/service/openai_ws_forwarder_ingress.go b/backend/internal/service/openai_ws_forwarder_ingress.go
-index f24dc256978264b541a9db4cb7fa13ddc411871d..f95016198ec016c4eca023bbafbd2b49b5e32daf 100644
+index f24dc256978264b541a9db4cb7fa13ddc411871d..3444d4331d3a8540988f54015e0e0a9fee31daad 100644
 --- a/backend/internal/service/openai_ws_forwarder_ingress.go
 +++ b/backend/internal/service/openai_ws_forwarder_ingress.go
 @@ -151,2 +151,4 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
@@ -362,7 +438,7 @@ index f24dc256978264b541a9db4cb7fa13ddc411871d..f95016198ec016c4eca023bbafbd2b49
 +				"/v1/responses",
 +				"",
  			)
-@@ -1947 +1949,47 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
+@@ -1947 +1949,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
  }
 +
 +// ProxyRealtimeWebSocketFromClient relays an OpenAI Realtime connection over
@@ -390,8 +466,8 @@ index f24dc256978264b541a9db4cb7fa13ddc411871d..f95016198ec016c4eca023bbafbd2b49
 +	if account == nil {
 +		return errors.New("account is nil")
 +	}
-+	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
-+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "realtime websocket requires an OpenAI API key or OAuth account", nil)
++	if account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
++		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "realtime websocket requires an OpenAI API key account", nil)
 +	}
 +	if err := validateOpenAIWSBearerToken(account, token); err != nil {
 +		return err
@@ -401,23 +477,58 @@ index f24dc256978264b541a9db4cb7fa13ddc411871d..f95016198ec016c4eca023bbafbd2b49
 +			ctx = withOpenAIFastPolicyContext(ctx, settings)
 +		}
 +	}
-+	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
-+	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
-+		return fmt.Errorf("realtime websocket requires ws_v2 transport, got=%s", wsDecision.Transport)
-+	}
++	wsDecision := OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportRealtimeWebsocket, Reason: "realtime"}
 +	if endpoint := strings.TrimRight(strings.TrimSpace(upstreamEndpoint), "/"); endpoint != "/v1/realtime" && endpoint != "/v1/realtime/translations" {
 +		upstreamEndpoint = "/v1/realtime"
 +	}
 +	return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision, upstreamEndpoint, model)
 +}
 diff --git a/backend/internal/service/openai_ws_forwarder_payload.go b/backend/internal/service/openai_ws_forwarder_payload.go
-index bc24ebc265509c62890228dea79ad9db3fcbe0c7..681a69072b58fa6780e02dafd31f528d78e51cce 100644
+index bc24ebc265509c62890228dea79ad9db3fcbe0c7..0da98f2bb4c394967f2f8c122fb8d3e8a86ca361 100644
 --- a/backend/internal/service/openai_ws_forwarder_payload.go
 +++ b/backend/internal/service/openai_ws_forwarder_payload.go
-@@ -77,2 +77,67 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
+@@ -77,2 +77,105 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
  
 +func (s *OpenAIGatewayService) buildOpenAIRealtimeWSURL(account *Account, model string) (string, error) {
 +	return s.buildOpenAIRealtimeWSURLForEndpoint(account, "/v1/realtime", model)
++}
++
++type openAIRealtimeCallAccountContextKey struct{}
++
++func OpenAIRealtimeCallSessionHash(callID string) string {
++	return "openai-realtime-call|" + strings.TrimSpace(callID)
++}
++
++func (s *OpenAIGatewayService) WithOpenAIRealtimeCallAccount(ctx context.Context, groupID *int64, callID string) context.Context {
++	if strings.TrimSpace(callID) == "" {
++		return ctx
++	}
++	accountID, err := s.getStickySessionAccountID(ctx, groupID, OpenAIRealtimeCallSessionHash(callID))
++	if err != nil || accountID <= 0 {
++		return ctx
++	}
++	return context.WithValue(ctx, openAIRealtimeCallAccountContextKey{}, accountID)
++}
++
++func openAIRealtimeWSQuery(target string, c *gin.Context) string {
++	if c == nil || c.Request == nil || c.Request.URL == nil {
++		return target
++	}
++	parsed, err := url.Parse(target)
++	if err != nil {
++		return target
++	}
++	query := parsed.Query()
++	for _, key := range []string{"intent", "architecture", "call_id"} {
++		if value := c.Request.URL.Query().Get(key); value != "" {
++			query.Set(key, value)
++		}
++	}
++	if query.Get("call_id") != "" {
++		query.Del("model")
++	}
++	parsed.RawQuery = query.Encode()
++	return parsed.String()
 +}
 +
 +func (s *OpenAIGatewayService) buildOpenAIRealtimeTranslationWSURL(account *Account, model string) (string, error) {
@@ -440,8 +551,8 @@ index bc24ebc265509c62890228dea79ad9db3fcbe0c7..681a69072b58fa6780e02dafd31f528d
 +	if account == nil {
 +		return "", errors.New("account is nil")
 +	}
-+	if account.Platform != PlatformOpenAI || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth) {
-+		return "", errors.New("realtime websocket requires an OpenAI API key or OAuth account")
++	if account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
++		return "", errors.New("realtime websocket requires an OpenAI API key account")
 +	}
 +
 +	baseURL := "https://api.openai.com"
@@ -482,7 +593,7 @@ index bc24ebc265509c62890228dea79ad9db3fcbe0c7..681a69072b58fa6780e02dafd31f528d
 +}
 +
  func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
-@@ -156,7 +221,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
+@@ -156,7 +259,15 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
  
 -	betaValue := openAIWSBetaV2Value
 -	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
@@ -493,14 +604,20 @@ index bc24ebc265509c62890228dea79ad9db3fcbe0c7..681a69072b58fa6780e02dafd31f528d
 +			betaValue = openAIWSBetaV1Value
 +		}
 +		headers.Set("OpenAI-Beta", betaValue)
++	} else {
++		for _, key := range []string{"OpenAI-Alpha", "OpenAI-Beta", "x-session-id"} {
++			if value := c.GetHeader(key); value != "" {
++				headers.Set(key, value)
++			}
++		}
  	}
 -	headers.Set("OpenAI-Beta", betaValue)
  
 diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
-index 6923352d7d55cada7cbccc1fb20ca09e5429d2f6..bd1d68611683cebe7fdc2a6821132dadc281e550 100644
+index 6923352d7d55cada7cbccc1fb20ca09e5429d2f6..a64cb1ea80b3eff6234ac6f8cb3117a3785ba3aa 100644
 --- a/backend/internal/service/openai_ws_forwarder_success_test.go
 +++ b/backend/internal/service/openai_ws_forwarder_success_test.go
-@@ -174,2 +174,30 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
+@@ -174,2 +174,46 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
  
 +func TestOpenAIGatewayServiceBuildOpenAIRealtimeWSURL(t *testing.T) {
 +	svc := &OpenAIGatewayService{cfg: &config.Config{}}
@@ -527,10 +644,34 @@ index 6923352d7d55cada7cbccc1fb20ca09e5429d2f6..bd1d68611683cebe7fdc2a6821132dad
 +	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeSetupToken}
 +
 +	_, err := svc.buildOpenAIRealtimeWSURL(account, "gpt-realtime")
-+	require.ErrorContains(t, err, "OpenAI API key or OAuth account")
++	require.ErrorContains(t, err, "OpenAI API key account")
++}
++
++func TestOpenAIRealtimeTransportDoesNotRequireResponsesWebSocketSettings(t *testing.T) {
++	svc := &OpenAIGatewayService{cfg: &config.Config{}}
++	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
++	require.True(t, svc.isOpenAIAccountTransportCompatible(account, OpenAIUpstreamTransportRealtimeWebsocket))
++	account.Type = AccountTypeOAuth
++	require.False(t, svc.isOpenAIAccountTransportCompatible(account, OpenAIUpstreamTransportRealtimeWebsocket))
++}
++
++func TestOpenAIRealtimeWSQueryPreservesCodexRouting(t *testing.T) {
++	c, _ := gin.CreateTestContext(httptest.NewRecorder())
++	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime?intent=quicksilver&architecture=avas&model=client-alias", nil)
++	require.Equal(t, "wss://api.openai.com/v1/realtime?architecture=avas&intent=quicksilver&model=gpt-realtime", openAIRealtimeWSQuery("wss://api.openai.com/v1/realtime?model=gpt-realtime", c))
++	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime?call_id=rtc_123&intent=quicksilver", nil)
++	require.Equal(t, "wss://api.openai.com/v1/realtime?call_id=rtc_123&intent=quicksilver", openAIRealtimeWSQuery("wss://api.openai.com/v1/realtime?model=gpt-realtime", c))
 +}
 +
  func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(t *testing.T) {
+diff --git a/backend/internal/service/openai_ws_protocol_resolver.go b/backend/internal/service/openai_ws_protocol_resolver.go
+index a34dc543d957ccfe7c5da8f9f12f3d4d133edbb5..ce66512eb3b491352a9ca22686058a2cd8179aec 100644
+--- a/backend/internal/service/openai_ws_protocol_resolver.go
++++ b/backend/internal/service/openai_ws_protocol_resolver.go
+@@ -9,2 +9,3 @@ const (
+ 	OpenAIUpstreamTransportAny                  OpenAIUpstreamTransport = ""
++	OpenAIUpstreamTransportRealtimeWebsocket    OpenAIUpstreamTransport = "realtime_websocket"
+ 	OpenAIUpstreamTransportHTTPSSE              OpenAIUpstreamTransport = "http_sse"
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay.go b/backend/internal/service/openai_ws_v2/passthrough_relay.go
 index 3c6bd076dcef463896d7f8b2d42b045e06f25b49..624c71245f50b403d6b941395c3bc5cba5fbe70b 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay.go
@@ -712,7 +853,7 @@ index 80fef47d44042d023ccf940131c87c3efb296bf0..8e3a416617dcaa04fad99d2052ed84b7
 +
  func TestParseUsageAndAccumulateIncludesIndependentReasoningTokens(t *testing.T) {
 diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-index 556ad0627436419c07db3d6d9457870325761eae..2799d3c398591fe79c914af11a63c8f5040c9735 100644
+index 556ad0627436419c07db3d6d9457870325761eae..03738d9122c87ea988270aa4e30d0566d9dfce61 100644
 --- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 +++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 @@ -19,2 +19,3 @@ import (
@@ -751,38 +892,181 @@ index 556ad0627436419c07db3d6d9457870325761eae..2799d3c398591fe79c914af11a63c8f5
 +	upstreamEndpoint string,
 +	realtimeModel string,
  ) error {
-@@ -704,2 +731,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -690,3 +717,4 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	}
+-	if isOpenAIResponsesLiteWebSocketPayload(firstClientMessage) {
++	isRealtime := isOpenAIRealtimeWSEndpoint(upstreamEndpoint)
++	if !isRealtime && isOpenAIResponsesLiteWebSocketPayload(firstClientMessage) {
+ 		liteFirstMessage, _, liteErr := normalizeOpenAIResponsesLitePayloadForAccount(firstClientMessage, account)
+@@ -698,8 +726,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	originalFirstClientMessage := firstClientMessage
+-	if next, policyErr := applyOpenAIWSReasoningEffortPolicy(firstClientMessage, hooks); policyErr != nil {
+-		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, policyErr.Error(), policyErr)
+-	} else {
+-		firstClientMessage = next
++	if !isRealtime {
++		if next, policyErr := applyOpenAIWSReasoningEffortPolicy(firstClientMessage, hooks); policyErr != nil {
++			return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, policyErr.Error(), policyErr)
++		} else {
++			firstClientMessage = next
++		}
+ 	}
  	requestModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
 +	if requestModel == "" {
 +		requestModel = strings.TrimSpace(realtimeModel)
 +	}
  	requestPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
-@@ -734,2 +764,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -734,3 +767,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	}
+-	if hooks != nil && hooks.MapRequestModel != nil {
 +	if initialRequestModel == "" {
 +		initialRequestModel = strings.TrimSpace(realtimeModel)
 +	}
- 	if hooks != nil && hooks.MapRequestModel != nil {
-@@ -793,2 +826,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
++	if hooks != nil && hooks.MapRequestModel != nil && (!isRealtime || initialRequestModel != "") {
+ 		mappedModel, mapErr := hooks.MapRequestModel(1, initialRequestModel)
+@@ -739,3 +775,3 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 		}
+-		if mappedModel = strings.TrimSpace(mappedModel); mappedModel != "" {
++		if mappedModel = strings.TrimSpace(mappedModel); mappedModel != "" && !isRealtime {
+ 			firstClientMessage = s.ReplaceModelInBody(firstClientMessage, mappedModel)
+@@ -744,3 +780,3 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	capturedSessionModel := openAIWSPassthroughPolicyModelForFrame(account, firstClientMessage)
+-	if capturedSessionModel != "" && capturedSessionModel != strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String()) {
++	if !isRealtime && capturedSessionModel != "" && capturedSessionModel != strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String()) {
+ 		firstClientMessage = s.ReplaceModelInBody(firstClientMessage, capturedSessionModel)
+@@ -748,8 +784,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	firstMessageResponsesLite := isOpenAIResponsesLiteWebSocketPayload(firstClientMessage)
+-	if normalized, compatibilityChanged, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(firstClientMessage, account, firstMessageResponsesLite); normalizeErr != nil {
+-		return fmt.Errorf("normalize first websocket response.create: %w", normalizeErr)
+-	} else if compatibilityChanged {
+-		firstClientMessage = normalized
++	if !isRealtime {
++		if normalized, compatibilityChanged, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(firstClientMessage, account, firstMessageResponsesLite); normalizeErr != nil {
++			return fmt.Errorf("normalize first websocket response.create: %w", normalizeErr)
++		} else if compatibilityChanged {
++			firstClientMessage = normalized
++		}
+ 	}
+-	if account.IsOpenAIOAuthLike() {
++	if !isRealtime && account.IsOpenAIOAuthLike() {
+ 		aliasedBody, reverse, aliased, aliasErr := aliasOpenAIOAuthReservedToolNamesBody(firstClientMessage)
+@@ -763,11 +801,18 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	}
+-	accountScopedFirst, accountScoped, scopeErr := applyCodexAccountIdentityClientMetadataRaw(firstClientMessage, codexAccountIdentitySource(c, account), getAPIKeyIDFromContext(c))
+-	if scopeErr != nil {
+-		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket identity metadata", scopeErr)
+-	}
+-	if accountScoped {
+-		firstClientMessage = accountScopedFirst
++	if !isRealtime {
++		accountScopedFirst, accountScoped, scopeErr := applyCodexAccountIdentityClientMetadataRaw(firstClientMessage, codexAccountIdentitySource(c, account), getAPIKeyIDFromContext(c))
++		if scopeErr != nil {
++			return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket identity metadata", scopeErr)
++		}
++		if accountScoped {
++			firstClientMessage = accountScopedFirst
++		}
+ 	}
+ 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
+-	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
++	updatedFirst := firstClientMessage
++	var blocked *OpenAIFastBlockedError
++	var policyErr error
++	if !isRealtime {
++		updatedFirst, blocked, policyErr = s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
++	}
+ 	if policyErr != nil {
+@@ -793,2 +838,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	firstClientMessage = updatedFirst
 +	realtimeUpstreamModel := ""
-+	if isOpenAIRealtimeWSEndpoint(upstreamEndpoint) {
++	if isRealtime {
 +		realtimeUpstreamModel = openAIRealtimeUpstreamModel(account, realtimeModel)
++		usageMeta.updateSessionRequestModel(firstClientMessage)
++		capturedSessionModel = realtimeUpstreamModel
 +		firstClientMessage = rewriteOpenAIRealtimeSessionModel(firstClientMessage, realtimeUpstreamModel)
 +	}
  
-@@ -811,3 +849,3 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -808,2 +860,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	usageMeta.initFromFirstFrame(firstClientMessage, capturedSessionModel)
++	if isRealtime {
++		usageMeta.upstreamModel.Store(openAIWSTrimmedStringPtr(realtimeUpstreamModel))
++	}
+ 	usageMeta.captureRequestedReasoningEffort(originalFirstClientMessage, capturedSessionModel)
+@@ -811,3 +866,3 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	SetOpsUpstreamModel(c, initialUpstreamModel)
 -	wsURL, err := s.buildOpenAIResponsesWSURL(account)
 +	wsURL, err := s.buildOpenAIWSURL(account, upstreamEndpoint, realtimeUpstreamModel)
  	if err != nil {
-@@ -1081,2 +1119,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -815,2 +870,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	}
++	if isRealtime {
++		wsURL = openAIRealtimeWSQuery(wsURL, c)
++	}
+ 	wsHost := "-"
+@@ -953,3 +1011,3 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	completedTurns := atomic.Int32{}
+-	turnLifecycle := newOpenAIWSPassthroughTurnLifecycle(true)
++	turnLifecycle := newOpenAIWSPassthroughTurnLifecycle(strings.TrimSpace(gjson.GetBytes(firstClientMessage, "type").String()) == "response.create")
+ 	var acceptedTurnStartedAt atomic.Pointer[time.Time]
+@@ -972,2 +1030,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	}
++	if isRealtime {
++		clientFrameConn.interTurnIdleTimeout = 0
++	}
+ 	policyClientConn := &openAIWSPolicyEnforcingFrameConn{
+@@ -984,2 +1045,45 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 			isResponseCreate := eventType == "response.create"
++			if isRealtime {
++				if !isResponseCreate && eventType != "session.update" {
++					return payload, nil, nil
++				}
++				turnNo := int(completedTurns.Load()) + 1
++				requestedModel := usageMeta.requestModelForFrame(nil)
++				if sessionModel := openAIWSPassthroughRequestModelFromSessionFrame(payload); sessionModel != "" {
++					requestedModel = sessionModel
++				}
++				if hooks != nil && hooks.BeforeRequest != nil {
++					if err := hooks.BeforeRequest(turnNo, payload, requestedModel); err != nil {
++						return payload, nil, err
++					}
++				}
++				if isResponseCreate && hooks != nil && hooks.BeforeTurn != nil {
++					if err := hooks.BeforeTurn(turnNo); err != nil {
++						return payload, nil, err
++					}
++				}
++				if openAIWSPassthroughRequestModelFromSessionFrame(payload) != "" {
++					upstreamModel := requestedModel
++					if hooks != nil && hooks.MapRequestModel != nil {
++						mappedModel, err := hooks.MapRequestModel(turnNo, requestedModel)
++						if err != nil {
++							return payload, nil, err
++						}
++						if strings.TrimSpace(mappedModel) != "" {
++							upstreamModel = mappedModel
++						}
++					}
++					capturedSessionModel = openAIRealtimeUpstreamModel(account, upstreamModel)
++					usageMeta.updateSessionRequestModel(payload)
++					usageMeta.requestModel.Store(openAIWSTrimmedStringPtr(requestedModel))
++					usageMeta.upstreamModel.Store(openAIWSTrimmedStringPtr(capturedSessionModel))
++					SetOpsUpstreamModel(c, capturedSessionModel)
++					payload = rewriteOpenAIRealtimeSessionModel(payload, capturedSessionModel)
++				}
++				if isResponseCreate {
++					startedAt := time.Now()
++					acceptedTurnStartedAt.Store(&startedAt)
++				}
++				return payload, nil, nil
++			}
+ 			responseCreateAt := time.Time{}
+@@ -1081,2 +1185,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			}
 +			if realtimeUpstreamModel != "" {
 +				payload = rewriteOpenAIRealtimeSessionModel(payload, openAIRealtimeUpstreamModel(account, capturedSessionModel))
 +			}
  			usageMeta.updateSessionRequestModel(payload)
-@@ -1136,14 +1177,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1136,14 +1243,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	}
 -	upstreamFirstMessageSent := false
 -	firstWriteCtx, cancelFirstWrite := context.WithTimeout(ctx, s.openAIWSWriteTimeout())
@@ -810,10 +1094,153 @@ index 556ad0627436419c07db3d6d9457870325761eae..2799d3c398591fe79c914af11a63c8f5
 -	upstreamFirstMessageSent = true
 +	startClientAfterFirstDownstream := hasFirstClientMessage && !isOpenAIRealtimeWSEndpoint(upstreamEndpoint)
  
-@@ -1189,4 +1232,4 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1189,4 +1298,4 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			FirstMessageType:                coderws.MessageText,
 -			FirstMessageSent:                upstreamFirstMessageSent,
 -			StartClientAfterFirstDownstream: true,
 +			FirstMessageSent:                true,
 +			StartClientAfterFirstDownstream: startClientAfterFirstDownstream,
  			ReadClientFrame:                 readNextClientFrame,
+@@ -1248,3 +1357,3 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 			BeforeClientWrite: func(msgType coderws.MessageType, payload []byte) {
+-				if msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {
++				if !isRealtime && msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {
+ 					turnLifecycle.beginTerminalWrite()
+@@ -1257,3 +1366,3 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 				}
+-				if msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {
++				if !isRealtime && msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {
+ 					turnLifecycle.finishTerminalWrite(writeErr == nil, clientFrameConn.markTurnCompleted)
+diff --git a/backend/internal/service/openai_ws_v2_realtime_relay_test.go b/backend/internal/service/openai_ws_v2_realtime_relay_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..1406c4055054afc1b2c169a99eb9372649bcc688
+--- /dev/null
++++ b/backend/internal/service/openai_ws_v2_realtime_relay_test.go
+@@ -0,0 +1,127 @@
++package service
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	coderws "github.com/coder/websocket"
++	"github.com/gin-gonic/gin"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++func TestRealtimeRelayPreservesFramesAndSessionModelAliases(t *testing.T) {
++	for _, firstFrame := range []string{"", `{"type":"session.update","session":{"model":"voice-alias","instructions":"Listen"}}`} {
++		t.Run(firstFrame, func(t *testing.T) {
++			gin.SetMode(gin.TestMode)
++			ctx, cancel := context.WithCancel(context.Background())
++			defer cancel()
++			upstream := newStagedPassthroughConn()
++			cfg := passthroughLifecycleConfig()
++			cfg.Gateway.OpenAIWS.Enabled = false
++			cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = false
++			account := passthroughLifecycleAccount()
++			account.Credentials["model_mapping"] = map[string]any{
++				"voice-alias": "gpt-realtime",
++				"next-alias":  "gpt-realtime-next",
++			}
++			svc := newPassthroughLifecycleService(cfg, upstream)
++			requestedModels := make(chan string, 8)
++			turnResults := make(chan *OpenAIForwardResult, 8)
++			hooks := &OpenAIWSIngressHooks{
++				InitialRequestModel: "voice-alias",
++				MapRequestModel: func(_ int, model string) (string, error) {
++					return model, nil
++				},
++				BeforeRequest: func(_ int, _ []byte, model string) error {
++					requestedModels <- model
++					return nil
++				},
++				AfterTurn: func(_ int, result *OpenAIForwardResult, err error) {
++					if err == nil && result != nil {
++						turnResults <- result
++					}
++				},
++			}
++			serverErr := make(chan error, 1)
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				conn, err := coderws.Accept(w, r, nil)
++				if err != nil {
++					serverErr <- err
++					return
++				}
++				defer conn.CloseNow()
++				c, _ := gin.CreateTestContext(httptest.NewRecorder())
++				c.Request = r.WithContext(ctx)
++				serverErr <- svc.ProxyRealtimeWebSocketFromClient(ctx, c, conn, account, "sk-test", []byte(firstFrame), "voice-alias", "/v1/realtime", hooks)
++			}))
++			defer server.Close()
++			client, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
++			require.NoError(t, err)
++			defer client.CloseNow()
++			if firstFrame != "" {
++				first := requirePassthroughUpstreamWrite(t, upstream, time.Second)
++				require.JSONEq(t, `{"type":"session.update","session":{"model":"gpt-realtime","instructions":"Listen"}}`, string(first))
++			}
++			upstream.Send(`{"type":"session.created","session":{"model":"gpt-realtime"}}`)
++			_, err = readPassthroughLifecycleFrame(t, client, time.Second)
++			require.NoError(t, err)
++
++			frames := []string{
++				`{"type":"response.create"}`,
++				`{"type":"response.create","response":{"conversation":"none","instructions":"Summarize","output_modalities":["text"]}}`,
++				`{"type":"response.cancel"}`,
++				`{"type":"session.update","session":{"model":"next-alias","instructions":"Continue"}}`,
++				`{"type":"response.create"}`,
++			}
++			for _, frame := range frames {
++				writeCtx, cancelWrite := context.WithTimeout(ctx, time.Second)
++				err = client.Write(writeCtx, coderws.MessageText, []byte(frame))
++				cancelWrite()
++				require.NoError(t, err)
++				forwarded := requirePassthroughUpstreamWrite(t, upstream, time.Second)
++				if gjson.Get(frame, "type").String() == "session.update" {
++					require.JSONEq(t, `{"type":"session.update","session":{"model":"gpt-realtime-next","instructions":"Continue"}}`, string(forwarded))
++				} else {
++					require.Equal(t, frame, string(forwarded))
++				}
++			}
++			for _, expected := range []string{"voice-alias", "voice-alias", "next-alias", "next-alias"} {
++				select {
++				case model := <-requestedModels:
++					require.Equal(t, expected, model)
++				case <-time.After(time.Second):
++					t.Fatal("request hook did not observe the client model alias")
++				}
++			}
++			for _, responseID := range []string{"resp_explicit", "resp_server_vad"} {
++				upstream.Send(`{"type":"response.created","response":{"id":"` + responseID + `","model":"gpt-realtime-next"}}`)
++				_, err = readPassthroughLifecycleFrame(t, client, time.Second)
++				require.NoError(t, err)
++				upstream.Send(`{"type":"response.done","response":{"id":"` + responseID + `","model":"gpt-realtime-next","usage":{"input_tokens":3,"output_tokens":2}}}`)
++				terminal, readErr := readPassthroughLifecycleFrame(t, client, time.Second)
++				require.NoError(t, readErr)
++				require.Equal(t, "next-alias", gjson.GetBytes(terminal, "response.model").String())
++				select {
++				case result := <-turnResults:
++					require.Equal(t, "next-alias", result.Model)
++					require.Equal(t, "gpt-realtime-next", result.UpstreamModel)
++					require.Equal(t, 3, result.Usage.InputTokens)
++					require.Equal(t, 2, result.Usage.OutputTokens)
++				case <-time.After(time.Second):
++					t.Fatal("realtime response usage was not reported")
++				}
++			}
++			cancel()
++			select {
++			case <-serverErr:
++			case <-time.After(3 * time.Second):
++				t.Fatal("realtime relay did not stop after cancellation")
++			}
++		})
++	}
++}
