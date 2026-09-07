@@ -94,9 +94,11 @@ parent-chain checks, exact checkout, patch replay, all common gates, replay-tree
 equality, clean-tree/unmerged-path/rejected-residue checks, `git diff --check`,
 version computation, local and remote tag/release queries, release-note generation
 and sanitization, publication commit construction and checks, image-owner
-calculation, Buildx setup, and a non-publishing Docker preflight.
+calculation, and the common non-publishing Docker validation preflight. That common
+gate tests the Dockerfile and context; it is separate from the single release OCI
+export described below.
 
-`prepare-release` packages the exact preflighted Docker context, Git publication
+`prepare-release` packages the validated Docker context, Git publication
 objects, sanitized notes, and their content checksums. Its canonical 28-field
 manifest records the complete provenance, expected refs, replay and publication
 identities, version, image tags, OCI labels, Docker context and tree, Dockerfile and
@@ -105,20 +107,31 @@ platform `artifact_id` and `artifact_digest` remain external to the payload. Tho
 values and the internal manifest digest flow only through successful trusted
 `needs` outputs.
 
-`prepare-image-authority` runs after `prepare-release` and before any mutation. It
-builds the complete release Dockerfile and context as one `linux/amd64` OCI layout,
-authenticates to private GHCR with package-read permission, and records the observed
-version and `latest-patch` registry state. Its immutable artifact contains the OCI
-archive and a 20-field manifest binding the run and producer attempt, release
-artifact identity, release manifest digest, version and publication identities,
-registry baseline, OCI manifest and config digests, and archive checksum. It
-redownloads the upload by platform artifact ID and verifies the archive, OCI layout,
-platform, manifest, config, layers, labels, and exact blob set before exposing the
-authorized image digest.
+`prepare-image-authority` runs after `prepare-release` and before any mutation. On a
+fresh run it performs the sole release publication build: exactly one
+`linux/amd64` Buildx OCI export with `push: false`, `load: false`, fixed
+`provenance: false` and `sbom: false`, release labels, and the existing GHA cache.
+It then authenticates to private GHCR with package-read permission and records the
+observed version and `latest-patch` registry state. A tag is classified as missing
+only when checksum-pinned ORAS 1.3.0 emits exactly one stderr line matching
+`Error response from registry: failed to find "<tag>": <tag>: not found`; every
+other lookup failure is fatal. Recovery downloads the prior authority, retains its
+recorded baseline, and skips registry-baseline login, Buildx, and image construction.
+The immutable artifact contains the exact OCI archive, a canonical closure document,
+and fixed authority metadata.
+The closure binds the root descriptor's media type, digest, size, and bytes; each
+runtime platform descriptor and variant; its config and layers; and every recursively
+reachable policy-expected auxiliary descriptor and blob. Verification rejects
+duplicate, unsafe, or traversing archive paths, missing or extra platforms, missing
+or unreferenced blobs, conflicting descriptors, and any path, byte size, or digest
+mismatch. Fresh redownload and recovery independently regenerate the canonical
+closure and require byte-for-byte equality before exposing its digest through
+trusted `needs` outputs.
 
 The release continuation is `prepare-release` -> `prepare-image-authority` ->
-`mutate-git` -> `publish-image` -> `create-release`, with each job reachable only
-through successful `needs` dependencies. Each write-capable job downloads its
+`authorize-git-mutation` -> `mutate-git` -> `publish-image` -> `create-release`,
+with each job reachable only through successful `needs` dependencies. Each
+write-capable job downloads its
 required raw artifact by the exact trusted platform ID, requires its SHA-256 to
 equal the external platform digest, verifies internal manifests and bundled content
 digests, and matches all trusted fields to `needs` outputs. None runs
@@ -135,12 +148,17 @@ publish the mirror candidate, create or update the internal sync request, promot
 use their validated old values or an equivalent compare-and-swap guard.
 
 `publish-image` verifies the pre-mutation authority artifact and published
-branch/tag identities before exposing its GHCR credential. It authenticates before
-private-package reads, requires the registry state to match the recorded baseline
-or the exact authorized retry result, and uses digest-qualified ORAS copies from the
-verified local OCI layout to publish both tags. It then verifies that both final
-tags have the authorized labels and raw-manifest digest. That digest flows through
-the successful `publish-image` dependency.
+branch/tag identities before exposing its GHCR credential. It uses only
+checksum-pinned ORAS and trusted runner primitives after authorization. It cannot
+set up or run Docker, Buildx, a Docker build action, BuildKit, `buildctl`, a
+Dockerfile, or another OCI rebuild or conversion. It queries the version tag
+immediately before publication. A missing tag is copied from the exact
+digest-qualified layout, an exact authorized tag is skipped, and every other digest
+fails; either successful path requires readback of the descriptor media type, digest
+and size, raw manifest bytes, config digest and size, and labels. Only after that
+version readback succeeds does it apply the same conditional copy-or-skip rule to
+`latest-patch` and require its exact readback. That digest flows through the
+successful `publish-image` dependency.
 
 `create-release` independently verifies the release artifact, branch, tag, notes,
 and existing-release state. It compares the digest reported by `publish-image` with
@@ -188,12 +206,15 @@ Release versions use:
 v<upstream-version>-patch.<counter>
 ```
 
-The counter starts at 1 when neither a tag nor a release exists for that upstream
-version, and otherwise increments past the highest counter found across both tags
-and releases. Remote tags and releases are refreshed and checked again immediately
-before the first mutation. A lookup failure is fatal; it is never treated as
-absence. A new release version must be absent from the fetched local tags, remote
-tags, and releases.
+Fresh version computation fetches the complete relevant
+`v<upstream-version>-patch.N` tag and release namespaces and requires their sets to
+be identical in both directions. Any tag without a matching release or release
+without a matching tag is fatal, including an orphan below the highest counter. The
+counter starts at 1 when both sets are empty and otherwise increments past their
+shared highest counter. Remote tags and releases are refreshed and checked again
+immediately before the first mutation. A lookup failure is fatal; it is never
+treated as absence. A new release version must be absent from the fetched local
+tags, remote tags, and releases.
 
 A full GitHub rerun retains the run ID and may resume one reserved tag without a
 release only when it occupies the next completed-release counter and exact same-run
@@ -202,13 +223,15 @@ image-authority artifacts are selected independently from the highest available
 prior producer attempt. Candidate provenance remains bound to its candidate
 producer attempt; release provenance remains bound to its release producer attempt;
 image authority remains bound to its own producer attempt. Recovery never requires
-those attempts to be equal. A rerun without a release artifact validates under the
+those attempts to be equal. Recovery with an image authority reuses its exact OCI
+archive and root digest; it cannot rebuild, select another platform, or change the
+provenance/SBOM policy. A rerun without a release artifact validates under the
 current attempt and first proves the expected `main`, `mirror/upstream-main`, and
-`patched` refs are unchanged. The ordinary counter computation still sees an
-occupied tag and returns the following counter; recovery explicitly proves that
-relationship before retaining the reserved version. A newly dispatched run has no
-same-run artifact authority and fails on that incomplete tag rather than choosing
-the next counter or silently abandoning the partial publication.
+`patched` refs are unchanged. Only exact same-run recovery bound to a verified
+release artifact bypasses fresh computation and retains its reserved version after
+proving that version is the next counter after the matched completed namespace. A
+newly dispatched run has no same-run artifact authority and fails on any orphan
+rather than choosing the next counter or silently abandoning partial publication.
 
 Release notes contain the computed version, upstream version, and full
 `upstream_source_sha`, `patchset_sha`, and `replay_tree_sha`, followed by this exact
@@ -256,17 +279,25 @@ with the exact target `latest-patch` image is restored from the authorized OCI
 layout; two exact target images are skipped; and a new version replaces the recorded
 historical `latest-patch` while publishing both tags.
 
-GHCR does not provide a portable compare-and-swap operation for updating an image
-tag. Repository-wide Sync concurrency, immediate pre-write state checks,
-digest-qualified immutable OCI sources, and exact authenticated readback detect
-conflicting tag changes, but they cannot prevent a concurrent external package
-writer from racing the destination tags.
+The only supported writer of these GHCR tags is this repository's trusted Sync path
+while it holds the global `sub2api-release-mutation` group with
+`cancel-in-progress: false`. Workflow and package administration must restrict the
+package-write credential to that path. GHCR and OCI distribution provide no portable
+tag compare-and-swap or create-if-absent operation. Organization owners, package
+administrators, independently issued PATs, other repositories, and external registry
+clients with package-write access are outside the enforceable workflow guarantee.
+Immediate pre-write checks, digest-qualified sources, and exact readback detect
+visible conflicting changes. They cannot prove that an external writer's update was
+overwritten before final readback, so this policy does not claim atomic CAS or
+race-free publication against those writers.
 
 ## Partial publication and reporting
 
 Retries remain bound to the exact candidate, release, and image-authority artifact
 IDs, their producer attempts and external archive digests, the internal digests,
-the 28-field release manifest, and the 20-field image-authority manifest. Already
+the 28-field release manifest, and the canonical image-authority metadata and full
+OCI descriptor/blob closure. Image retry reuses the authority archive byte for byte
+and cannot rebuild or regenerate image inputs. Already
 completed mirror, main, patched, tag, image, and release outputs are skipped only
 when their exact identities match. Missing outputs resume in Git/tag, image, then
 release order. Any ref, image label or manifest, release notes, digest, or provenance
@@ -275,9 +306,9 @@ mismatch fails without overwrite or input regeneration.
 `report-publication-outcome` runs with `if: always()` and read-only permissions. It
 independently resolves and verifies the image-authority artifact, authenticates to
 private GHCR, and reads back both tags and their labels. For observable workflow
-execution it records both preparation jobs, Git mutation, image, and release job
-results and classifies each branch, tag, image, and GitHub release as `completed`,
-`missing`, `mismatch`, or `unknown`. It reports `complete` only when all five jobs
+execution it records both preparation jobs, Git authorization, Git mutation, image,
+and release job results and classifies each branch, tag, image, and GitHub release
+as `completed`, `missing`, `mismatch`, or `unknown`. It reports `complete` only when all six jobs
 succeeded and every output is an exact match; otherwise it reports `incomplete`.
 Summary generation and diagnostic artifact upload are best effort, so runner
 allocation failure, cancellation, or an artifact-service outage can leave only the

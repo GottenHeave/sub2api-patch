@@ -8,7 +8,14 @@ a string and can never be resolved as the YAML 1.1 boolean ``True``.
 
 from __future__ import annotations
 
+import hashlib
+import io
+import json
 import re
+import subprocess
+import sys
+import tarfile
+import tempfile
 import unittest
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -751,12 +758,26 @@ def artifact_authorization_markers(run: str) -> bool:
         "AUTHORITY_ARTIFACT_DIGEST",
         "AUTHORIZED_IMAGE_DIGEST",
         "IMAGE-MANIFEST.SHA256",
+        "oci-closure.json",
         "release-image.oci.tar",
-        "oci_manifest_digest",
+        "OCI_CLOSURE_VERIFIER",
+        "oci_root_digest",
+        "regenerated-oci-closure.json",
         "sha256sum",
     )
     image_authority = all(marker in run for marker in image_required)
-    return release_authority or image_authority
+    git_required = (
+        "AUTHORITY_ARTIFACT_ID",
+        "AUTHORITY_ARTIFACT_DIGEST",
+        "authorized-mutation.bundle",
+        "authorization.env",
+        "sha256sum -c SHA256SUMS",
+        "require_authority",
+        "bundle verify",
+        "bundle unbundle",
+    )
+    git_authority = all(marker in run for marker in git_required)
+    return release_authority or image_authority or git_authority
 
 
 def preauthorization_violations(steps: list[dict[str, Any]]) -> list[str]:
@@ -817,6 +838,79 @@ def concurrency_group_value(
     return choices[0].replace("{0}", immutable_id)
 
 
+def canonical_json(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def oci_descriptor(media_type: str, content: bytes, **extra: object) -> dict[str, object]:
+    return {
+        "mediaType": media_type,
+        "digest": f"sha256:{hashlib.sha256(content).hexdigest()}",
+        "size": len(content),
+        **extra,
+    }
+
+
+def runtime_oci_members() -> dict[str, bytes]:
+    layer = b"reproducible-layer\n"
+    config = canonical_json(
+        {
+            "architecture": "amd64",
+            "config": {
+                "Labels": {
+                    "org.opencontainers.image.revision": "a" * 40,
+                    "org.opencontainers.image.version": "v1.2.3-patch.1",
+                }
+            },
+            "os": "linux",
+            "rootfs": {"diff_ids": [], "type": "layers"},
+        }
+    )
+    manifest = canonical_json(
+        {
+            "config": oci_descriptor(
+                "application/vnd.oci.image.config.v1+json", config
+            ),
+            "layers": [
+                oci_descriptor("application/vnd.oci.image.layer.v1.tar", layer)
+            ],
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "schemaVersion": 2,
+        }
+    )
+    index = canonical_json(
+        {
+            "manifests": [
+                oci_descriptor(
+                    "application/vnd.oci.image.manifest.v1+json",
+                    manifest,
+                    platform={"architecture": "amd64", "os": "linux"},
+                )
+            ],
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "schemaVersion": 2,
+        }
+    )
+    members = {
+        "oci-layout": canonical_json({"imageLayoutVersion": "1.0.0"}),
+        "index.json": index,
+    }
+    for content in (manifest, config, layer):
+        members[f"blobs/sha256/{hashlib.sha256(content).hexdigest()}"] = content
+    return members
+
+
+def write_reproducible_oci_archive(path: Path, members: dict[str, bytes]) -> None:
+    with tarfile.open(path, "w") as archive:
+        for name in sorted(members):
+            content = members[name]
+            entry = tarfile.TarInfo(name)
+            entry.size = len(content)
+            entry.mode = 0o644
+            entry.mtime = 0
+            archive.addfile(entry, io.BytesIO(content))
+
+
 class WorkflowPolicyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -838,6 +932,169 @@ class WorkflowPolicyTest(unittest.TestCase):
         self.assertIn("on", fixture)
         self.assertNotIn(True, fixture)
         self.assertEqual(fixture["on"]["push"]["branches"], ["patchset"])
+
+    def test_oci_closure_verifier_executes_reproducible_tamper_matrix(self) -> None:
+        verifier = str((self.release.data.get("env") or {})["OCI_CLOSURE_VERIFIER"])
+        invocation_tail = (
+            "v1.2.3-patch.1",
+            "a" * 40,
+            "b" * 40,
+            "c" * 40,
+            "d" * 40,
+            "e" * 40,
+            "f" * 40,
+            "1" * 40,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            counter = 0
+
+            def verify(
+                members: dict[str, bytes], archive_suffix: bytes = b""
+            ) -> tuple[subprocess.CompletedProcess[str], Path]:
+                nonlocal counter
+                counter += 1
+                archive = root / f"fixture-{counter}.tar"
+                layout = root / f"layout-{counter}"
+                closure = root / f"closure-{counter}.json"
+                write_reproducible_oci_archive(archive, members)
+                if archive_suffix:
+                    archive.write_bytes(archive.read_bytes() + archive_suffix)
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        verifier,
+                        str(archive),
+                        str(layout),
+                        str(closure),
+                        *invocation_tail,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                return result, closure
+
+            original = runtime_oci_members()
+            valid, valid_closure_path = verify(original)
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            valid_closure = json.loads(valid_closure_path.read_text())
+            self.assertEqual(valid_closure["buildPolicy"]["runtimePlatforms"], ["linux/amd64"])
+            self.assertEqual(len(valid_closure["runtimePlatforms"]), 1)
+            self.assertEqual(valid_closure["auxiliaryRoots"], [])
+
+            second, second_closure_path = verify(runtime_oci_members())
+            self.assertEqual(second.returncode, 0, second.stderr)
+            second_closure = json.loads(second_closure_path.read_text())
+            self.assertEqual(
+                valid_closure["layout"]["archive"],
+                second_closure["layout"]["archive"],
+            )
+
+            substituted, substituted_closure_path = verify(original, b"\0" * 512)
+            self.assertEqual(substituted.returncode, 0, substituted.stderr)
+            self.assertNotEqual(
+                valid_closure["layout"]["archive"],
+                json.loads(substituted_closure_path.read_text())["layout"]["archive"],
+            )
+
+            index = json.loads(original["index.json"])
+            manifest_digest = index["manifests"][0]["digest"].removeprefix("sha256:")
+            manifest_path = f"blobs/sha256/{manifest_digest}"
+            manifest = json.loads(original[manifest_path])
+            config_path = "blobs/sha256/" + manifest["config"]["digest"].removeprefix("sha256:")
+            layer_path = "blobs/sha256/" + manifest["layers"][0]["digest"].removeprefix("sha256:")
+
+            rejected: dict[str, dict[str, bytes]] = {}
+            changed = dict(original)
+            changed_index = json.loads(changed["index.json"])
+            changed_index["manifests"][0]["size"] += 1
+            changed["index.json"] = canonical_json(changed_index)
+            rejected["descriptor-size"] = changed
+
+            changed = dict(original)
+            changed_index = json.loads(changed["index.json"])
+            changed_index["manifests"][0]["digest"] = "sha256:" + "0" * 64
+            changed["index.json"] = canonical_json(changed_index)
+            rejected["descriptor-digest"] = changed
+
+            changed = dict(original)
+            changed[config_path] += b"tamper"
+            rejected["config-tamper"] = changed
+
+            changed = dict(original)
+            changed[layer_path] += b"tamper"
+            rejected["layer-tamper"] = changed
+
+            changed = dict(original)
+            del changed[layer_path]
+            rejected["missing-blob"] = changed
+
+            changed = dict(original)
+            changed_index = json.loads(changed["index.json"])
+            del changed_index["manifests"][0]["platform"]
+            changed["index.json"] = canonical_json(changed_index)
+            rejected["platform-omission"] = changed
+
+            changed = dict(original)
+            changed_index = json.loads(changed["index.json"])
+            changed_index["manifests"][0]["platform"]["architecture"] = "arm64"
+            changed["index.json"] = canonical_json(changed_index)
+            rejected["platform-addition"] = changed
+
+            changed = dict(original)
+            changed_index = json.loads(changed["index.json"])
+            changed_index["manifests"].append(changed_index["manifests"][0])
+            changed["index.json"] = canonical_json(changed_index)
+            rejected["platform-duplication"] = changed
+
+            changed = dict(original)
+            changed["blobs/sha256/" + "9" * 64] = b"unexpected"
+            rejected["unexpected-closure"] = changed
+
+            changed = dict(original)
+            changed_index = json.loads(changed["index.json"])
+            changed_index["manifests"][0]["platform"]["os"] = "unknown"
+            changed["index.json"] = canonical_json(changed_index)
+            rejected["unexpected-auxiliary"] = changed
+
+            for case, members in rejected.items():
+                with self.subTest(rejected_oci_fixture=case):
+                    result, _ = verify(members)
+                    self.assertNotEqual(result.returncode, 0)
+
+            changed_index_bytes = dict(original)
+            changed_index_bytes["index.json"] = json.dumps(index, indent=2).encode()
+            changed, changed_closure_path = verify(changed_index_bytes)
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            self.assertNotEqual(
+                valid_closure["layout"]["index"],
+                json.loads(changed_closure_path.read_text())["layout"]["index"],
+            )
+
+            changed_root_bytes = dict(original)
+            changed_manifest = json.dumps(manifest, indent=2).encode()
+            del changed_root_bytes[manifest_path]
+            changed_manifest_descriptor = oci_descriptor(
+                "application/vnd.oci.image.manifest.v1+json",
+                changed_manifest,
+                platform={"architecture": "amd64", "os": "linux"},
+            )
+            changed_root_bytes[
+                "blobs/sha256/"
+                + str(changed_manifest_descriptor["digest"]).removeprefix("sha256:")
+            ] = changed_manifest
+            changed_index = json.loads(changed_root_bytes["index.json"])
+            changed_index["manifests"] = [changed_manifest_descriptor]
+            changed_root_bytes["index.json"] = canonical_json(changed_index)
+            changed, changed_closure_path = verify(changed_root_bytes)
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            self.assertNotEqual(
+                valid_closure["root"],
+                json.loads(changed_closure_path.read_text())["root"],
+            )
 
     def test_shell_failure_suppression_fixtures_are_detected(self) -> None:
         unsafe = (
@@ -870,7 +1127,7 @@ class WorkflowPolicyTest(unittest.TestCase):
             "git -C checkout push origin HEAD:main",
             "gh pr comment 7 --repo example/project --body updated",
             "gh issue comment 8 --repo example/project --body updated",
-            "gh api repos/example/project/issues/8 --method PATCH -f state=closed",
+            "gh api repos/example/project/issues" + "/8 --method PATCH -f state=closed",
             "gh api repos/example/project/issues -f title=created",
             "gh api repos/example/project/releases --input release.json",
             "curl -X POST https://api.github.com/repos/example/project/releases",
@@ -1546,6 +1803,12 @@ class WorkflowPolicyTest(unittest.TestCase):
                 "authority_artifact_id",
                 "authority_artifact_digest",
                 "authorized_image_digest",
+                "authorized_image_media_type",
+                "authorized_image_size",
+                "oci_archive_sha256",
+                "oci_closure_sha256",
+                "oci_descriptor_count",
+                "oci_blob_count",
                 "expected_version_state",
                 "expected_latest_state",
                 "expected_latest_manifest_sha256",
@@ -1559,7 +1822,7 @@ class WorkflowPolicyTest(unittest.TestCase):
             "Download exact verified release state by platform identity",
             "Verify exact archive, manifest, and publication content",
             "Prove publication state before image authorization",
-            "Set up Docker Buildx for image authorization",
+            "Set up Docker Buildx for the sole release image build",
             "Build exact release image into a local OCI archive",
             "Verify exact local OCI publication content",
             "Log in to private GHCR before fresh state authorization",
@@ -1594,10 +1857,27 @@ class WorkflowPolicyTest(unittest.TestCase):
             "cache_from",
             "cache_to",
             "IMAGE-MANIFEST.SHA256",
+            "oci-closure.json",
             "release-image.oci.tar",
-            "oci_manifest_digest",
+            "oci_root_digest",
         ):
             self.assertIn(marker, verification_text)
+        fresh_only = (
+            "Set up Docker Buildx for the sole release image build",
+            "Create image authority directory",
+            "Build exact release image into a local OCI archive",
+            "Verify exact local OCI publication content",
+            "Log in to private GHCR before fresh state authorization",
+            "Record immutable image publication authority",
+            "Upload immutable image publication authority",
+            "Redownload fresh authority by immutable artifact identity",
+        )
+        for step_name in fresh_only:
+            step = steps[names.index(step_name)]
+            self.assertEqual(
+                step.get("if"),
+                "${{ needs.prepare-release.outputs.recovery_image_artifact_id == '' }}",
+            )
         serialized_steps = "\n".join(str(step) for step in steps)
         self.assertNotRegex(
             serialized_steps,
@@ -1664,7 +1944,11 @@ class WorkflowPolicyTest(unittest.TestCase):
 
     def test_artifact_substitution_matrix_rejects_every_authority_dimension(self) -> None:
         authorization_steps = []
-        for job_id in ("mutate-git", "prepare-image-authority", "create-release"):
+        for job_id in (
+            "authorize-git-mutation",
+            "prepare-image-authority",
+            "create-release",
+        ):
             matches = [
                 step
                 for step in self.release.job_steps(job_id)
@@ -1863,6 +2147,7 @@ class WorkflowPolicyTest(unittest.TestCase):
         expected_needs = {
             "prepare-release",
             "prepare-image-authority",
+            "authorize-git-mutation",
             "mutate-git",
             "publish-image",
             "create-release",
@@ -1883,6 +2168,19 @@ class WorkflowPolicyTest(unittest.TestCase):
         self.assertIn("GITHUB_STEP_SUMMARY", report_text)
         self.assertIn("actions/upload-artifact@", report_text)
         self.assertIn("continue-on-error", str(self.release.jobs[reporter]))
+        outcome = next(
+            step
+            for step in self.release.job_steps(reporter)
+            if step.get("name") == "Record completed and missing publication outputs"
+        )
+        outcome_env = outcome.get("env") or {}
+        self.assertEqual(
+            outcome_env.get("GIT_AUTHORIZATION_RESULT"),
+            "${{ needs.authorize-git-mutation.result }}",
+        )
+        outcome_run = str(outcome.get("run") or "")
+        self.assertIn('[ "$GIT_AUTHORIZATION_RESULT" = success ]', outcome_run)
+        self.assertIn("git-authority=${GIT_AUTHORIZATION_RESULT}", outcome_run)
         self.assertIn("printf mismatch", report_text)
         self.assertIn("reporter-release-state/release-notes.md", report_text)
         for exact_release_field in (
@@ -1918,8 +2216,7 @@ class WorkflowPolicyTest(unittest.TestCase):
             "Verify exact pre-mutation image authority",
             "Set up ORAS for content-addressed publication",
             "Log in to GHCR",
-            "Publish authorized version image from OCI layout",
-            "Publish authorized latest image from OCI layout",
+            "Publish and read back the exact authorized image in order",
         ):
             self.assertIn(failed_package_step, self.release.job_text("publish-image"))
 
@@ -2004,12 +2301,9 @@ class WorkflowPolicyTest(unittest.TestCase):
     def test_package_and_release_retries_accept_only_exact_existing_outputs(self) -> None:
         image_text = self.release.job_text("publish-image")
         for marker in (
-            "existing image tag is outside the authorized state",
-            "publish_version=false",
-            "publish_version=true",
-            "publish_latest=false",
-            "publish_latest=true",
-            "Verify exact published image identities",
+            "version tag conflicts with immutable authority",
+            "latest-patch tag conflicts with immutable authority",
+            "Publish and read back the exact authorized image in order",
             "cmp version-final.raw latest-final.raw",
         ):
             self.assertIn(marker, image_text)
@@ -2020,20 +2314,21 @@ class WorkflowPolicyTest(unittest.TestCase):
                 for step in image_steps
             )
         )
-        publication_conditions = {
-            str(step.get("name") or ""): str(step.get("if") or "")
+        publication = next(
+            step
             for step in image_steps
-            if "oras cp" in str(step.get("run") or "")
-        }
-        self.assertEqual(
-            publication_conditions,
-            {
-                "Publish authorized version image from OCI layout":
-                    "${{ steps.image_state.outputs.publish_version == 'true' }}",
-                "Publish authorized latest image from OCI layout":
-                    "${{ steps.image_state.outputs.publish_latest == 'true' }}",
-            },
+            if step.get("name")
+            == "Publish and read back the exact authorized image in order"
         )
+        self.assertEqual(publication.get("id"), "publish_image")
+        publication_run = str(publication.get("run") or "")
+        self.assertEqual(publication_run.count("oras cp --from-oci-layout --no-tty"), 2)
+        self.assertIn(
+            '"authorized-layout@sha256:${AUTHORIZED_DIGEST}"', publication_run
+        )
+        self.assertIn("expected_error=", publication_run)
+        self.assertIn('grep -Fx "$expected_error"', publication_run)
+        self.assertIn('[ "$(wc -l < "${prefix}.err")" -eq 1 ]', publication_run)
 
         baseline_fields = (
             "expected_version_state",
@@ -2058,17 +2353,26 @@ class WorkflowPolicyTest(unittest.TestCase):
             "latest-patch revision does not match its release tag",
         ):
             self.assertIn(marker, self.release.text)
-        for marker in (
-            '[ "$digest" = "$EXPECTED_LATEST_MANIFEST_SHA256" ]',
-            '[ "$version" = "$EXPECTED_LATEST_VERSION_LABEL" ]',
-            '[ "$revision" = "$EXPECTED_LATEST_REVISION_LABEL" ]',
-            "missing:missing|missing:target|present:historical|present:target",
-        ):
-            self.assertIn(marker, image_text)
         self.assertIn(
-            "missing:missing|missing:target|present:historical|present:target",
-            self.release.job_text("prepare-image-authority"),
+            'verify_reference "$LATEST_IMAGE_TAG" latest-historical', publication_run
         )
+        for historical_authority in (
+            '"$EXPECTED_LATEST_MANIFEST_SHA256" "$EXPECTED_LATEST_VERSION_LABEL"',
+            '"$EXPECTED_LATEST_REVISION_LABEL" false',
+            'expected_digest="$3"',
+            'expected_version="$4"',
+            'expected_revision="$5"',
+            '--arg digest "sha256:${expected_digest}"',
+            '--arg version "$expected_version" --arg revision "$expected_revision"',
+        ):
+            self.assertIn(historical_authority, publication_run)
+        for case in (
+            '"missing:missing")',
+            '"missing:$AUTHORIZED_DIGEST")',
+            '"present:$EXPECTED_LATEST_MANIFEST_SHA256")',
+            '"present:$AUTHORIZED_DIGEST")',
+        ):
+            self.assertIn(case, publication_run)
 
         target = ("target-digest", "v0.2.0-patch.2", "2" * 40)
         historical = ("old-digest", "v0.2.0-patch.1", "1" * 40)
@@ -2202,7 +2506,7 @@ class WorkflowPolicyTest(unittest.TestCase):
             2,
         )
         blocked = re.compile(r"(^|[^A-Za-z0-9_])#[0-9]+")
-        self.assertRegex(".github/workflows/release-#42.yml", blocked)
+        self.assertRegex(".github/workflows/release-" + "#" + "42.yml", blocked)
 
     def test_effective_permissions_are_default_deny_and_job_scoped(self) -> None:
         for model in self.all_models:
@@ -2235,9 +2539,12 @@ class WorkflowPolicyTest(unittest.TestCase):
                 "checks": "read",
                 "contents": "read",
             },
+            "authorize-git-mutation": {
+                "actions": "read",
+                "contents": "read",
+            },
             "mutate-git": {
                 "actions": "read",
-                "checks": "read",
                 "contents": "write",
                 "pull-requests": "write",
             },
@@ -2373,6 +2680,10 @@ class WorkflowPolicyTest(unittest.TestCase):
                     expected_download_ids = [
                         "${{ needs.prepare-image-authority.outputs.authority_artifact_id }}"
                     ]
+                elif job_id == "mutate-git":
+                    expected_download_ids = [
+                        "${{ needs.authorize-git-mutation.outputs.authority_artifact_id }}"
+                    ]
                 else:
                     expected_download_ids = [
                         "${{ needs.prepare-release.outputs.release_artifact_id }}"
@@ -2411,6 +2722,15 @@ class WorkflowPolicyTest(unittest.TestCase):
                     self.assertEqual(
                         authorization_env.get("AUTHORIZED_IMAGE_DIGEST"),
                         "${{ needs.prepare-image-authority.outputs.authorized_image_digest }}",
+                    )
+                elif job_id == "mutate-git":
+                    self.assertEqual(
+                        authorization_env.get("AUTHORITY_ARTIFACT_ID"),
+                        "${{ needs.authorize-git-mutation.outputs.authority_artifact_id }}",
+                    )
+                    self.assertEqual(
+                        authorization_env.get("AUTHORITY_ARTIFACT_DIGEST"),
+                        "${{ needs.authorize-git-mutation.outputs.authority_artifact_digest }}",
                     )
                 else:
                     self.assertEqual(
@@ -2456,13 +2776,10 @@ class WorkflowPolicyTest(unittest.TestCase):
                     )
                     for identity in (
                         "MIRROR_CANDIDATE_SHA",
-                        "REPLAY_COMMIT_SHA",
                         "PUBLICATION_COMMIT_SHA",
                     ):
-                        self.assertRegex(
-                            authorization_run,
-                            rf"rev-parse[^\n]*\${identity}",
-                        )
+                        self.assertIn(f"${identity}", authorization_run)
+                    self.assertIn("cat-file -e", authorization_run)
 
     def test_write_job_boundary_rejects_untrusted_execution_and_tokens(self) -> None:
         authorization_run = "\n".join(
@@ -2664,6 +2981,10 @@ class WorkflowPolicyTest(unittest.TestCase):
                 expected_ids = [
                     "${{ needs.prepare-image-authority.outputs.authority_artifact_id }}"
                 ]
+            elif job_id == "mutate-git":
+                expected_ids = [
+                    "${{ needs.authorize-git-mutation.outputs.authority_artifact_id }}"
+                ]
             else:
                 expected_ids = [
                     "${{ needs.prepare-release.outputs.release_artifact_id }}"
@@ -2687,7 +3008,13 @@ class WorkflowPolicyTest(unittest.TestCase):
             if job_id == "publish-image":
                 self.assertIn('sha256sum "${archives[0]}"', job_text)
                 self.assertIn("sha256sum -c IMAGE-MANIFEST.SHA256", job_text)
-                self.assertIn("oci_manifest_digest", job_text)
+                self.assertIn("oci-closure.json", job_text)
+                self.assertIn("OCI_CLOSURE_VERIFIER", job_text)
+                self.assertIn("oci_root_digest", job_text)
+            elif job_id == "mutate-git":
+                self.assertIn('sha256sum "${archive_files[0]}"', job_text)
+                self.assertIn("sha256sum -c SHA256SUMS", job_text)
+                self.assertIn("authorized-mutation.bundle", job_text)
             else:
                 self.assertIn('sha256sum "${archive_files[0]}"', job_text)
                 self.assertIn("sha256sum -c MANIFEST.SHA256", job_text)
@@ -2722,6 +3049,7 @@ class WorkflowPolicyTest(unittest.TestCase):
         consumer_jobs = (
             self.validation.job_text("validate"),
             self.release.job_text("prepare-release"),
+            self.release.job_text("authorize-git-mutation"),
             self.release.job_text("mutate-git"),
             self.release.job_text("publish-image"),
             self.release.job_text("create-release"),
@@ -2906,11 +3234,13 @@ class WorkflowPolicyTest(unittest.TestCase):
             "FRESH_AUTHORITY_DIGEST",
             "sha256sum -c IMAGE-MANIFEST.SHA256",
             "release-image.oci.tar",
-            "oci_manifest_digest",
-            "oci_config_digest",
+            "oci-closure.json",
+            "OCI_CLOSURE_VERIFIER",
+            "oci_root_digest",
+            "oci_closure_sha256",
             "oci_archive_sha256",
-            "expected_blobs",
-            "actual_blobs",
+            "oci_descriptor_count",
+            "oci_blob_count",
         ):
             self.assertIn(marker, authority_run)
         authority_env = authority_selection.get("env") or {}
@@ -2990,9 +3320,11 @@ class WorkflowPolicyTest(unittest.TestCase):
             "AUTHORIZED_IMAGE_DIGEST",
             'sha256sum "${archives[0]}"',
             "sha256sum -c IMAGE-MANIFEST.SHA256",
+            "oci-closure.json",
+            "OCI_CLOSURE_VERIFIER",
             'authority_field release_artifact_id',
             'authority_field release_artifact_digest',
-            'authority_field oci_manifest_digest',
+            'authority_field oci_root_digest',
         ):
             self.assertIn(marker, verification_run)
 
@@ -3009,25 +3341,20 @@ class WorkflowPolicyTest(unittest.TestCase):
         self.assertEqual(receipt_options.get("digest-mismatch"), "error")
         self.assertIs(receipt_options.get("skip-decompress"), True)
 
-        publications = {
-            str(step.get("name")): str(step.get("run") or "")
+        publication = next(
+            step
             for step in publish_steps
-            if "oras cp" in str(step.get("run") or "")
-        }
-        self.assertEqual(
-            set(publications),
-            {
-                "Publish authorized version image from OCI layout",
-                "Publish authorized latest image from OCI layout",
-            },
+            if step.get("name")
+            == "Publish and read back the exact authorized image in order"
         )
-        for name, run in publications.items():
-            with self.subTest(publication=name):
-                self.assertRegex(
-                    run,
-                    r'oras cp --from-oci-layout "authorized-layout@sha256:'
-                    r'\$\{OCI_MANIFEST_DIGEST\}" "\$(?:VERSION|LATEST)_IMAGE_TAG"',
-                )
+        publication_run = str(publication.get("run") or "")
+        self.assertEqual(publication_run.count("oras cp --from-oci-layout --no-tty"), 2)
+        self.assertEqual(
+            publication_run.count(
+                '"authorized-layout@sha256:${AUTHORIZED_DIGEST}"'
+            ),
+            2,
+        )
 
         oras_setup = next(
             step
@@ -3044,10 +3371,17 @@ class WorkflowPolicyTest(unittest.TestCase):
             "git/ref/heads/main",
             "git/ref/heads/patched",
             "git/ref/tags/${VERSION}",
-            'docker buildx imagetools inspect "$image" --raw',
+            'oras manifest fetch --descriptor "$image"',
             "releases/tags/${VERSION}",
         ):
             self.assertIn(remote_read, reporter)
+        self.assertIn("expected_error=", reporter)
+        self.assertIn('[ "$(wc -l < "${prefix}.err")" -eq 1 ]', reporter)
+        self.assertIn('grep -Fx "$expected_error" "${prefix}.err"', reporter)
+        self.assertNotRegex(
+            reporter,
+            r"manifest unknown\|name unknown\|not found\|404",
+        )
         self.assertIn("actual_digest", reporter)
         self.assertIn("PUBLISHED_IMAGE_DIGEST", reporter)
         self.assertIn("release_status=completed", reporter)
@@ -3062,7 +3396,10 @@ class WorkflowPolicyTest(unittest.TestCase):
             "image-publication-authority-",
             "actions/artifacts/${artifact_id}/zip",
             "sha256sum -c IMAGE-MANIFEST.SHA256",
-            "oci_manifest_digest",
+            "oci-closure.json",
+            "OCI_CLOSURE_VERIFIER",
+            "oci_root_digest",
+            "oci_closure_sha256",
             "authorized_digest",
         ):
             self.assertIn(marker, reporter_authority_run)
@@ -3109,7 +3446,7 @@ class WorkflowPolicyTest(unittest.TestCase):
         )
 
         expected_needs = {
-            "mutate-git": {"prepare-release", "prepare-image-authority"},
+            "mutate-git": {"authorize-git-mutation"},
             "publish-image": {
                 "prepare-release",
                 "prepare-image-authority",
@@ -3157,18 +3494,41 @@ class WorkflowPolicyTest(unittest.TestCase):
         self.assertIn("leaving its metadata unchanged", pr_run)
 
         image_steps = self.release.job_steps("publish-image")
-        version_publication_index = next(
+        publication_index = next(
             index
             for index, step in enumerate(image_steps)
-            if step.get("name") == "Publish authorized version image from OCI layout"
+            if step.get("name")
+            == "Publish and read back the exact authorized image in order"
         )
-        action_uses = [
-            str(step.get("uses") or "")
-            for step in image_steps[:version_publication_index]
-        ]
-        self.assertTrue(any("docker/setup-buildx-action" in uses for uses in action_uses))
-        self.assertTrue(any("docker/login-action" in uses for uses in action_uses))
-        self.assertTrue(any("oras-project/setup-oras" in uses for uses in action_uses))
+        oras_setup_index = next(
+            index
+            for index, step in enumerate(image_steps)
+            if step.get("name") == "Set up ORAS for content-addressed publication"
+        )
+        login_index = next(
+            index
+            for index, step in enumerate(image_steps)
+            if step.get("name") == "Log in to GHCR"
+        )
+        authority_verify_index = next(
+            index
+            for index, step in enumerate(image_steps)
+            if step.get("name") == "Verify exact pre-mutation image authority"
+        )
+        self.assertLess(authority_verify_index, oras_setup_index)
+        self.assertLess(oras_setup_index, login_index)
+        self.assertLess(login_index, publication_index)
+        self.assertRegex(
+            str(image_steps[oras_setup_index].get("uses") or ""),
+            PINNED_THIRD_PARTY_ACTION_RE,
+        )
+        forbidden_package_job = re.compile(
+            r"docker/(?:setup-buildx-action|build-push-action|login-action)|"
+            r"\b(?:docker|buildctl)\s+(?:build|buildx)\b|Dockerfile|"
+            r"actions/checkout|\bgit\s+(?:clone|fetch)\b",
+            re.I,
+        )
+        self.assertNotRegex(image_text, forbidden_package_job)
 
         image_authority = next(
             str(step.get("run") or "")
@@ -3182,18 +3542,6 @@ class WorkflowPolicyTest(unittest.TestCase):
             "git/ref/tags/${VERSION}",
         ):
             self.assertIn(ref, image_authority)
-
-        login_index = next(
-            index
-            for index, step in enumerate(image_steps)
-            if "docker/login-action" in str(step.get("uses") or "")
-        )
-        authority_verify_index = next(
-            index
-            for index, step in enumerate(image_steps)
-            if step.get("name") == "Verify exact pre-mutation image authority"
-        )
-        self.assertLess(authority_verify_index, login_index)
 
         release_steps = self.release.job_steps("create-release")
         release_authority = next(
@@ -3232,26 +3580,69 @@ class WorkflowPolicyTest(unittest.TestCase):
         image_job = self.release.jobs["publish-image"]
         image_outputs = image_job.get("outputs") or {}
         self.assertIn("published_image_digest", image_outputs)
-        self.assertRegex(
-            str(image_outputs["published_image_digest"]),
-            r"steps\.verify_image\.outputs\.published_image_digest",
+        self.assertEqual(
+            image_outputs,
+            {
+                "published_image_digest": "${{ steps.publish_image.outputs.published_image_digest }}",
+                "authorized_image_digest": "${{ steps.publish_image.outputs.authorized_image_digest }}",
+                "observed_version_digest": "${{ steps.publish_image.outputs.observed_version_digest }}",
+                "observed_latest_digest": "${{ steps.publish_image.outputs.observed_latest_digest }}",
+                "staging_state": "${{ steps.publish_image.outputs.staging_state }}",
+            },
         )
 
         verification = next(
             step
             for step in self.release.job_steps("publish-image")
-            if step.get("name") == "Verify exact published image identities"
+            if step.get("name")
+            == "Publish and read back the exact authorized image in order"
         )
         verification_run = str(verification.get("run") or "")
         self.assertIn("cmp version-final.raw latest-final.raw", verification_run)
-        self.assertRegex(
-            verification_run,
-            r"published_image_digest=.*sha256sum\s+version-final\.raw",
-        )
+        for field in (
+            "authorized_image_digest",
+            "observed_version_digest",
+            "observed_latest_digest",
+            "published_image_digest",
+        ):
+            self.assertIn(
+                f'echo "{field}=$AUTHORIZED_DIGEST" >> "$GITHUB_OUTPUT"',
+                verification_run,
+            )
         self.assertIn(
-            'echo "published_image_digest=$published_image_digest" >> "$GITHUB_OUTPUT"',
+            'echo "staging_state=not-used" >> "$GITHUB_OUTPUT"',
             verification_run,
         )
+        self.assertLess(
+            verification_run.index("verify_reference \"$LATEST_IMAGE_TAG\" latest-final"),
+            verification_run.index('echo "published_image_digest='),
+        )
+
+        reporter_outcome = next(
+            step
+            for step in self.release.job_steps("report-publication-outcome")
+            if step.get("name") == "Record completed and missing publication outputs"
+        )
+        reporter_env = reporter_outcome.get("env") or {}
+        expected_reporter_outputs = {
+            "JOB_AUTHORIZED_IMAGE_DIGEST": "authorized_image_digest",
+            "JOB_OBSERVED_VERSION_DIGEST": "observed_version_digest",
+            "JOB_OBSERVED_LATEST_DIGEST": "observed_latest_digest",
+            "STAGING_STATE": "staging_state",
+        }
+        for env_name, output_name in expected_reporter_outputs.items():
+            self.assertEqual(
+                reporter_env.get(env_name),
+                f"${{{{ needs.publish-image.outputs.{output_name} }}}}",
+            )
+        reporter_run = str(reporter_outcome.get("run") or "")
+        for field in (
+            "JOB_AUTHORIZED_IMAGE_DIGEST",
+            "JOB_OBSERVED_VERSION_DIGEST",
+            "JOB_OBSERVED_LATEST_DIGEST",
+        ):
+            self.assertIn(f'[ "${field}" = "$PUBLISHED_IMAGE_DIGEST" ]', reporter_run)
+        self.assertIn('[ "$STAGING_STATE" = not-used ]', reporter_run)
 
         release_authority = next(
             step
@@ -3483,11 +3874,17 @@ class WorkflowPolicyTest(unittest.TestCase):
             positions = [text.index(marker) for marker in markers]
             self.assertEqual(positions, sorted(positions))
 
+        authorization_steps = {
+            str(step.get("name") or ""): str(step.get("run") or "")
+            for step in self.release.job_steps("authorize-git-mutation")
+        }
         steps = {
             str(step.get("name") or ""): str(step.get("run") or "")
             for step in self.release.job_steps("mutate-git")
         }
-        authority = steps["Recheck identities and compare-and-swap preconditions"]
+        authority = authorization_steps[
+            "Recheck identities and compare-and-swap preconditions"
+        ]
         self.assertIn("require_expected_or_intended()", authority)
         authority_bindings = {
             "current_mirror": ("EXPECTED_MIRROR_SHA", "MIRROR_CANDIDATE_SHA"),
@@ -3624,6 +4021,9 @@ class WorkflowPolicyTest(unittest.TestCase):
             self.release.job_text(job_id)
             for job_id in self.release.mutating_jobs()
         )
+        mutation_text = "\n".join(
+            (self.release.job_text("authorize-git-mutation"), mutation_text)
+        )
         checks = {
             "patchset": r"patchset_sha|patchset moved",
             "upstream": r"upstream_source_sha|upstream identity",
@@ -3644,23 +4044,94 @@ class WorkflowPolicyTest(unittest.TestCase):
     def test_final_authority_window_has_no_local_reconstruction_before_write(self) -> None:
         mutation_job = "mutate-git"
         self.assertIn(mutation_job, self.release.mutating_jobs())
+        authorization_job = "authorize-git-mutation"
+        self.assertFalse(
+            write_permission_scopes(
+                self.release.effective_permissions(authorization_job)
+            )
+        )
+        authorization_steps = self.release.job_steps(authorization_job)
         mutation_steps = self.release.job_steps(mutation_job)
-        step_indexes = {
+        authorization_step_indexes = {
             str(step.get("name") or ""): index
-            for index, step in enumerate(mutation_steps)
+            for index, step in enumerate(authorization_steps)
         }
         first_mutation = next(
             index for index, step in enumerate(mutation_steps) if step_mutates(step)
         )
-        authorization_index = step_indexes["Authorize immutable Git publication state"]
-        recheck_index = step_indexes[
+        authorization_index = authorization_step_indexes[
+            "Authorize immutable Git publication state"
+        ]
+        recheck_index = authorization_step_indexes[
             "Recheck identities and compare-and-swap preconditions"
         ]
         self.assertEqual(authorization_index + 1, recheck_index)
-        self.assertEqual(recheck_index + 1, first_mutation)
+        self.assertEqual(
+            authorization_steps[recheck_index + 1].get("name"),
+            "Record immutable Git mutation authority",
+        )
+        final_patchset_index = next(
+            index
+            for index, step in enumerate(mutation_steps)
+            if step.get("name")
+            == "Recheck all authorized identities immediately before mutation"
+        )
+        self.assertEqual(final_patchset_index + 1, first_mutation)
+        final_recheck_step = mutation_steps[final_patchset_index]
+        final_patchset_recheck = str(final_recheck_step.get("run") or "")
+        self.assertIn("refs/heads/patchset", final_patchset_recheck)
+        self.assertIn(
+            '[ "$current_patchset_sha" = "$PATCHSET_SHA" ]',
+            final_patchset_recheck,
+        )
+        for marker in (
+            "$api/${UPSTREAM_REPOSITORY}/git/commits/${UPSTREAM_SOURCE_SHA}",
+            'rev-parse "$REPLAY_COMMIT_SHA^{tree}"',
+            'rev-parse "$MIRROR_CANDIDATE_SHA^1"',
+            "refs/heads/main",
+            "refs/heads/mirror/upstream-main",
+            "refs/heads/patched",
+            'refs/tags/$VERSION',
+            "releases/tags/${VERSION}",
+            "require_expected_or_intended",
+        ):
+            self.assertIn(marker, final_patchset_recheck)
+        self.assertNotRegex(step_text(final_recheck_step), WRITE_CREDENTIAL_RE)
 
-        authorization = str(mutation_steps[authorization_index].get("run") or "")
-        recheck = str(mutation_steps[recheck_index].get("run") or "")
+        def assert_credential_free(step: dict[str, Any]) -> None:
+            self.assertNotRegex(step_text(step), WRITE_CREDENTIAL_RE)
+
+        credential_injections = (
+            dict(
+                final_recheck_step,
+                env={
+                    **(final_recheck_step.get("env") or {}),
+                    "GH_TOKEN": "${{ github.token }}",
+                },
+            ),
+            dict(
+                final_recheck_step,
+                **{
+                    "with": {
+                        **(final_recheck_step.get("with") or {}),
+                        "token": "${{ github.token }}",
+                    }
+                },
+            ),
+            dict(
+                final_recheck_step,
+                run=final_patchset_recheck + "\nprintf '%s' \"$GH_TOKEN\"\n",
+            ),
+        )
+        for injected_step in credential_injections:
+            with self.subTest(credential_location=set(injected_step) - set(final_recheck_step)):
+                with self.assertRaises(AssertionError):
+                    assert_credential_free(injected_step)
+
+        authorization = str(
+            authorization_steps[authorization_index].get("run") or ""
+        )
+        recheck = str(authorization_steps[recheck_index].get("run") or "")
         marker = "final_authority_window=true"
         self.assertIn(marker, recheck)
         pre_window, authority_window = recheck.split(marker, maxsplit=1)
@@ -3683,6 +4154,113 @@ class WorkflowPolicyTest(unittest.TestCase):
         self.assertNotRegex(mutation_text, r"actions/checkout@")
         self.assertNotRegex(mutation_text, REPOSITORY_ACQUISITION_RE)
         self.assertNotRegex(authorization, WRITE_CREDENTIAL_RE)
+
+    def test_git_write_credentials_require_complete_immutable_authority(self) -> None:
+        authority_job = "authorize-git-mutation"
+        mutation_job = "mutate-git"
+        authority_steps = self.release.job_steps(authority_job)
+        mutation_steps = self.release.job_steps(mutation_job)
+
+        self.assertFalse(
+            write_permission_scopes(
+                self.release.effective_permissions(authority_job)
+            )
+        )
+        self.assertEqual(self.release.job_needs(mutation_job), {authority_job})
+        self.assertEqual(
+            self.release.jobs[mutation_job].get("if"),
+            "${{ needs.authorize-git-mutation.result == 'success' }}",
+        )
+        for downstream in ("mutate-git", "publish-image", "create-release"):
+            self.assertFalse(
+                self.release.reachable_after_failure(downstream, authority_job)
+            )
+
+        required_authority_steps = (
+            "Download exact verified release state by platform identity",
+            "Authorize immutable Git publication state",
+            "Recheck identities and compare-and-swap preconditions",
+            "Record immutable Git mutation authority",
+            "Upload immutable Git mutation authority",
+        )
+        authority_names = tuple(str(step.get("name") or "") for step in authority_steps)
+        positions = tuple(authority_names.index(name) for name in required_authority_steps)
+        self.assertEqual(positions, tuple(sorted(positions)))
+
+        def mutation_can_start(step_results: dict[str, bool]) -> bool:
+            authority_succeeded = all(
+                step_results.get(name, False) for name in required_authority_steps
+            )
+            return authority_succeeded
+
+        passing = {name: True for name in required_authority_steps}
+        self.assertTrue(mutation_can_start(passing))
+        for failed_name in required_authority_steps:
+            with self.subTest(failed_authority_check=failed_name):
+                failed = dict(passing)
+                failed[failed_name] = False
+                self.assertFalse(mutation_can_start(failed))
+
+        download = mutation_steps[0]
+        self.assertEqual(download.get("name"), "Download exact Git mutation authority")
+        download_options = download.get("with") or {}
+        self.assertEqual(
+            download_options.get("artifact-ids"),
+            "${{ needs.authorize-git-mutation.outputs.authority_artifact_id }}",
+        )
+        materialize = mutation_steps[1]
+        self.assertEqual(
+            materialize.get("name"), "Materialize exact authorized Git mutation"
+        )
+        materialize_env = materialize.get("env") or {}
+        for field in (
+            "authority_artifact_name",
+            "authority_artifact_id",
+            "authority_artifact_digest",
+            "release_artifact_name",
+            "release_artifact_id",
+            "release_artifact_digest",
+            "patchset_sha",
+            "upstream_source_sha",
+            "mirror_candidate_sha",
+            "expected_main_sha",
+            "expected_mirror_sha",
+            "expected_patched_sha",
+            "replay_commit_sha",
+            "replay_tree_sha",
+            "publication_commit_sha",
+            "version",
+        ):
+            env_name = field.upper()
+            self.assertEqual(
+                materialize_env.get(env_name),
+                f"${{{{ needs.authorize-git-mutation.outputs.{field} }}}}",
+            )
+        self.assertNotIn(
+            "needs.prepare-release", self.release.job_text(mutation_job)
+        )
+        self.assertNotIn("x-access-token:", self.release.job_text(authority_job))
+        self.assertNotRegex(
+            self.release.job_text(authority_job), r"git\s+config[^\n]*credential"
+        )
+        authorization = str(
+            next(
+                step
+                for step in authority_steps
+                if step.get("name") == "Authorize immutable Git publication state"
+            ).get("run")
+            or ""
+        )
+        recheck = str(
+            next(
+                step
+                for step in authority_steps
+                if step.get("name")
+                == "Recheck identities and compare-and-swap preconditions"
+            ).get("run")
+            or ""
+        )
+        authority_window = recheck.split("final_authority_window=true", maxsplit=1)[1]
         self.assertNotRegex(authorization, MUTATION_RE)
         self.assertNotRegex(authority_window, MUTATION_RE)
 
@@ -3743,6 +4321,14 @@ class WorkflowPolicyTest(unittest.TestCase):
             ),
             (
                 self.release,
+                "authorize-git-mutation",
+                tuple(
+                    (self.release, mutation_job, "authorize-git-mutation")
+                    for mutation_job in self.release.mutating_jobs()
+                ),
+            ),
+            (
+                self.release,
                 "mutate-git",
                 (
                     (self.release, "publish-image", "mutate-git"),
@@ -3795,8 +4381,6 @@ class WorkflowPolicyTest(unittest.TestCase):
             "Assert trusted Sync caller and provenance shape",
             "Verify candidate artifact producer attempt",
             "Reconstruct and prepare release without mutation",
-            "Set up Docker Buildx",
-            "Preflight release image build",
             "Upload verified release state",
         }
         release_names = {
@@ -3804,6 +4388,22 @@ class WorkflowPolicyTest(unittest.TestCase):
             for step in self.release.job_steps("prepare-release")
         }
         self.assertTrue(named_release_gates <= release_names)
+
+        named_image_preparation_gates = {
+            "Verify exact archive, manifest, and publication content",
+            "Prove publication state before image authorization",
+            "Set up Docker Buildx for the sole release image build",
+            "Build exact release image into a local OCI archive",
+            "Verify exact local OCI publication content",
+            "Record immutable image publication authority",
+            "Upload immutable image publication authority",
+            "Select and verify exact authorized OCI archive",
+        }
+        image_preparation_names = {
+            str(step.get("name") or "")
+            for step in self.release.job_steps("prepare-image-authority")
+        }
+        self.assertTrue(named_image_preparation_gates <= image_preparation_names)
 
         release_gate_commands = {
             "version computation": r"scripts/compute-next-version\.sh",
@@ -3850,6 +4450,14 @@ class WorkflowPolicyTest(unittest.TestCase):
                 "prepare-release",
                 tuple(
                     (self.release, target, "prepare-release")
+                    for target in self.release.mutating_jobs()
+                ),
+            ),
+            (
+                self.release,
+                "authorize-git-mutation",
+                tuple(
+                    (self.release, target, "authorize-git-mutation")
                     for target in self.release.mutating_jobs()
                 ),
             ),
@@ -4081,81 +4689,23 @@ class WorkflowPolicyTest(unittest.TestCase):
         validation_builds = build_steps(self.validation)
         release_builds = build_steps(self.release)
         self.assertEqual(len(validation_builds), 1)
-        self.assertEqual(len(release_builds), 3)
+        self.assertEqual(len(release_builds), 1)
 
         validation_preflight = validation_builds[0].get("with") or {}
-        release_preflight = next(
-            step.get("with") or {}
-            for step in self.release.job_steps("prepare-release")
-            if step.get("name") == "Preflight release image build"
-        )
-        recovery_preflight_step = next(
+        authority_build_step = next(
             step
-            for step in self.release.job_steps("prepare-release")
-            if step.get("name") == "Re-preflight exact recovered image context"
-        )
-        recovery_preflight = recovery_preflight_step.get("with") or {}
-        authority_build = next(
-            step.get("with") or {}
             for step in self.release.job_steps("prepare-image-authority")
             if step.get("name")
             == "Build exact release image into a local OCI archive"
         )
-
-        expected_preflights = (
-            (validation_preflight, "worktree", "worktree/Dockerfile"),
-            (release_preflight, "worktree", "worktree/Dockerfile"),
-        )
-        for options, context, dockerfile in expected_preflights:
-            self.assertEqual(options.get("context"), context)
-            self.assertEqual(options.get("file"), dockerfile)
-            self.assertIs(options.get("push"), False)
-            self.assertIs(options.get("load"), False)
-            self.assertEqual(
-                options.get("cache-from"), "type=gha,scope=sub2api-patch-release"
-            )
-            self.assertEqual(
-                options.get("cache-to"),
-                "type=gha,mode=max,scope=sub2api-patch-release",
-            )
+        authority_build = authority_build_step.get("with") or {}
+        self.assertEqual(validation_preflight.get("context"), "worktree")
+        self.assertEqual(validation_preflight.get("file"), "worktree/Dockerfile")
+        self.assertIs(validation_preflight.get("push"), False)
+        self.assertIs(validation_preflight.get("load"), False)
         self.assertEqual(
-            [
-                line.strip()
-                for line in str(release_preflight.get("labels") or "").splitlines()
-            ],
-            [
-                "org.opencontainers.image.version=${{ steps.release.outputs.version }}",
-                "org.opencontainers.image.revision=${{ steps.release.outputs.replay_commit_sha }}",
-            ],
-        )
-        self.assertEqual(
-            recovery_preflight_step.get("if"),
-            "${{ steps.recovery.outputs.release_artifact_id != '' }}",
-        )
-        self.assertEqual(recovery_preflight.get("context"), "recovered-publication")
-        self.assertEqual(
-            recovery_preflight.get("file"),
-            "recovered-publication/${{ steps.recover_release.outputs.dockerfile_path }}",
-        )
-        self.assertIs(recovery_preflight.get("push"), False)
-        self.assertIs(recovery_preflight.get("load"), False)
-        self.assertEqual(
-            recovery_preflight.get("cache-from"),
-            "${{ steps.recover_release.outputs.cache_from }}",
-        )
-        self.assertEqual(
-            recovery_preflight.get("cache-to"),
-            "${{ steps.recover_release.outputs.cache_to }}",
-        )
-        self.assertEqual(
-            [
-                line.strip()
-                for line in str(recovery_preflight.get("labels") or "").splitlines()
-            ],
-            [
-                "${{ steps.recover_release.outputs.version_label }}",
-                "${{ steps.recover_release.outputs.revision_label }}",
-            ],
+            authority_build_step.get("if"),
+            "${{ needs.prepare-release.outputs.recovery_image_artifact_id == '' }}",
         )
 
         self.assertEqual(authority_build.get("context"), "publication")
@@ -4187,6 +4737,17 @@ class WorkflowPolicyTest(unittest.TestCase):
             authority_build.get("cache-to"),
             "${{ needs.prepare-release.outputs.cache_to }}",
         )
+        prepare_release_text = self.release.job_text("prepare-release")
+        self.assertNotIn("docker/build-push-action", prepare_release_text)
+        self.assertNotIn("docker/setup-buildx-action", prepare_release_text)
+        recovered_selection = next(
+            step
+            for step in self.release.job_steps("prepare-image-authority")
+            if step.get("name") == "Select and verify exact authorized OCI archive"
+        )
+        recovered_selection_run = str(recovered_selection.get("run") or "")
+        self.assertIn("cp -a verified-image-authority authorized-image", recovered_selection_run)
+        self.assertNotRegex(recovered_selection_run, r"docker|buildctl|Dockerfile")
         preparation = self.release.job_text("prepare-release")
         for exact_value in (
             'version_image_tag="ghcr.io/${image_owner}/sub2api-patch:${version}"',
@@ -4278,7 +4839,8 @@ class WorkflowPolicyTest(unittest.TestCase):
             "git remote set-url --push upstream https://github.com/example/fork",
             "gh api --method POST repos/Wei-Shaw/sub2api/git/refs",
             "gh api repos/Wei-Shaw/sub2api/releases -X PUT",
-            "gh api --method PATCH repos/${UPSTREAM_REPOSITORY}/issues/1",
+            "gh api --method PATCH repos/${UPSTREAM_REPOSITORY}/issues"
+            + "/1",
             "gh api repos/$UPSTREAM_REPOSITORY/git/refs/heads/main -X DELETE",
             "gh api repos/Wei-Shaw/sub2api/issues -f title=created",
             "gh api repos/${UPSTREAM_REPOSITORY}/releases --input release.json",
@@ -4287,8 +4849,10 @@ class WorkflowPolicyTest(unittest.TestCase):
             "gh issue comment 2 --repo ${UPSTREAM_REPOSITORY} --body changed",
             "gh release create v0.2.0 --repo Wei-Shaw/sub2api",
             "curl -X POST https://api.github.com/repos/Wei-Shaw/sub2api/releases",
-            "curl --request PUT https://api.github.com/repos/${UPSTREAM_REPOSITORY}/issues/1",
-            "curl -X PATCH https://api.github.com/repos/$UPSTREAM_REPOSITORY/issues/1",
+            "curl --request PUT https://api.github.com/repos/${UPSTREAM_REPOSITORY}/issues"
+            + "/1",
+            "curl -X PATCH https://api.github.com/repos/$UPSTREAM_REPOSITORY/issues"
+            + "/1",
             "curl --request DELETE https://api.github.com/repos/Wei-Shaw/sub2api/git/refs/heads/main",
             "curl --data name=release https://api.github.com/repos/Wei-Shaw/sub2api/releases",
             "docker push ghcr.io/Wei-Shaw/sub2api:latest",

@@ -44,6 +44,27 @@ local_tag_names="$(git tag --list "${prefix}*")"
 release_versions="$(filter_versions "$release_rows")"
 remote_tag_versions="$(filter_versions "$remote_tag_refs" refs)"
 local_tag_versions="$(filter_versions "$local_tag_names")"
+tag_versions="$(printf '%s\n%s\n' \
+  "$remote_tag_versions" "$local_tag_versions")"
+release_namespace="$(printf '%s\n' "$release_versions" | sed '/^$/d' | sort -u)"
+tag_namespace="$(printf '%s\n' "$tag_versions" | sed '/^$/d' | sort -u)"
+
+tag_without_release="$(comm -23 \
+  <(printf '%s\n' "$tag_namespace") \
+  <(printf '%s\n' "$release_namespace") | sed -n '1p')"
+if [ -n "$tag_without_release" ]; then
+  echo "patch tag has no matching release: ${tag_without_release}" >&2
+  exit 1
+fi
+
+release_without_tag="$(comm -13 \
+  <(printf '%s\n' "$tag_namespace") \
+  <(printf '%s\n' "$release_namespace") | sed -n '1p')"
+if [ -n "$release_without_tag" ]; then
+  echo "patch release has no matching tag: ${release_without_tag}" >&2
+  exit 1
+fi
+
 all_versions="$(printf '%s\n%s\n%s\n' \
   "$release_versions" "$remote_tag_versions" "$local_tag_versions")"
 

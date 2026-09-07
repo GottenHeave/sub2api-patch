@@ -53,19 +53,35 @@ identities, creates a local two-parent mirror candidate, calls the same validati
 and may call reusable `Auto release` only through successful `needs` dependencies
 and explicit `release_after_validation=true` intent. `Auto release` has no direct
 trigger. Its release continuation is ordered as `prepare-release`,
-`prepare-image-authority`, `mutate-git`, `publish-image`, and `create-release`;
+`prepare-image-authority`, `authorize-git-mutation`, `mutate-git`, `publish-image`,
+and `create-release`;
 each mutation depends on successful pre-mutation preparation. `prepare-release`
-uploads the exact preflighted Docker context, Git publication objects, sanitized
-notes, content checksums, and a 28-field canonical manifest.
-`prepare-image-authority` builds the complete `linux/amd64` image before mutation,
-records the authenticated private-GHCR baseline in a 20-field manifest, and uploads
-the OCI layout as a second immutable artifact. Artifact identities, archive and
-internal digests, and the authorized OCI manifest digest flow only through trusted
-`needs` outputs. `publish-image` copies that digest-qualified OCI layout to both
-tags with ORAS. `create-release` receives the verified digest through `needs` and
-does not receive registry credentials.
+uploads the validated Docker context, Git publication objects, sanitized notes,
+content checksums, and a 28-field canonical manifest without building publication
+image bytes. On a fresh run, `prepare-image-authority` performs the sole release
+image build: one `linux/amd64` Buildx OCI export with publication and loading
+disabled, fixed provenance/SBOM policy, release labels, and the existing GHA cache.
+It authenticates to GHCR and records the fresh registry baseline. A tag is absent
+only when checksum-pinned ORAS 1.3.0 returns its exact single-line not-found
+diagnostic; every other lookup failure is fatal. Recovery retains that recorded
+baseline, reuses the previously authorized OCI archive byte for byte, and performs
+no build or new registry-baseline login. The authority artifact binds the root
+descriptor media type, digest, and size and the recursively complete descriptor/blob
+closure, including runtime manifest, config, layers, and every policy-expected
+auxiliary descriptor. Each blob
+is checked for its content-addressed path, unique presence, size, digest, and
+reachability; missing and unreferenced blobs fail authorization. Artifact identities,
+archive and closure digests, and the authorized root digest flow only through trusted
+`needs` outputs. `publish-image` uses checksum-pinned ORAS and trusted primitives to
+copy only that digest-qualified layout. It does not set up or invoke Docker, Buildx,
+BuildKit, `buildctl`, a Dockerfile, or another image conversion. The version tag is
+copied only when missing, skipped when already exact, and otherwise rejected; exact
+readback of its descriptor, raw manifest, and labels precedes `latest-patch`.
+`latest-patch` is likewise copied only when needed and always read back.
+`create-release` receives the verified digest through `needs` and does not receive
+registry credentials.
 
-Every write-capable job downloads its required release or image-authority artifact
+Every write-capable job downloads its required authority artifact
 by exact platform ID and verifies the external archive digest, internal manifest,
 content digests, and expected publication state before exposing its scoped write
 credential. Those jobs do not check out, clone, or fetch a repository and do not
@@ -73,7 +89,17 @@ execute repository-controlled scripts. An `if: always()`
 reporter performs authenticated private-GHCR readback and classifies observable
 outputs as `completed`, `missing`, `mismatch`, or `unknown`; its diagnostic artifact
 is best effort. Same-run recovery independently binds candidate, release, and image
-authority artifacts to their producer attempts. See
+authority artifacts to their producer attempts; image recovery cannot rebuild,
+change the platform set or attestation policy, or replace the authorized bytes.
+
+The supported writer of `ghcr.io/<lowercase-owner>/sub2api-patch` tags is this
+repository's trusted Sync graph while it holds `sub2api-release-mutation` with
+`cancel-in-progress: false`. GHCR and OCI distribution provide no portable tag
+compare-and-swap or create-if-absent operation. Organization owners, package
+administrators, independently issued PATs, other repositories, and external clients
+with package-write access are outside this workflow's enforceable guarantee.
+Pre-write checks and final readback detect visible drift, but cannot prove that an
+external write was overwritten before readback. See
 [RELEASE_POLICY.md](RELEASE_POLICY.md) for the upstream CI exception, mutation
 boundaries, retry rules, and release outputs.
 

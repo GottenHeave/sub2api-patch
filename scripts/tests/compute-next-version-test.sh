@@ -93,26 +93,72 @@ assert_lookup_failure() {
   grep -Fq "$expected_message" "$tmp/stderr"
 }
 
+assert_version_failure() {
+  local expected_message="$1"
+  if compute > "$tmp/stdout" 2> "$tmp/stderr"; then
+    printf 'expected version computation failure, got %s\n' "$(cat "$tmp/stdout")" >&2
+    exit 1
+  fi
+  grep -Fq "$expected_message" "$tmp/stderr"
+}
+
 # An empty tag and release namespace starts each upstream line at patch 1.
 FAKE_RELEASES='' FAKE_TAGS='' assert_version 'v0.2.0-patch.1'
 
+# Other upstream lines and malformed counters do not enter this namespace.
+FAKE_RELEASES=$'v0.1.9-patch.8\nv0.2.0-patch.beta\nrelease-candidate\n' \
+  FAKE_TAGS=$'refs/tags/v0.3.0-patch.5\nrefs/tags/v0.2.0-patch.-1\n' \
+  assert_version 'v0.2.0-patch.1'
+
 # Release and remote-tag counters share one namespace.
-FAKE_RELEASES=$'v0.2.0-patch.2\nv0.2.0-patch.7\n' \
+FAKE_RELEASES=$'v0.2.0-patch.2\nv0.2.0-patch.4\nv0.2.0-patch.7\n' \
+  FAKE_TAGS=$'refs/tags/v0.2.0-patch.2\nrefs/tags/v0.2.0-patch.4\nrefs/tags/v0.2.0-patch.7\n' \
+  assert_version 'v0.2.0-patch.8'
+
+# An older tag-only orphan still represents incomplete publication state.
+FAKE_RELEASES=$'v0.2.0-patch.2\nv0.2.0-patch.9\n' \
   FAKE_TAGS=$'refs/tags/v0.2.0-patch.4\nrefs/tags/v0.2.0-patch.9\n' \
-  assert_version 'v0.2.0-patch.10'
+  assert_version_failure \
+    'patch tag has no matching release: v0.2.0-patch.4'
+
+# The highest tag cannot be skipped when its matching release is absent.
+FAKE_RELEASES=$'v0.2.0-patch.2\nv0.2.0-patch.7\n' \
+  FAKE_TAGS=$'refs/tags/v0.2.0-patch.7\nrefs/tags/v0.2.0-patch.9\n' \
+  assert_version_failure \
+    'patch tag has no matching release: v0.2.0-patch.9'
+
+# Release-only state is equally incomplete, regardless of counter position.
+FAKE_RELEASES=$'v0.2.0-patch.4\nv0.2.0-patch.9\n' \
+  FAKE_TAGS='refs/tags/v0.2.0-patch.9' \
+  assert_version_failure \
+    'patch release has no matching tag: v0.2.0-patch.4'
+FAKE_RELEASES=$'v0.2.0-patch.7\nv0.2.0-patch.9\n' \
+  FAKE_TAGS='refs/tags/v0.2.0-patch.7' \
+  assert_version_failure \
+    'patch release has no matching tag: v0.2.0-patch.9'
 
 # Namespace checks must consume inputs larger than a pipe buffer completely.
 large_tags=''
+large_releases=''
 for counter in $(seq 1 2000); do
   large_tags+="refs/tags/v0.2.0-patch.${counter}"$'\n'
+  large_releases+="v0.2.0-patch.${counter}"$'\n'
 done
-FAKE_RELEASES='' FAKE_TAGS="$large_tags" \
+FAKE_RELEASES="$large_releases" FAKE_TAGS="$large_tags" \
   assert_version 'v0.2.0-patch.2001'
 
 # Fetched local tags participate in collision avoidance too.
 git -C "$worktree" tag v0.2.0-patch.12
-FAKE_RELEASES='' FAKE_TAGS='' assert_version 'v0.2.0-patch.13'
+FAKE_RELEASES='v0.2.0-patch.12' FAKE_TAGS='' \
+  assert_version 'v0.2.0-patch.13'
 git -C "$worktree" tag -d v0.2.0-patch.12 >/dev/null
+
+# A fetched local tag is subject to the same incomplete-state check.
+git -C "$worktree" tag v0.2.0-patch.14
+FAKE_RELEASES='v0.2.0-patch.12' FAKE_TAGS='' \
+  assert_version_failure \
+    'patch tag has no matching release: v0.2.0-patch.14'
+git -C "$worktree" tag -d v0.2.0-patch.14 >/dev/null
 
 # An unavailable namespace is unknown, not empty.
 FAKE_RELEASE_FAILURE=true FAKE_TAGS='' \

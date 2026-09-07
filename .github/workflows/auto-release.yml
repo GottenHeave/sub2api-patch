@@ -88,6 +88,333 @@ env:
   UPSTREAM_REPOSITORY: Wei-Shaw/sub2api
   UPSTREAM_GIT_URL: https://github.com/Wei-Shaw/sub2api.git
   PATCHED_BRANCH: patched
+  OCI_CLOSURE_VERIFIER: |
+    import hashlib
+    import json
+    import os
+    import pathlib
+    import re
+    import shutil
+    import sys
+    import tarfile
+
+    (archive_path, layout_path, output_path, version, revision, replay_tree,
+     publication_tree, patchset_sha, upstream_source_sha, mirror_candidate_sha,
+     publication_commit_sha) = sys.argv[1:]
+    layout = pathlib.Path(layout_path)
+    if layout.exists():
+        raise SystemExit("layout destination already exists")
+    layout.mkdir()
+
+    allowed_file = re.compile(r"(?:oci-layout|index[.]json|blobs/sha256/[0-9a-f]{64})$")
+    allowed_dir = re.compile(r"(?:blobs|blobs/sha256)/?$")
+    seen_paths = set()
+    with tarfile.open(archive_path, "r:*") as archive:
+        for member in archive.getmembers():
+            name = member.name
+            while name.startswith("./"):
+                name = name[2:]
+            if not name or name.startswith("/") or any(part == ".." for part in pathlib.PurePosixPath(name).parts):
+                raise SystemExit(f"unsafe OCI archive path: {member.name!r}")
+            if any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in name):
+                raise SystemExit(f"invalid OCI archive path: {member.name!r}")
+            normalized = name.rstrip("/")
+            if normalized in seen_paths:
+                raise SystemExit(f"duplicate OCI archive path: {normalized}")
+            seen_paths.add(normalized)
+            if member.isdir():
+                if not allowed_dir.fullmatch(name):
+                    raise SystemExit(f"unexpected OCI archive directory: {name}")
+                (layout / normalized).mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile() or not allowed_file.fullmatch(name):
+                raise SystemExit(f"unexpected OCI archive member: {name}")
+            destination = layout / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            if source is None:
+                raise SystemExit(f"cannot read OCI archive member: {name}")
+            with source, destination.open("xb") as target:
+                shutil.copyfileobj(source, target, length=1024 * 1024)
+
+    expected_root = {"blobs", "index.json", "oci-layout"}
+    if {entry.name for entry in layout.iterdir()} != expected_root:
+        raise SystemExit("OCI layout root entries differ from the schema")
+    expected_directories = {layout / "blobs", layout / "blobs" / "sha256"}
+    actual_directories = {entry for entry in layout.rglob("*") if entry.is_dir()}
+    if actual_directories != expected_directories:
+        raise SystemExit("OCI layout contains unexpected directories")
+    if any(entry.is_symlink() or not entry.is_file() for entry in layout.rglob("*") if not entry.is_dir()):
+        raise SystemExit("OCI layout contains a non-regular file")
+
+    def bytes_and_digest(path):
+        content = path.read_bytes()
+        return content, hashlib.sha256(content).hexdigest(), len(content)
+
+    def file_digest(path):
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as content:
+            for chunk in iter(lambda: content.read(1024 * 1024), b""):
+                digest.update(chunk)
+                size += len(chunk)
+        return digest.hexdigest(), size
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+
+    def parse_json(content):
+        return json.loads(content, object_pairs_hook=unique_object)
+
+    layout_bytes, layout_sha, layout_size = bytes_and_digest(layout / "oci-layout")
+    if parse_json(layout_bytes) != {"imageLayoutVersion": "1.0.0"}:
+        raise SystemExit("invalid oci-layout metadata")
+    index_bytes, index_sha, index_size = bytes_and_digest(layout / "index.json")
+    index = parse_json(index_bytes)
+    if set(index) - {"schemaVersion", "mediaType", "manifests", "annotations"}:
+        raise SystemExit("unsupported OCI index field")
+    if index.get("schemaVersion") != 2 or not isinstance(index.get("manifests"), list) or len(index["manifests"]) != 1:
+        raise SystemExit("OCI index must contain one root descriptor")
+    if "mediaType" in index and index["mediaType"] != "application/vnd.oci.image.index.v1+json":
+        raise SystemExit("OCI index media type is invalid")
+
+    digest_pattern = re.compile(r"sha256:[0-9a-f]{64}$")
+    index_media = "application/vnd.oci.image.index.v1+json"
+    image_media = "application/vnd.oci.image.manifest.v1+json"
+    artifact_media = "application/vnd.oci.artifact.manifest.v1+json"
+    config_media = "application/vnd.oci.image.config.v1+json"
+    descriptors = {}
+    parsed = {}
+    active = set()
+    edges = []
+    runtime_platforms = []
+    runtime_roots = set()
+    auxiliary_roots = []
+
+    def descriptor(value):
+        if not isinstance(value, dict):
+            raise SystemExit("OCI descriptor is not an object")
+        if set(value) - {"mediaType", "digest", "size", "annotations", "artifactType", "platform"}:
+            raise SystemExit("unsupported OCI descriptor field")
+        media_type = value.get("mediaType")
+        digest = value.get("digest")
+        size = value.get("size")
+        if not isinstance(media_type, str) or not media_type or not digest_pattern.fullmatch(str(digest)):
+            raise SystemExit("invalid OCI descriptor identity")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise SystemExit("invalid OCI descriptor size")
+        if "urls" in value or "data" in value:
+            raise SystemExit("external or inline OCI descriptor content is forbidden")
+        canonical = json.loads(json.dumps(value, sort_keys=True, separators=(",", ":")))
+        prior = descriptors.get(digest)
+        if prior is not None and prior != canonical:
+            raise SystemExit(f"conflicting descriptor for {digest}")
+        descriptors[digest] = canonical
+        return canonical
+
+    def blob_for(desc):
+        digest = desc["digest"]
+        path = layout / "blobs" / "sha256" / digest.removeprefix("sha256:")
+        if not path.is_file() or path.is_symlink():
+            raise SystemExit(f"missing descriptor blob: {digest}")
+        actual_digest, actual_size = file_digest(path)
+        if actual_digest != digest.removeprefix("sha256:") or actual_size != desc["size"]:
+            raise SystemExit(f"descriptor blob mismatch: {digest}")
+        return path
+
+    def add_edge(parent, relation, ordinal, value):
+        child = descriptor(value)
+        edges.append({"parent": parent, "relation": relation, "ordinal": ordinal, "descriptor": child})
+        return child
+
+    def parse_json_blob(desc):
+        digest = desc["digest"]
+        path = blob_for(desc)
+        if digest not in parsed:
+            try:
+                parsed[digest] = parse_json(path.read_bytes())
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise SystemExit(f"invalid structured OCI blob {digest}: {error}")
+        return parsed[digest]
+
+    def walk(desc, root_role=None):
+        digest = desc["digest"]
+        if digest in active:
+            raise SystemExit(f"OCI descriptor cycle at {digest}")
+        media_type = desc["mediaType"]
+        blob_for(desc)
+        if digest in parsed:
+            return
+        if media_type not in {index_media, image_media, artifact_media}:
+            if media_type == "application/json" or media_type.endswith("+json"):
+                raise SystemExit(f"unsupported structured OCI media type: {media_type}")
+            parsed[digest] = None
+            return
+        active.add(digest)
+        document = parse_json_blob(desc)
+        if not isinstance(document, dict) or document.get("schemaVersion") != 2:
+            raise SystemExit(f"invalid OCI structured blob: {digest}")
+        allowed_fields = {
+            index_media: {"schemaVersion", "mediaType", "artifactType", "manifests", "subject", "annotations"},
+            image_media: {"schemaVersion", "mediaType", "artifactType", "config", "layers", "subject", "annotations"},
+            artifact_media: {"schemaVersion", "mediaType", "artifactType", "blobs", "subject", "annotations"},
+        }[media_type]
+        if set(document) - allowed_fields:
+            raise SystemExit(f"unsupported field in structured OCI blob: {digest}")
+        if "mediaType" in document and document["mediaType"] != media_type:
+            raise SystemExit(f"descriptor and content media types differ: {digest}")
+        if media_type == index_media:
+            if "artifactType" in document:
+                raise SystemExit("OCI image index cannot be an auxiliary artifact")
+            manifests = document.get("manifests")
+            if not isinstance(manifests, list) or not manifests:
+                raise SystemExit("OCI image index has no manifests")
+            manifest_digests = set()
+            for ordinal, value in enumerate(manifests):
+                child = add_edge(digest, "manifests", ordinal, value)
+                if child["digest"] in manifest_digests:
+                    raise SystemExit("duplicate OCI index descriptor")
+                manifest_digests.add(child["digest"])
+                platform = child.get("platform")
+                if child["mediaType"] == index_media:
+                    raise SystemExit("nested OCI image indexes are outside the fixed build policy")
+                else:
+                    role = ("runtime" if child["mediaType"] == image_media and
+                            "artifactType" not in child and
+                            isinstance(platform, dict) and platform.get("os") != "unknown"
+                            else "auxiliary")
+                if role == "runtime":
+                    if child["digest"] in runtime_roots:
+                        raise SystemExit("duplicate OCI runtime descriptor")
+                    runtime_roots.add(child["digest"])
+                if role == "auxiliary":
+                    auxiliary_roots.append(child)
+                walk(child, role)
+            if "subject" in document:
+                child = add_edge(digest, "subject", 0, document["subject"])
+                auxiliary_roots.append(child)
+                walk(child, "auxiliary")
+        elif media_type == image_media:
+            config = add_edge(digest, "config", 0, document.get("config"))
+            layers = document.get("layers")
+            if not isinstance(layers, list) or not layers:
+                raise SystemExit("OCI image manifest has no layers")
+            layer_descriptors = [add_edge(digest, "layers", ordinal, value) for ordinal, value in enumerate(layers)]
+            if "artifactType" in config or "platform" in config:
+                raise SystemExit("runtime config descriptor has artifact-only metadata")
+            allowed_layer_media = {
+                "application/vnd.oci.image.layer.v1.tar",
+                "application/vnd.oci.image.layer.v1.tar+gzip",
+                "application/vnd.oci.image.layer.v1.tar+zstd",
+            }
+            if any(value["mediaType"] not in allowed_layer_media or
+                   "artifactType" in value or "platform" in value
+                   for value in layer_descriptors):
+                raise SystemExit("runtime image manifest contains an unsupported layer")
+            config_document = parse_json_blob(config)
+            walk(config)
+            for child in layer_descriptors:
+                walk(child)
+            if "subject" in document:
+                child = add_edge(digest, "subject", 0, document["subject"])
+                auxiliary_roots.append(child)
+                walk(child, "auxiliary")
+            if root_role == "runtime":
+                if "artifactType" in document or "subject" in document:
+                    raise SystemExit("runtime manifest contains artifact-only fields")
+                platform = desc.get("platform")
+                if not isinstance(platform, dict):
+                    raise SystemExit("runtime manifest lacks a platform")
+                if config["mediaType"] != config_media or not isinstance(config_document, dict):
+                    raise SystemExit("runtime image config has an invalid media type")
+                if config_document.get("os") != platform.get("os") or config_document.get("architecture") != platform.get("architecture"):
+                    raise SystemExit("runtime config platform differs from its descriptor")
+                labels = config_document.get("config", {}).get("Labels", {})
+                if labels.get("org.opencontainers.image.version") != version or labels.get("org.opencontainers.image.revision") != revision:
+                    raise SystemExit("runtime image labels differ from release authority")
+                runtime_platforms.append({
+                    "os": platform.get("os"),
+                    "architecture": platform.get("architecture"),
+                    "variant": platform.get("variant"),
+                    "manifest": desc,
+                    "config": config,
+                    "layers": layer_descriptors,
+                })
+        else:
+            blobs = document.get("blobs")
+            if not isinstance(blobs, list):
+                raise SystemExit("OCI artifact manifest has invalid blobs")
+            for ordinal, value in enumerate(blobs):
+                walk(add_edge(digest, "blobs", ordinal, value))
+            if "subject" in document:
+                walk(add_edge(digest, "subject", 0, document["subject"]), "auxiliary")
+        active.remove(digest)
+
+    root = add_edge("index.json", "manifests", 0, index["manifests"][0])
+    root_platform = root.get("platform")
+    if root["mediaType"] == index_media:
+        if "platform" in root or "artifactType" in root:
+            raise SystemExit("root OCI index descriptor has auxiliary metadata")
+        root_role = None
+    else:
+        root_role = ("runtime" if root["mediaType"] == image_media and
+                     "artifactType" not in root and
+                     isinstance(root_platform, dict) and root_platform.get("os") != "unknown"
+                     else "auxiliary")
+    if root_role == "runtime":
+        runtime_roots.add(root["digest"])
+    if root_role == "auxiliary":
+        auxiliary_roots.append(root)
+    walk(root, root_role)
+    actual_blobs = {entry.name for entry in (layout / "blobs" / "sha256").iterdir() if entry.is_file()}
+    expected_blobs = {digest.removeprefix("sha256:") for digest in descriptors}
+    if actual_blobs != expected_blobs:
+        raise SystemExit("OCI layout contains missing or unreferenced blobs")
+    if len(runtime_platforms) != 1:
+        raise SystemExit("OCI layout must contain exactly one runtime platform")
+    if len(runtime_roots) != len(runtime_platforms):
+        raise SystemExit("OCI runtime descriptor traversal is incomplete")
+    runtime = runtime_platforms[0]
+    if runtime["os"] != "linux" or runtime["architecture"] != "amd64" or runtime["variant"] not in (None, ""):
+        raise SystemExit("OCI runtime platform must be exactly linux/amd64")
+    if auxiliary_roots:
+        raise SystemExit("provenance=false and sbom=false forbid auxiliary descriptors")
+
+    archive_sha, archive_size = file_digest(pathlib.Path(archive_path))
+    closure = {
+        "schemaVersion": 1,
+        "binding": {
+            "patchsetSha": patchset_sha,
+            "upstreamSourceSha": upstream_source_sha,
+            "mirrorCandidateSha": mirror_candidate_sha,
+            "replayCommitSha": revision,
+            "replayTreeSha": replay_tree,
+            "publicationCommitSha": publication_commit_sha,
+            "publicationTreeSha": publication_tree,
+            "version": version,
+            "labels": {
+                "org.opencontainers.image.version": version,
+                "org.opencontainers.image.revision": revision,
+            },
+        },
+        "buildPolicy": {"runtimePlatforms": ["linux/amd64"], "provenance": False, "sbom": False},
+        "layout": {
+            "archive": {"sha256": archive_sha, "size": archive_size},
+            "ociLayout": {"sha256": layout_sha, "size": layout_size},
+            "index": {"sha256": index_sha, "size": index_size},
+        },
+        "root": root,
+        "runtimePlatforms": sorted(runtime_platforms, key=lambda value: (value["os"], value["architecture"], value["variant"] or "")),
+        "auxiliaryRoots": [],
+        "edges": sorted(edges, key=lambda value: (value["parent"], value["relation"], value["ordinal"], value["descriptor"]["digest"], value["descriptor"]["mediaType"])),
+        "blobs": sorted(({"digest": digest, "size": value["size"]} for digest, value in descriptors.items()), key=lambda value: value["digest"]),
+    }
+    pathlib.Path(output_path).write_text(json.dumps(closure, sort_keys=True, separators=(",", ":")) + "\n")
 
 jobs:
   prepare-release:
@@ -134,7 +461,6 @@ jobs:
       recovery_image_artifact_id: ${{ steps.recovery.outputs.image_artifact_id }}
       recovery_image_artifact_digest: ${{ steps.recovery.outputs.image_artifact_digest }}
       artifact_producer_attempt: ${{ steps.release.outputs.artifact_producer_attempt || steps.recover_release.outputs.artifact_producer_attempt }}
-      preflight_run_attempt: ${{ steps.release.outputs.preflight_run_attempt || steps.recover_release.outputs.preflight_run_attempt }}
     steps:
       - name: Assert trusted Sync caller and provenance shape
         env:
@@ -604,12 +930,12 @@ jobs:
             mkdir recovered-image-state
             unzip -q "${image_archives[0]}" -d recovered-image-state
             expected_image_files="$(printf '%s\n' IMAGE-MANIFEST.SHA256 \
-              image-publication.env release-image.oci.tar | sort)"
+              image-publication.env oci-closure.json release-image.oci.tar | sort)"
             actual_image_files="$(find recovered-image-state -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
             [ "$actual_image_files" = "$expected_image_files" ] || exit 1
             (cd recovered-image-state && sha256sum -c IMAGE-MANIFEST.SHA256)
             image_manifest=recovered-image-state/image-publication.env
-            [ "$(wc -l < "$image_manifest")" -eq 20 ] || exit 1
+            [ "$(wc -l < "$image_manifest")" -eq 37 ] || exit 1
             ! grep -Ev '^[a-z_]+=[^[:cntrl:]]*$' "$image_manifest" || exit 1
             image_field() {
               key="$1"
@@ -626,6 +952,11 @@ jobs:
             [ "$(image_field version)" = "$version" ] || exit 1
             [ "$(image_field replay_commit_sha)" = "$replay_commit_sha" ] || exit 1
             [ "$(image_field publication_commit_sha)" = "$publication_commit_sha" ] || exit 1
+            [ "$(image_field patchset_sha)" = "$PATCHSET_SHA" ] || exit 1
+            [ "$(image_field upstream_source_sha)" = "$UPSTREAM_SOURCE_SHA" ] || exit 1
+            [ "$(image_field mirror_candidate_sha)" = "$MIRROR_CANDIDATE_SHA" ] || exit 1
+            [ "$(image_field replay_tree_sha)" = "$REPLAY_TREE_SHA" ] || exit 1
+            [ "$(image_field publication_tree_sha)" = "$publication_tree_sha" ] || exit 1
             [ "$(image_field version_image_tag)" = "$version_image_tag" ] || exit 1
             [ "$(image_field latest_image_tag)" = "$latest_image_tag" ] || exit 1
             [ "$(image_field expected_version_state)" = missing ] || exit 1
@@ -643,12 +974,26 @@ jobs:
                 ;;
               *) exit 1 ;;
             esac
-            recovered_image_digest="$(image_field oci_manifest_digest)"
+            [ "$(image_field runtime_platforms)" = linux/amd64 ] || exit 1
+            [ "$(image_field build_provenance)" = false ] || exit 1
+            [ "$(image_field build_sbom)" = false ] || exit 1
+            [[ "$(image_field oci_root_media_type)" =~ ^application/[^[:space:]]+$ ]] || exit 1
+            recovered_image_digest="$(image_field oci_root_digest)"
             [[ "$recovered_image_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
-            recovered_config_digest="$(image_field oci_config_digest)"
-            [[ "$recovered_config_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
+            [[ "$(image_field oci_root_size)" =~ ^[0-9]+$ ]] || exit 1
             [ "$(image_field oci_archive_sha256)" = \
               "$(sha256sum recovered-image-state/release-image.oci.tar | awk '{print $1}')" ] || exit 1
+            [ "$(image_field oci_archive_size)" = \
+              "$(stat -c %s recovered-image-state/release-image.oci.tar)" ] || exit 1
+            closure_sha="$(sha256sum recovered-image-state/oci-closure.json | awk '{print $1}')"
+            [ "$(image_field oci_closure_sha256)" = "$closure_sha" ] || exit 1
+            jq -e --arg replay "$REPLAY_TREE_SHA" --arg publication "$publication_tree_sha" \
+              --arg version "$version" \
+              '.schemaVersion == 1 and .binding.replayTreeSha == $replay and
+               .binding.publicationTreeSha == $publication and .binding.version == $version and
+               .buildPolicy.runtimePlatforms == ["linux/amd64"] and
+               .buildPolicy.provenance == false and .buildPolicy.sbom == false' \
+              recovered-image-state/oci-closure.json >/dev/null
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -671,10 +1016,6 @@ jobs:
           echo "recovered_image_digest=$recovered_image_digest" >> "$GITHUB_OUTPUT"
           echo "artifact_producer_attempt=$release_producer_attempt" >> "$GITHUB_OUTPUT"
           echo "originating_run_attempt=$ORIGINATING_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-          echo "preflight_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.2.0
 
       - name: Reconstruct and prepare release without mutation
         id: release
@@ -925,35 +1266,6 @@ jobs:
           echo "manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
           echo "release_artifact_name=$release_artifact_name" >> "$GITHUB_OUTPUT"
           echo "artifact_producer_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-          echo "preflight_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-
-      - name: Preflight release image build
-        if: ${{ steps.recovery.outputs.release_artifact_id == '' }}
-        uses: docker/build-push-action@v7.3.0
-        with:
-          context: worktree
-          file: worktree/Dockerfile
-          push: false
-          load: false
-          cache-from: type=gha,scope=sub2api-patch-release
-          cache-to: type=gha,mode=max,scope=sub2api-patch-release
-          labels: |
-            org.opencontainers.image.version=${{ steps.release.outputs.version }}
-            org.opencontainers.image.revision=${{ steps.release.outputs.replay_commit_sha }}
-
-      - name: Re-preflight exact recovered image context
-        if: ${{ steps.recovery.outputs.release_artifact_id != '' }}
-        uses: docker/build-push-action@v7.3.0
-        with:
-          context: recovered-publication
-          file: recovered-publication/${{ steps.recover_release.outputs.dockerfile_path }}
-          push: false
-          load: false
-          cache-from: ${{ steps.recover_release.outputs.cache_from }}
-          cache-to: ${{ steps.recover_release.outputs.cache_to }}
-          labels: |
-            ${{ steps.recover_release.outputs.version_label }}
-            ${{ steps.recover_release.outputs.revision_label }}
 
       - name: Upload verified release state
         id: upload_release
@@ -964,16 +1276,31 @@ jobs:
           path: release-state
           if-no-files-found: error
 
-  mutate-git:
+  authorize-git-mutation:
     needs: [prepare-release, prepare-image-authority]
     if: >-
       ${{ needs.prepare-release.result == 'success'
         && needs.prepare-image-authority.result == 'success' }}
     permissions:
       actions: read
-      checks: read
-      contents: write
-      pull-requests: write
+      contents: read
+    outputs:
+      authority_artifact_name: ${{ steps.git_authority.outputs.authority_artifact_name }}
+      authority_artifact_id: ${{ steps.upload_git_authority.outputs.artifact-id }}
+      authority_artifact_digest: ${{ steps.upload_git_authority.outputs.artifact-digest }}
+      release_artifact_name: ${{ steps.git_authority.outputs.release_artifact_name }}
+      release_artifact_id: ${{ steps.git_authority.outputs.release_artifact_id }}
+      release_artifact_digest: ${{ steps.git_authority.outputs.release_artifact_digest }}
+      patchset_sha: ${{ steps.git_authority.outputs.patchset_sha }}
+      upstream_source_sha: ${{ steps.git_authority.outputs.upstream_source_sha }}
+      mirror_candidate_sha: ${{ steps.git_authority.outputs.mirror_candidate_sha }}
+      expected_main_sha: ${{ steps.git_authority.outputs.expected_main_sha }}
+      expected_mirror_sha: ${{ steps.git_authority.outputs.expected_mirror_sha }}
+      expected_patched_sha: ${{ steps.git_authority.outputs.expected_patched_sha }}
+      replay_commit_sha: ${{ steps.git_authority.outputs.replay_commit_sha }}
+      replay_tree_sha: ${{ steps.git_authority.outputs.replay_tree_sha }}
+      publication_commit_sha: ${{ steps.git_authority.outputs.publication_commit_sha }}
+      version: ${{ steps.git_authority.outputs.version }}
     env:
       VERSION: ${{ needs.prepare-release.outputs.version }}
     runs-on: ubuntu-latest
@@ -1020,7 +1347,6 @@ jobs:
           RELEASE_ARTIFACT_NAME: ${{ needs.prepare-release.outputs.release_artifact_name }}
           RELEASE_ARTIFACT_ID: ${{ needs.prepare-release.outputs.release_artifact_id }}
           RELEASE_ARTIFACT_DIGEST: ${{ needs.prepare-release.outputs.release_artifact_digest }}
-          PREFLIGHT_RUN_ATTEMPT: ${{ needs.prepare-release.outputs.preflight_run_attempt }}
         run: |
           set -euo pipefail
           suffix="${RELEASE_ARTIFACT_NAME#verified-release-state-}"
@@ -1032,10 +1358,6 @@ jobs:
           [ "$producer_run" = "$GITHUB_RUN_ID" ] || exit 1
           [ "$producer_attempt" -le "$GITHUB_RUN_ATTEMPT" ] || exit 1
           [ "$ORIGINATING_RUN_ID" = "$GITHUB_RUN_ID" ] || exit 1
-          [ "$PREFLIGHT_RUN_ATTEMPT" = "$GITHUB_RUN_ATTEMPT" ] || {
-            echo "retry requires a full rerun with a fresh exact-context preflight" >&2
-            exit 1
-          }
           [[ "$RELEASE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
           archive_digest="${RELEASE_ARTIFACT_DIGEST#sha256:}"
           [[ "$archive_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
@@ -1179,7 +1501,7 @@ jobs:
             echo "upstream source identity query returned $queried_upstream_sha" >&2
             exit 1
           }
-          downstream_url="https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git"
+          downstream_url="https://github.com/${GITHUB_REPOSITORY}.git"
           git -C mutation remote add origin "$downstream_url"
           ! git -C mutation show-ref --verify --quiet "refs/tags/$VERSION" || exit 1
 
@@ -1236,13 +1558,260 @@ jobs:
           }
           [ "$current_patchset_sha" = "$GITHUB_SHA" ] || exit 1
 
+      - name: Record immutable Git mutation authority
+        id: git_authority
+        env:
+          RELEASE_ARTIFACT_NAME: ${{ needs.prepare-release.outputs.release_artifact_name }}
+          RELEASE_ARTIFACT_ID: ${{ needs.prepare-release.outputs.release_artifact_id }}
+          RELEASE_ARTIFACT_DIGEST: ${{ needs.prepare-release.outputs.release_artifact_digest }}
+          PATCHSET_SHA: ${{ needs.prepare-release.outputs.patchset_sha }}
+          UPSTREAM_SOURCE_SHA: ${{ needs.prepare-release.outputs.upstream_source_sha }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
+          EXPECTED_MAIN_SHA: ${{ needs.prepare-release.outputs.expected_main_sha }}
+          EXPECTED_MIRROR_SHA: ${{ needs.prepare-release.outputs.expected_mirror_sha }}
+          EXPECTED_PATCHED_SHA: ${{ needs.prepare-release.outputs.expected_patched_sha }}
+          REPLAY_COMMIT_SHA: ${{ needs.prepare-release.outputs.replay_commit_sha }}
+          REPLAY_TREE_SHA: ${{ needs.prepare-release.outputs.replay_tree_sha }}
+          PUBLICATION_COMMIT_SHA: ${{ needs.prepare-release.outputs.publication_commit_sha }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          authority_name="git-mutation-authority-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir git-mutation-authority
+          git -C mutation bundle create \
+            "$GITHUB_WORKSPACE/git-mutation-authority/authorized-mutation.bundle" \
+            refs/heads/candidate refs/heads/publication
+          cp release-state/release-notes.md git-mutation-authority/release-notes.md
+          cat > git-mutation-authority/authorization.env <<EOF
+          release_artifact_name=${RELEASE_ARTIFACT_NAME}
+          release_artifact_id=${RELEASE_ARTIFACT_ID}
+          release_artifact_digest=${RELEASE_ARTIFACT_DIGEST}
+          patchset_sha=${PATCHSET_SHA}
+          upstream_source_sha=${UPSTREAM_SOURCE_SHA}
+          mirror_candidate_sha=${MIRROR_CANDIDATE_SHA}
+          expected_main_sha=${EXPECTED_MAIN_SHA}
+          expected_mirror_sha=${EXPECTED_MIRROR_SHA}
+          expected_patched_sha=${EXPECTED_PATCHED_SHA}
+          replay_commit_sha=${REPLAY_COMMIT_SHA}
+          replay_tree_sha=${REPLAY_TREE_SHA}
+          publication_commit_sha=${PUBLICATION_COMMIT_SHA}
+          version=${VERSION}
+          EOF
+          (cd git-mutation-authority && \
+            sha256sum authorization.env authorized-mutation.bundle \
+              release-notes.md > SHA256SUMS)
+          echo "authority_artifact_name=$authority_name" >> "$GITHUB_OUTPUT"
+          echo "release_artifact_name=$RELEASE_ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "release_artifact_id=$RELEASE_ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+          echo "release_artifact_digest=$RELEASE_ARTIFACT_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "patchset_sha=$PATCHSET_SHA" >> "$GITHUB_OUTPUT"
+          echo "upstream_source_sha=$UPSTREAM_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "mirror_candidate_sha=$MIRROR_CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          echo "expected_main_sha=$EXPECTED_MAIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "expected_mirror_sha=$EXPECTED_MIRROR_SHA" >> "$GITHUB_OUTPUT"
+          echo "expected_patched_sha=$EXPECTED_PATCHED_SHA" >> "$GITHUB_OUTPUT"
+          echo "replay_commit_sha=$REPLAY_COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "replay_tree_sha=$REPLAY_TREE_SHA" >> "$GITHUB_OUTPUT"
+          echo "publication_commit_sha=$PUBLICATION_COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable Git mutation authority
+        id: upload_git_authority
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ${{ steps.git_authority.outputs.authority_artifact_name }}
+          path: git-mutation-authority
+          if-no-files-found: error
+
+  mutate-git:
+    needs: authorize-git-mutation
+    if: ${{ needs.authorize-git-mutation.result == 'success' }}
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.authorize-git-mutation.outputs.version }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download exact Git mutation authority
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.authorize-git-mutation.outputs.authority_artifact_id }}
+          path: authority-download
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Materialize exact authorized Git mutation
+        env:
+          AUTHORITY_ARTIFACT_NAME: ${{ needs.authorize-git-mutation.outputs.authority_artifact_name }}
+          AUTHORITY_ARTIFACT_ID: ${{ needs.authorize-git-mutation.outputs.authority_artifact_id }}
+          AUTHORITY_ARTIFACT_DIGEST: ${{ needs.authorize-git-mutation.outputs.authority_artifact_digest }}
+          RELEASE_ARTIFACT_NAME: ${{ needs.authorize-git-mutation.outputs.release_artifact_name }}
+          RELEASE_ARTIFACT_ID: ${{ needs.authorize-git-mutation.outputs.release_artifact_id }}
+          RELEASE_ARTIFACT_DIGEST: ${{ needs.authorize-git-mutation.outputs.release_artifact_digest }}
+          PATCHSET_SHA: ${{ needs.authorize-git-mutation.outputs.patchset_sha }}
+          UPSTREAM_SOURCE_SHA: ${{ needs.authorize-git-mutation.outputs.upstream_source_sha }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.authorize-git-mutation.outputs.mirror_candidate_sha }}
+          EXPECTED_MAIN_SHA: ${{ needs.authorize-git-mutation.outputs.expected_main_sha }}
+          EXPECTED_MIRROR_SHA: ${{ needs.authorize-git-mutation.outputs.expected_mirror_sha }}
+          EXPECTED_PATCHED_SHA: ${{ needs.authorize-git-mutation.outputs.expected_patched_sha }}
+          REPLAY_COMMIT_SHA: ${{ needs.authorize-git-mutation.outputs.replay_commit_sha }}
+          REPLAY_TREE_SHA: ${{ needs.authorize-git-mutation.outputs.replay_tree_sha }}
+          PUBLICATION_COMMIT_SHA: ${{ needs.authorize-git-mutation.outputs.publication_commit_sha }}
+          VERSION: ${{ needs.authorize-git-mutation.outputs.version }}
+        run: |
+          set -euo pipefail
+          suffix="${AUTHORITY_ARTIFACT_NAME#git-mutation-authority-}"
+          authority_run="${suffix%-*}"
+          authority_attempt="${suffix##*-}"
+          [ "$AUTHORITY_ARTIFACT_NAME" = \
+            "git-mutation-authority-${authority_run}-${authority_attempt}" ] || exit 1
+          [ "$authority_run" = "$GITHUB_RUN_ID" ] || exit 1
+          [[ "$authority_attempt" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [ "$authority_attempt" -le "$GITHUB_RUN_ATTEMPT" ] || exit 1
+          [ "$authority_attempt" = "$GITHUB_RUN_ATTEMPT" ] || exit 1
+          [[ "$AUTHORITY_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          archive_digest="${AUTHORITY_ARTIFACT_DIGEST#sha256:}"
+          [[ "$archive_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          mapfile -t archive_files < <(find authority-download -maxdepth 1 -type f -print)
+          [ "${#archive_files[@]}" -eq 1 ] || exit 1
+          [ "$(sha256sum "${archive_files[0]}" | awk '{print $1}')" = \
+            "$archive_digest" ] || exit 1
+          mkdir authorized
+          unzip -q "${archive_files[0]}" -d authorized
+          expected_files="$(printf '%s\n' SHA256SUMS authorization.env \
+            authorized-mutation.bundle release-notes.md | sort)"
+          actual_files="$(find authorized -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
+          [ "$actual_files" = "$expected_files" ] || exit 1
+          (cd authorized && sha256sum -c SHA256SUMS)
+          require_authority() {
+            key="$1"
+            expected="$2"
+            [ "$(grep -F "${key}=" authorized/authorization.env | wc -l)" -eq 1 ] || exit 1
+            grep -Fx "${key}=${expected}" authorized/authorization.env >/dev/null
+          }
+          require_authority patchset_sha "$PATCHSET_SHA"
+          require_authority release_artifact_name "$RELEASE_ARTIFACT_NAME"
+          require_authority release_artifact_id "$RELEASE_ARTIFACT_ID"
+          require_authority release_artifact_digest "$RELEASE_ARTIFACT_DIGEST"
+          require_authority upstream_source_sha "$UPSTREAM_SOURCE_SHA"
+          require_authority mirror_candidate_sha "$MIRROR_CANDIDATE_SHA"
+          require_authority expected_main_sha "$EXPECTED_MAIN_SHA"
+          require_authority expected_mirror_sha "$EXPECTED_MIRROR_SHA"
+          require_authority expected_patched_sha "$EXPECTED_PATCHED_SHA"
+          require_authority replay_commit_sha "$REPLAY_COMMIT_SHA"
+          require_authority replay_tree_sha "$REPLAY_TREE_SHA"
+          require_authority publication_commit_sha "$PUBLICATION_COMMIT_SHA"
+          require_authority version "$VERSION"
+          [ "$(wc -l < authorized/authorization.env)" -eq 13 ] || exit 1
+          ! grep -Ev '^[a-z_]+=[^[:cntrl:]]*$' authorized/authorization.env || exit 1
+          git init mutation
+          git -C mutation bundle verify \
+            "$GITHUB_WORKSPACE/authorized/authorized-mutation.bundle"
+          git -C mutation bundle unbundle \
+            "$GITHUB_WORKSPACE/authorized/authorized-mutation.bundle" >/dev/null
+          for object in "$MIRROR_CANDIDATE_SHA^{commit}" "$REPLAY_COMMIT_SHA^{commit}" \
+            "$PUBLICATION_COMMIT_SHA^{commit}"; do
+            git -C mutation cat-file -e "$object"
+          done
+          git -C mutation update-ref refs/heads/candidate "$MIRROR_CANDIDATE_SHA"
+          git -C mutation update-ref refs/heads/replay "$REPLAY_COMMIT_SHA"
+          git -C mutation update-ref refs/heads/publication "$PUBLICATION_COMMIT_SHA"
+          git -C mutation remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Recheck all authorized identities immediately before mutation
+        env:
+          PATCHSET_SHA: ${{ needs.authorize-git-mutation.outputs.patchset_sha }}
+          UPSTREAM_SOURCE_SHA: ${{ needs.authorize-git-mutation.outputs.upstream_source_sha }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.authorize-git-mutation.outputs.mirror_candidate_sha }}
+          EXPECTED_MAIN_SHA: ${{ needs.authorize-git-mutation.outputs.expected_main_sha }}
+          EXPECTED_MIRROR_SHA: ${{ needs.authorize-git-mutation.outputs.expected_mirror_sha }}
+          EXPECTED_PATCHED_SHA: ${{ needs.authorize-git-mutation.outputs.expected_patched_sha }}
+          REPLAY_COMMIT_SHA: ${{ needs.authorize-git-mutation.outputs.replay_commit_sha }}
+          REPLAY_TREE_SHA: ${{ needs.authorize-git-mutation.outputs.replay_tree_sha }}
+          PUBLICATION_COMMIT_SHA: ${{ needs.authorize-git-mutation.outputs.publication_commit_sha }}
+          VERSION: ${{ needs.authorize-git-mutation.outputs.version }}
+        run: |
+          set -euo pipefail
+          [ "$PATCHSET_SHA" = "$GITHUB_SHA" ] || exit 1
+          api="https://api.github.com/repos"
+          upstream_status="$(curl -sS -o mutation/final-upstream.json -w '%{http_code}' \
+            "$api/${UPSTREAM_REPOSITORY}/git/commits/${UPSTREAM_SOURCE_SHA}")"
+          [ "$upstream_status" = 200 ] || exit 1
+          queried_upstream_sha="$(jq -er .sha mutation/final-upstream.json)"
+          [ "$queried_upstream_sha" = "$UPSTREAM_SOURCE_SHA" ] || exit 1
+          [ "$(git -C mutation rev-parse "$REPLAY_COMMIT_SHA^{tree}")" = \
+            "$REPLAY_TREE_SHA" ] || exit 1
+          [ "$(git -C mutation rev-parse "$PUBLICATION_COMMIT_SHA^")" = \
+            "$REPLAY_COMMIT_SHA" ] || exit 1
+          [ "$(git -C mutation rev-parse "$MIRROR_CANDIDATE_SHA^1")" = \
+            "$EXPECTED_MAIN_SHA" ] || exit 1
+          [ "$(git -C mutation show -s --format=%P "$MIRROR_CANDIDATE_SHA" | wc -w)" \
+            -eq 2 ] || exit 1
+          workflow_install_sha="$(git -C mutation rev-parse "$MIRROR_CANDIDATE_SHA^2")"
+          [ "$(git -C mutation rev-parse "$workflow_install_sha^")" = \
+            "$UPSTREAM_SOURCE_SHA" ] || exit 1
+          [ "$(git -C mutation rev-parse "$MIRROR_CANDIDATE_SHA^{tree}")" = \
+            "$(git -C mutation rev-parse "$workflow_install_sha^{tree}")" ] || exit 1
+
+          current_main="$(git -C mutation ls-remote origin refs/heads/main | awk '{print $1}')"
+          current_mirror="$(git -C mutation ls-remote \
+            origin refs/heads/mirror/upstream-main | awk '{print $1}')"
+          current_patched="$(git -C mutation ls-remote origin refs/heads/patched | awk '{print $1}')"
+          current_tag="$(git -C mutation ls-remote \
+            origin "refs/tags/$VERSION" | awk '{print $1}')"
+          require_expected_or_intended() {
+            actual="$1"
+            expected="$2"
+            intended="$3"
+            ref_name="$4"
+            if [ "$actual" != "$expected" ] && [ "$actual" != "$intended" ]; then
+              echo "$ref_name moved to an unauthorized state: $actual" >&2
+              exit 1
+            fi
+          }
+          require_expected_or_intended \
+            "$current_main" "$EXPECTED_MAIN_SHA" "$MIRROR_CANDIDATE_SHA" main
+          require_expected_or_intended \
+            "$current_mirror" "$EXPECTED_MIRROR_SHA" "$MIRROR_CANDIDATE_SHA" mirror/upstream-main
+          require_expected_or_intended \
+            "$current_patched" "$EXPECTED_PATCHED_SHA" "$PUBLICATION_COMMIT_SHA" patched
+          require_expected_or_intended "$current_tag" "" "$PUBLICATION_COMMIT_SHA" "tag $VERSION"
+
+          release_status="$(curl -sS -o mutation/final-release.json -w '%{http_code}' \
+            "$api/${GITHUB_REPOSITORY}/releases/tags/${VERSION}")"
+          if [ "$release_status" = 200 ]; then
+            jq -e --arg version "$VERSION" --arg target "$PUBLICATION_COMMIT_SHA" \
+              --rawfile body authorized/release-notes.md \
+              '.tag_name == $version and .name == $version and
+               .body == $body and .target_commitish == $target and
+               .draft == false and .prerelease == false' \
+              mutation/final-release.json >/dev/null
+          elif [ "$release_status" != 404 ]; then
+            echo "release lookup failed with HTTP $release_status" >&2
+            exit 1
+          fi
+          current_patchset_sha="$(git -C mutation ls-remote \
+            origin refs/heads/patchset | awk '{print $1}')"
+          [ "$current_patchset_sha" = "$PATCHSET_SHA" ] || {
+            echo "patchset moved before mutation: $current_patchset_sha" >&2
+            exit 1
+          }
+
       - name: Publish mirror candidate
         env:
-          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
-          EXPECTED_MIRROR_SHA: ${{ needs.prepare-release.outputs.expected_mirror_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.authorize-git-mutation.outputs.mirror_candidate_sha }}
+          EXPECTED_MIRROR_SHA: ${{ needs.authorize-git-mutation.outputs.expected_mirror_sha }}
         working-directory: mutation
         run: |
           set -euo pipefail
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(
+            printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0
+          )"
           current_mirror="$(git ls-remote origin refs/heads/mirror/upstream-main | awk '{print $1}')"
           if [ "$current_mirror" = "$MIRROR_CANDIDATE_SHA" ]; then
             exit 0
@@ -1257,9 +1826,9 @@ jobs:
       - name: Create or update internal sync request
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_MAIN_SHA: ${{ needs.prepare-release.outputs.expected_main_sha }}
-          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
-          UPSTREAM_SOURCE_SHA: ${{ needs.prepare-release.outputs.upstream_source_sha }}
+          EXPECTED_MAIN_SHA: ${{ needs.authorize-git-mutation.outputs.expected_main_sha }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.authorize-git-mutation.outputs.mirror_candidate_sha }}
+          UPSTREAM_SOURCE_SHA: ${{ needs.authorize-git-mutation.outputs.upstream_source_sha }}
         run: |
           set -euo pipefail
           body="Internal sync request for validated upstream commit ${UPSTREAM_SOURCE_SHA}."
@@ -1341,11 +1910,17 @@ jobs:
 
       - name: Promote validated candidate to main with compare-and-swap
         env:
-          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
-          EXPECTED_MAIN_SHA: ${{ needs.prepare-release.outputs.expected_main_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.authorize-git-mutation.outputs.mirror_candidate_sha }}
+          EXPECTED_MAIN_SHA: ${{ needs.authorize-git-mutation.outputs.expected_main_sha }}
         working-directory: mutation
         run: |
           set -euo pipefail
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(
+            printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0
+          )"
           current_mirror="$(git ls-remote origin refs/heads/mirror/upstream-main | awk '{print $1}')"
           [ "$current_mirror" = "$MIRROR_CANDIDATE_SHA" ] || {
             echo "mirror/upstream-main moved before main promotion: $current_mirror" >&2
@@ -1369,13 +1944,19 @@ jobs:
 
       - name: Publish patched branch and reserve tag atomically
         env:
-          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
-          EXPECTED_PATCHED_SHA: ${{ needs.prepare-release.outputs.expected_patched_sha }}
-          PUBLICATION_COMMIT_SHA: ${{ needs.prepare-release.outputs.publication_commit_sha }}
-          VERSION: ${{ needs.prepare-release.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.authorize-git-mutation.outputs.mirror_candidate_sha }}
+          EXPECTED_PATCHED_SHA: ${{ needs.authorize-git-mutation.outputs.expected_patched_sha }}
+          PUBLICATION_COMMIT_SHA: ${{ needs.authorize-git-mutation.outputs.publication_commit_sha }}
+          VERSION: ${{ needs.authorize-git-mutation.outputs.version }}
         working-directory: mutation
         run: |
           set -euo pipefail
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(
+            printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0
+          )"
           current_mirror="$(git ls-remote origin refs/heads/mirror/upstream-main | awk '{print $1}')"
           current_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
           [ "$current_mirror" = "$MIRROR_CANDIDATE_SHA" ] || {
@@ -1416,11 +1997,17 @@ jobs:
       - name: Verify published branch and reserved tag identities
         env:
           GH_TOKEN: ${{ github.token }}
-          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
-          PUBLICATION_COMMIT_SHA: ${{ needs.prepare-release.outputs.publication_commit_sha }}
-          VERSION: ${{ needs.prepare-release.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.authorize-git-mutation.outputs.mirror_candidate_sha }}
+          PUBLICATION_COMMIT_SHA: ${{ needs.authorize-git-mutation.outputs.publication_commit_sha }}
+          VERSION: ${{ needs.authorize-git-mutation.outputs.version }}
         run: |
           set -euo pipefail
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(
+            printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0
+          )"
           mirror_sha="$(git -C mutation ls-remote origin refs/heads/mirror/upstream-main | awk '{print $1}')"
           main_sha="$(git -C mutation ls-remote origin refs/heads/main | awk '{print $1}')"
           patched_sha="$(git -C mutation ls-remote origin refs/heads/patched | awk '{print $1}')"
@@ -1452,7 +2039,13 @@ jobs:
       authority_artifact_name: ${{ needs.prepare-release.outputs.recovery_image_artifact_name || steps.image_authority.outputs.authority_artifact_name }}
       authority_artifact_id: ${{ needs.prepare-release.outputs.recovery_image_artifact_id || steps.upload_image_authority.outputs.artifact-id }}
       authority_artifact_digest: ${{ needs.prepare-release.outputs.recovery_image_artifact_digest || steps.upload_image_authority.outputs.artifact-digest }}
-      authorized_image_digest: ${{ steps.image_authority.outputs.oci_manifest_digest }}
+      authorized_image_digest: ${{ steps.image_authority.outputs.oci_root_digest }}
+      authorized_image_media_type: ${{ steps.image_authority.outputs.oci_root_media_type }}
+      authorized_image_size: ${{ steps.image_authority.outputs.oci_root_size }}
+      oci_archive_sha256: ${{ steps.image_authority.outputs.oci_archive_sha256 }}
+      oci_closure_sha256: ${{ steps.image_authority.outputs.oci_closure_sha256 }}
+      oci_descriptor_count: ${{ steps.image_authority.outputs.oci_descriptor_count }}
+      oci_blob_count: ${{ steps.image_authority.outputs.oci_blob_count }}
       expected_version_state: ${{ steps.image_authority.outputs.expected_version_state }}
       expected_latest_state: ${{ steps.image_authority.outputs.expected_latest_state }}
       expected_latest_manifest_sha256: ${{ steps.image_authority.outputs.expected_latest_manifest_sha256 }}
@@ -1614,12 +2207,12 @@ jobs:
             mkdir verified-image-authority
             unzip -q "${image_archives[0]}" -d verified-image-authority
             expected_receipt_files="$(printf '%s\n' IMAGE-MANIFEST.SHA256 \
-              image-publication.env release-image.oci.tar | sort)"
+              image-publication.env oci-closure.json release-image.oci.tar | sort)"
             actual_receipt_files="$(find verified-image-authority -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
             [ "$actual_receipt_files" = "$expected_receipt_files" ] || exit 1
             (cd verified-image-authority && sha256sum -c IMAGE-MANIFEST.SHA256)
             receipt=verified-image-authority/image-publication.env
-            [ "$(wc -l < "$receipt")" -eq 20 ] || exit 1
+            [ "$(wc -l < "$receipt")" -eq 37 ] || exit 1
             ! grep -Ev '^[a-z_]+=[^[:cntrl:]]*$' "$receipt" || exit 1
             receipt_field() {
               key="$1"
@@ -1636,6 +2229,11 @@ jobs:
             [ "$(receipt_field version)" = "$VERSION" ] || exit 1
             [ "$(receipt_field replay_commit_sha)" = "$REPLAY_COMMIT_SHA" ] || exit 1
             [ "$(receipt_field publication_commit_sha)" = "$PUBLICATION_COMMIT_SHA" ] || exit 1
+            [ "$(receipt_field patchset_sha)" = "$PATCHSET_SHA" ] || exit 1
+            [ "$(receipt_field upstream_source_sha)" = "$UPSTREAM_SOURCE_SHA" ] || exit 1
+            [ "$(receipt_field mirror_candidate_sha)" = "$MIRROR_CANDIDATE_SHA" ] || exit 1
+            [ "$(receipt_field replay_tree_sha)" = "$REPLAY_TREE_SHA" ] || exit 1
+            [ "$(receipt_field publication_tree_sha)" = "$PUBLICATION_TREE_SHA" ] || exit 1
             [ "$(receipt_field version_image_tag)" = "$VERSION_IMAGE_TAG" ] || exit 1
             [ "$(receipt_field latest_image_tag)" = "$LATEST_IMAGE_TAG" ] || exit 1
             [ "$(receipt_field expected_version_state)" = missing ] || exit 1
@@ -1653,10 +2251,16 @@ jobs:
                 ;;
               *) exit 1 ;;
             esac
-            [ "$(receipt_field oci_manifest_digest)" = "$RECOVERED_IMAGE_DIGEST" ] || exit 1
-            [[ "$(receipt_field oci_config_digest)" =~ ^[0-9a-f]{64}$ ]] || exit 1
+            [ "$(receipt_field runtime_platforms)" = linux/amd64 ] || exit 1
+            [ "$(receipt_field build_provenance)" = false ] || exit 1
+            [ "$(receipt_field build_sbom)" = false ] || exit 1
+            [ "$(receipt_field oci_root_digest)" = "$RECOVERED_IMAGE_DIGEST" ] || exit 1
             [ "$(receipt_field oci_archive_sha256)" = \
               "$(sha256sum verified-image-authority/release-image.oci.tar | awk '{print $1}')" ] || exit 1
+            [ "$(receipt_field oci_archive_size)" = \
+              "$(stat -c %s verified-image-authority/release-image.oci.tar)" ] || exit 1
+            [ "$(receipt_field oci_closure_sha256)" = \
+              "$(sha256sum verified-image-authority/oci-closure.json | awk '{print $1}')" ] || exit 1
             [[ "$RECOVERED_IMAGE_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
           else
             [ -z "$RECOVERED_IMAGE_DIGEST" ] || exit 1
@@ -1709,8 +2313,8 @@ jobs:
             { [ -z "$tag_sha" ] || [ "$tag_sha" = "$PUBLICATION_COMMIT_SHA" ]; } || exit 1
           fi
 
-      # Hosted runners do not share the preflight builder from prepare-release.
-      - name: Set up Docker Buildx for image authorization
+      - name: Set up Docker Buildx for the sole release image build
+        if: ${{ needs.prepare-release.outputs.recovery_image_artifact_id == '' }}
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Create image authority directory
@@ -1725,6 +2329,7 @@ jobs:
           file: publication/Dockerfile
           platforms: linux/amd64
           push: false
+          load: false
           provenance: false
           sbom: false
           outputs: type=oci,dest=image-publication-authority/release-image.oci.tar
@@ -1740,65 +2345,38 @@ jobs:
         env:
           VERSION: ${{ needs.prepare-release.outputs.version }}
           REPLAY_COMMIT_SHA: ${{ needs.prepare-release.outputs.replay_commit_sha }}
+          PATCHSET_SHA: ${{ needs.prepare-release.outputs.patchset_sha }}
+          UPSTREAM_SOURCE_SHA: ${{ needs.prepare-release.outputs.upstream_source_sha }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
+          REPLAY_TREE_SHA: ${{ needs.prepare-release.outputs.replay_tree_sha }}
+          PUBLICATION_COMMIT_SHA: ${{ needs.prepare-release.outputs.publication_commit_sha }}
+          PUBLICATION_TREE_SHA: ${{ needs.prepare-release.outputs.publication_tree_sha }}
         run: |
           set -euo pipefail
           archive=image-publication-authority/release-image.oci.tar
-          mkdir authority-layout
-          tar -tf "$archive" > authority-archive-paths.txt
-          ! grep -Eq '(^/|(^|/)\.\.(/|$))' authority-archive-paths.txt || exit 1
-          tar -tvf "$archive" | awk 'substr($1, 1, 1) !~ /[-d]/ { exit 1 }'
-          tar -xf "$archive" -C authority-layout
-          expected_root="$(printf '%s\n' blobs index.json oci-layout | sort)"
-          actual_root="$(find authority-layout -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
-          [ "$actual_root" = "$expected_root" ] || exit 1
-          [ -d authority-layout/blobs/sha256 ] || exit 1
-          [ "$(find authority-layout/blobs -mindepth 1 -maxdepth 1 -printf '%f\n')" = sha256 ] || exit 1
-          jq -e '.imageLayoutVersion == "1.0.0"' authority-layout/oci-layout >/dev/null
-          jq -e '.schemaVersion == 2 and (.manifests | length) == 1 and
-            .manifests[0].mediaType == "application/vnd.oci.image.manifest.v1+json" and
-            .manifests[0].platform.os == "linux" and
-            .manifests[0].platform.architecture == "amd64"' authority-layout/index.json >/dev/null
-          oci_manifest="$(jq -er '.manifests[0].digest' authority-layout/index.json)"
-          descriptor_size="$(jq -er '.manifests[0].size' authority-layout/index.json)"
-          [[ "$oci_manifest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-          [[ "$descriptor_size" =~ ^[0-9]+$ ]] || exit 1
-          manifest_blob="authority-layout/blobs/sha256/${oci_manifest#sha256:}"
-          [ "$(stat -c %s "$manifest_blob")" = "$descriptor_size" ] || exit 1
-          [ "$(sha256sum "$manifest_blob" | awk '{print $1}')" = "${oci_manifest#sha256:}" ] || exit 1
-          jq -e '.schemaVersion == 2 and
-            .config.mediaType == "application/vnd.oci.image.config.v1+json" and
-            (.layers | length) > 0 and
-            all(.layers[]; (.digest | test("^sha256:[0-9a-f]{64}$")) and
-              (.size | type == "number" and . >= 0))' "$manifest_blob" >/dev/null
-          oci_config="$(jq -er '.config.digest' "$manifest_blob")"
-          config_size="$(jq -er '.config.size' "$manifest_blob")"
-          [[ "$oci_config" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-          [[ "$config_size" =~ ^[0-9]+$ ]] || exit 1
-          config_blob="authority-layout/blobs/sha256/${oci_config#sha256:}"
-          [ "$(stat -c %s "$config_blob")" = "$config_size" ] || exit 1
-          [ "$(sha256sum "$config_blob" | awk '{print $1}')" = "${oci_config#sha256:}" ] || exit 1
-          jq -e --arg version "$VERSION" --arg revision "$REPLAY_COMMIT_SHA" \
-            '.config.Labels["org.opencontainers.image.version"] == $version and
-             .config.Labels["org.opencontainers.image.revision"] == $revision' \
-            "$config_blob" >/dev/null
-          while IFS=$'\t' read -r layer_digest layer_size; do
-            [[ "$layer_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-            [[ "$layer_size" =~ ^[0-9]+$ ]] || exit 1
-            layer_blob="authority-layout/blobs/sha256/${layer_digest#sha256:}"
-            [ "$(stat -c %s "$layer_blob")" = "$layer_size" ] || exit 1
-            [ "$(sha256sum "$layer_blob" | awk '{print $1}')" = \
-              "${layer_digest#sha256:}" ] || exit 1
-          done < <(jq -er '.layers[] | [.digest, (.size | tostring)] | @tsv' "$manifest_blob")
-          expected_blobs="$({ printf '%s\n' "${oci_manifest#sha256:}" \
-            "${oci_config#sha256:}"; jq -r '.layers[].digest | sub("^sha256:"; "")' \
-            "$manifest_blob"; } | sort -u)"
-          actual_blobs="$(find authority-layout/blobs/sha256 -mindepth 1 -maxdepth 1 \
-            -type f -printf '%f\n' | sort)"
-          [ "$actual_blobs" = "$expected_blobs" ] || exit 1
-          oci_archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
-          echo "oci_manifest_digest=${oci_manifest#sha256:}" >> "$GITHUB_OUTPUT"
-          echo "oci_config_digest=${oci_config#sha256:}" >> "$GITHUB_OUTPUT"
-          echo "oci_archive_sha256=$oci_archive_sha256" >> "$GITHUB_OUTPUT"
+          python3 -c "$OCI_CLOSURE_VERIFIER" "$archive" authority-layout \
+            image-publication-authority/oci-closure.json "$VERSION" "$REPLAY_COMMIT_SHA" \
+            "$REPLAY_TREE_SHA" "$PUBLICATION_TREE_SHA" "$PATCHSET_SHA" \
+            "$UPSTREAM_SOURCE_SHA" "$MIRROR_CANDIDATE_SHA" "$PUBLICATION_COMMIT_SHA"
+          closure=image-publication-authority/oci-closure.json
+          echo "oci_root_media_type=$(jq -er .root.mediaType "$closure")" >> "$GITHUB_OUTPUT"
+          echo "oci_root_digest=$(jq -er '.root.digest | sub("^sha256:"; "")' "$closure")" >> "$GITHUB_OUTPUT"
+          echo "oci_root_size=$(jq -er '.root.size | tostring' "$closure")" >> "$GITHUB_OUTPUT"
+          echo "oci_archive_sha256=$(jq -er .layout.archive.sha256 "$closure")" >> "$GITHUB_OUTPUT"
+          echo "oci_archive_size=$(jq -er '.layout.archive.size | tostring' "$closure")" >> "$GITHUB_OUTPUT"
+          echo "oci_layout_sha256=$(jq -er .layout.ociLayout.sha256 "$closure")" >> "$GITHUB_OUTPUT"
+          echo "oci_layout_size=$(jq -er '.layout.ociLayout.size | tostring' "$closure")" >> "$GITHUB_OUTPUT"
+          echo "oci_index_sha256=$(jq -er .layout.index.sha256 "$closure")" >> "$GITHUB_OUTPUT"
+          echo "oci_index_size=$(jq -er '.layout.index.size | tostring' "$closure")" >> "$GITHUB_OUTPUT"
+          echo "oci_closure_sha256=$(sha256sum "$closure" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "oci_descriptor_count=$(jq -er '.blobs | length' "$closure")" >> "$GITHUB_OUTPUT"
+          echo "oci_blob_count=$(jq -er '.blobs | length' "$closure")" >> "$GITHUB_OUTPUT"
+
+      - name: Set up ORAS for authenticated pre-mutation reads
+        uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
+        with:
+          url: https://github.com/oras-project/oras/releases/download/v1.3.0/oras_1.3.0_linux_amd64.tar.gz
+          checksum: 6cdc692f929100feb08aa8de584d02f7bcc30ec7d88bc2adc2054d782db57c64
 
       - name: Log in to private GHCR before fresh state authorization
         if: ${{ needs.prepare-release.outputs.recovery_image_artifact_id == '' }}
@@ -1817,25 +2395,63 @@ jobs:
           MANIFEST_SHA256: ${{ needs.prepare-release.outputs.manifest_sha256 }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
           REPLAY_COMMIT_SHA: ${{ needs.prepare-release.outputs.replay_commit_sha }}
+          PATCHSET_SHA: ${{ needs.prepare-release.outputs.patchset_sha }}
+          UPSTREAM_SOURCE_SHA: ${{ needs.prepare-release.outputs.upstream_source_sha }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
+          REPLAY_TREE_SHA: ${{ needs.prepare-release.outputs.replay_tree_sha }}
           PUBLICATION_COMMIT_SHA: ${{ needs.prepare-release.outputs.publication_commit_sha }}
+          PUBLICATION_TREE_SHA: ${{ needs.prepare-release.outputs.publication_tree_sha }}
           VERSION_IMAGE_TAG: ${{ needs.prepare-release.outputs.version_image_tag }}
           LATEST_IMAGE_TAG: ${{ needs.prepare-release.outputs.latest_image_tag }}
-          OCI_MANIFEST_DIGEST: ${{ steps.local_image.outputs.oci_manifest_digest }}
-          OCI_CONFIG_DIGEST: ${{ steps.local_image.outputs.oci_config_digest }}
+          OCI_ROOT_MEDIA_TYPE: ${{ steps.local_image.outputs.oci_root_media_type }}
+          OCI_ROOT_DIGEST: ${{ steps.local_image.outputs.oci_root_digest }}
+          OCI_ROOT_SIZE: ${{ steps.local_image.outputs.oci_root_size }}
           OCI_ARCHIVE_SHA256: ${{ steps.local_image.outputs.oci_archive_sha256 }}
+          OCI_ARCHIVE_SIZE: ${{ steps.local_image.outputs.oci_archive_size }}
+          OCI_LAYOUT_SHA256: ${{ steps.local_image.outputs.oci_layout_sha256 }}
+          OCI_LAYOUT_SIZE: ${{ steps.local_image.outputs.oci_layout_size }}
+          OCI_INDEX_SHA256: ${{ steps.local_image.outputs.oci_index_sha256 }}
+          OCI_INDEX_SIZE: ${{ steps.local_image.outputs.oci_index_size }}
+          OCI_CLOSURE_SHA256: ${{ steps.local_image.outputs.oci_closure_sha256 }}
+          OCI_DESCRIPTOR_COUNT: ${{ steps.local_image.outputs.oci_descriptor_count }}
+          OCI_BLOB_COUNT: ${{ steps.local_image.outputs.oci_blob_count }}
         run: |
           set -euo pipefail
           inspect_baseline() {
             tag="$1"
             prefix="$2"
-            if docker buildx imagetools inspect "$tag" --raw > "${prefix}.raw" \
+            if oras manifest fetch --descriptor "$tag" > "${prefix}.descriptor.json" \
               2> "${prefix}.err"; then
-              docker buildx imagetools inspect "$tag" --format '{{json .Image}}' > \
-                "${prefix}.json"
+              descriptor_digest="$(jq -er \
+                '.digest | select(test("^sha256:[0-9a-f]{64}$"))' \
+                "${prefix}.descriptor.json")"
+              descriptor_size="$(jq -er \
+                '.size | select(type == "number" and . >= 0) | tostring' \
+                "${prefix}.descriptor.json")"
+              oras manifest fetch --output "${prefix}.raw" "$tag"
+              [ "$(sha256sum "${prefix}.raw" | awk '{print "sha256:" $1}')" = \
+                "$descriptor_digest" ] || exit 1
+              [ "$(stat -c %s "${prefix}.raw")" = "$descriptor_size" ] || exit 1
+              oras manifest fetch --platform linux/amd64 --output \
+                "${prefix}.platform.raw" "$tag"
+              config_digest="$(jq -er \
+                '.config.digest | select(test("^sha256:[0-9a-f]{64}$"))' \
+                "${prefix}.platform.raw")"
+              config_size="$(jq -er \
+                '.config.size | select(type == "number" and . >= 0) | tostring' \
+                "${prefix}.platform.raw")"
+              repository="${tag%:*}"
+              oras blob fetch --output "${prefix}.json" \
+                "${repository}@${config_digest}"
+              [ "$(sha256sum "${prefix}.json" | awk '{print "sha256:" $1}')" = \
+                "$config_digest" ] || exit 1
+              [ "$(stat -c %s "${prefix}.json")" = "$config_size" ] || exit 1
               printf present
               return
             fi
-            if grep -Eiq 'manifest unknown|name unknown|not found|404' "${prefix}.err"; then
+            expected_error="Error response from registry: failed to find \"${tag}\": ${tag}: not found"
+            if [ "$(wc -l < "${prefix}.err")" -eq 1 ] && \
+              grep -Fx "$expected_error" "${prefix}.err" >/dev/null; then
               printf missing
               return
             fi
@@ -1905,6 +2521,11 @@ jobs:
           version=${VERSION}
           replay_commit_sha=${REPLAY_COMMIT_SHA}
           publication_commit_sha=${PUBLICATION_COMMIT_SHA}
+          patchset_sha=${PATCHSET_SHA}
+          upstream_source_sha=${UPSTREAM_SOURCE_SHA}
+          mirror_candidate_sha=${MIRROR_CANDIDATE_SHA}
+          replay_tree_sha=${REPLAY_TREE_SHA}
+          publication_tree_sha=${PUBLICATION_TREE_SHA}
           version_image_tag=${VERSION_IMAGE_TAG}
           latest_image_tag=${LATEST_IMAGE_TAG}
           expected_version_state=${expected_version_state}
@@ -1912,12 +2533,25 @@ jobs:
           expected_latest_manifest_sha256=${expected_latest_manifest_sha256}
           expected_latest_version_label=${expected_latest_version_label}
           expected_latest_revision_label=${expected_latest_revision_label}
-          oci_manifest_digest=${OCI_MANIFEST_DIGEST}
-          oci_config_digest=${OCI_CONFIG_DIGEST}
+          runtime_platforms=linux/amd64
+          build_provenance=false
+          build_sbom=false
+          oci_root_media_type=${OCI_ROOT_MEDIA_TYPE}
+          oci_root_digest=${OCI_ROOT_DIGEST}
+          oci_root_size=${OCI_ROOT_SIZE}
           oci_archive_sha256=${OCI_ARCHIVE_SHA256}
+          oci_archive_size=${OCI_ARCHIVE_SIZE}
+          oci_layout_sha256=${OCI_LAYOUT_SHA256}
+          oci_layout_size=${OCI_LAYOUT_SIZE}
+          oci_index_sha256=${OCI_INDEX_SHA256}
+          oci_index_size=${OCI_INDEX_SIZE}
+          oci_closure_sha256=${OCI_CLOSURE_SHA256}
+          oci_descriptor_count=${OCI_DESCRIPTOR_COUNT}
+          oci_blob_count=${OCI_BLOB_COUNT}
           EOF
           (cd image-publication-authority && \
-            sha256sum image-publication.env release-image.oci.tar > IMAGE-MANIFEST.SHA256)
+            sha256sum image-publication.env oci-closure.json \
+              release-image.oci.tar > IMAGE-MANIFEST.SHA256)
 
       - name: Upload immutable image publication authority
         id: upload_image_authority
@@ -1950,7 +2584,12 @@ jobs:
           MANIFEST_SHA256: ${{ needs.prepare-release.outputs.manifest_sha256 }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
           REPLAY_COMMIT_SHA: ${{ needs.prepare-release.outputs.replay_commit_sha }}
+          PATCHSET_SHA: ${{ needs.prepare-release.outputs.patchset_sha }}
+          UPSTREAM_SOURCE_SHA: ${{ needs.prepare-release.outputs.upstream_source_sha }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
+          REPLAY_TREE_SHA: ${{ needs.prepare-release.outputs.replay_tree_sha }}
           PUBLICATION_COMMIT_SHA: ${{ needs.prepare-release.outputs.publication_commit_sha }}
+          PUBLICATION_TREE_SHA: ${{ needs.prepare-release.outputs.publication_tree_sha }}
           VERSION_IMAGE_TAG: ${{ needs.prepare-release.outputs.version_image_tag }}
           LATEST_IMAGE_TAG: ${{ needs.prepare-release.outputs.latest_image_tag }}
         run: |
@@ -1970,12 +2609,12 @@ jobs:
             authority_attempt="$GITHUB_RUN_ATTEMPT"
           fi
           expected_files="$(printf '%s\n' IMAGE-MANIFEST.SHA256 image-publication.env \
-            release-image.oci.tar | sort)"
+            oci-closure.json release-image.oci.tar | sort)"
           actual_files="$(find authorized-image -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
           [ "$actual_files" = "$expected_files" ] || exit 1
           (cd authorized-image && sha256sum -c IMAGE-MANIFEST.SHA256)
           authority=authorized-image/image-publication.env
-          [ "$(wc -l < "$authority")" -eq 20 ] || exit 1
+          [ "$(wc -l < "$authority")" -eq 37 ] || exit 1
           ! grep -Ev '^[a-z_]+=[^[:cntrl:]]*$' "$authority" || exit 1
           authority_field() {
             [ "$(grep -F "${1}=" "$authority" | wc -l)" -eq 1 ] || exit 1
@@ -1991,6 +2630,11 @@ jobs:
           [ "$(authority_field version)" = "$VERSION" ] || exit 1
           [ "$(authority_field replay_commit_sha)" = "$REPLAY_COMMIT_SHA" ] || exit 1
           [ "$(authority_field publication_commit_sha)" = "$PUBLICATION_COMMIT_SHA" ] || exit 1
+          [ "$(authority_field patchset_sha)" = "$PATCHSET_SHA" ] || exit 1
+          [ "$(authority_field upstream_source_sha)" = "$UPSTREAM_SOURCE_SHA" ] || exit 1
+          [ "$(authority_field mirror_candidate_sha)" = "$MIRROR_CANDIDATE_SHA" ] || exit 1
+          [ "$(authority_field replay_tree_sha)" = "$REPLAY_TREE_SHA" ] || exit 1
+          [ "$(authority_field publication_tree_sha)" = "$PUBLICATION_TREE_SHA" ] || exit 1
           [ "$(authority_field version_image_tag)" = "$VERSION_IMAGE_TAG" ] || exit 1
           [ "$(authority_field latest_image_tag)" = "$LATEST_IMAGE_TAG" ] || exit 1
           [ "$(authority_field expected_version_state)" = missing ] || exit 1
@@ -2011,69 +2655,51 @@ jobs:
               ;;
             *) exit 1 ;;
           esac
+          [ "$(authority_field runtime_platforms)" = linux/amd64 ] || exit 1
+          [ "$(authority_field build_provenance)" = false ] || exit 1
+          [ "$(authority_field build_sbom)" = false ] || exit 1
           [ "$(authority_field oci_archive_sha256)" = \
             "$(sha256sum authorized-image/release-image.oci.tar | awk '{print $1}')" ] || exit 1
-          mkdir authorized-layout
-          ! tar -tf authorized-image/release-image.oci.tar | \
-            grep -Eq '(^/|(^|/)\.\.(/|$))' || exit 1
-          tar -tvf authorized-image/release-image.oci.tar | \
-            awk 'substr($1, 1, 1) !~ /[-d]/ { exit 1 }'
-          tar -xf authorized-image/release-image.oci.tar -C authorized-layout
-          expected_root="$(printf '%s\n' blobs index.json oci-layout | sort)"
-          actual_root="$(find authorized-layout -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
-          [ "$actual_root" = "$expected_root" ] || exit 1
-          [ -d authorized-layout/blobs/sha256 ] || exit 1
-          [ "$(find authorized-layout/blobs -mindepth 1 -maxdepth 1 -printf '%f\n')" = sha256 ] || exit 1
-          jq -e '.imageLayoutVersion == "1.0.0"' authorized-layout/oci-layout >/dev/null
-          jq -e '.schemaVersion == 2 and (.manifests | length) == 1 and
-            .manifests[0].mediaType == "application/vnd.oci.image.manifest.v1+json" and
-            .manifests[0].platform.os == "linux" and
-            .manifests[0].platform.architecture == "amd64"' authorized-layout/index.json >/dev/null
-          descriptor_digest="$(jq -er '.manifests[0].digest' authorized-layout/index.json)"
-          descriptor_size="$(jq -er '.manifests[0].size' authorized-layout/index.json)"
-          [[ "$descriptor_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-          [[ "$descriptor_size" =~ ^[0-9]+$ ]] || exit 1
-          manifest_blob="authorized-layout/blobs/sha256/${descriptor_digest#sha256:}"
-          [ "$(stat -c %s "$manifest_blob")" = "$descriptor_size" ] || exit 1
-          [ "$(sha256sum "$manifest_blob" | awk '{print $1}')" = "${descriptor_digest#sha256:}" ] || exit 1
-          [ "${descriptor_digest#sha256:}" = "$(authority_field oci_manifest_digest)" ] || exit 1
-          jq -e '.schemaVersion == 2 and
-            .config.mediaType == "application/vnd.oci.image.config.v1+json" and
-            (.layers | length) > 0 and
-            all(.layers[]; (.digest | test("^sha256:[0-9a-f]{64}$")) and
-              (.size | type == "number" and . >= 0))' "$manifest_blob" >/dev/null
-          config_digest="$(jq -er '.config.digest' "$manifest_blob")"
-          config_size="$(jq -er '.config.size' "$manifest_blob")"
-          [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-          [[ "$config_size" =~ ^[0-9]+$ ]] || exit 1
-          config_blob="authorized-layout/blobs/sha256/${config_digest#sha256:}"
-          [ "$(stat -c %s "$config_blob")" = "$config_size" ] || exit 1
-          [ "$(sha256sum "$config_blob" | awk '{print $1}')" = "${config_digest#sha256:}" ] || exit 1
-          [ "${config_digest#sha256:}" = "$(authority_field oci_config_digest)" ] || exit 1
-          jq -e --arg version "$VERSION" --arg revision "$REPLAY_COMMIT_SHA" \
-            '.config.Labels["org.opencontainers.image.version"] == $version and
-             .config.Labels["org.opencontainers.image.revision"] == $revision' \
-            "$config_blob" >/dev/null
-          while IFS=$'\t' read -r layer_digest layer_size; do
-            [[ "$layer_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-            [[ "$layer_size" =~ ^[0-9]+$ ]] || exit 1
-            layer_blob="authorized-layout/blobs/sha256/${layer_digest#sha256:}"
-            [ "$(stat -c %s "$layer_blob")" = "$layer_size" ] || exit 1
-            [ "$(sha256sum "$layer_blob" | awk '{print $1}')" = "${layer_digest#sha256:}" ] || exit 1
-          done < <(jq -er '.layers[] | [.digest, (.size | tostring)] | @tsv' "$manifest_blob")
-          expected_blobs="$({ printf '%s\n' "${descriptor_digest#sha256:}" \
-            "${config_digest#sha256:}"; jq -r '.layers[].digest | sub("^sha256:"; "")' \
-            "$manifest_blob"; } | sort -u)"
-          actual_blobs="$(find authorized-layout/blobs/sha256 -mindepth 1 -maxdepth 1 \
-            -type f -printf '%f\n' | sort)"
-          [ "$actual_blobs" = "$expected_blobs" ] || exit 1
+          [ "$(authority_field oci_archive_size)" = \
+            "$(stat -c %s authorized-image/release-image.oci.tar)" ] || exit 1
+          rm -rf authorized-layout
+          python3 -c "$OCI_CLOSURE_VERIFIER" authorized-image/release-image.oci.tar \
+            authorized-layout regenerated-oci-closure.json "$VERSION" "$REPLAY_COMMIT_SHA" \
+            "$REPLAY_TREE_SHA" "$PUBLICATION_TREE_SHA" "$PATCHSET_SHA" \
+            "$UPSTREAM_SOURCE_SHA" "$MIRROR_CANDIDATE_SHA" "$PUBLICATION_COMMIT_SHA"
+          cmp authorized-image/oci-closure.json regenerated-oci-closure.json
+          [ "$(authority_field oci_closure_sha256)" = \
+            "$(sha256sum regenerated-oci-closure.json | awk '{print $1}')" ] || exit 1
+          [ "$(authority_field oci_root_media_type)" = \
+            "$(jq -er .root.mediaType regenerated-oci-closure.json)" ] || exit 1
+          descriptor_digest="$(jq -er '.root.digest | sub("^sha256:"; "")' regenerated-oci-closure.json)"
+          [ "$descriptor_digest" = "$(authority_field oci_root_digest)" ] || exit 1
+          [ "$(authority_field oci_root_size)" = \
+            "$(jq -er '.root.size | tostring' regenerated-oci-closure.json)" ] || exit 1
+          [ "$(authority_field oci_layout_sha256)" = \
+            "$(jq -er .layout.ociLayout.sha256 regenerated-oci-closure.json)" ] || exit 1
+          [ "$(authority_field oci_layout_size)" = \
+            "$(jq -er '.layout.ociLayout.size | tostring' regenerated-oci-closure.json)" ] || exit 1
+          [ "$(authority_field oci_index_sha256)" = \
+            "$(jq -er .layout.index.sha256 regenerated-oci-closure.json)" ] || exit 1
+          [ "$(authority_field oci_index_size)" = \
+            "$(jq -er '.layout.index.size | tostring' regenerated-oci-closure.json)" ] || exit 1
+          descriptor_count="$(jq -er '.blobs | length' regenerated-oci-closure.json)"
+          [ "$(authority_field oci_descriptor_count)" = "$descriptor_count" ] || exit 1
+          [ "$(authority_field oci_blob_count)" = "$descriptor_count" ] || exit 1
           if [ -n "$RECOVERY_AUTHORITY_ID" ]; then
             echo "authority_artifact_name=$RECOVERY_AUTHORITY_NAME" >> "$GITHUB_OUTPUT"
           else
             echo "authority_artifact_name=image-publication-authority-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
               >> "$GITHUB_OUTPUT"
           fi
-          echo "oci_manifest_digest=${descriptor_digest#sha256:}" >> "$GITHUB_OUTPUT"
+          echo "oci_root_digest=$descriptor_digest" >> "$GITHUB_OUTPUT"
+          echo "oci_root_media_type=$(authority_field oci_root_media_type)" >> "$GITHUB_OUTPUT"
+          echo "oci_root_size=$(authority_field oci_root_size)" >> "$GITHUB_OUTPUT"
+          echo "oci_archive_sha256=$(authority_field oci_archive_sha256)" >> "$GITHUB_OUTPUT"
+          echo "oci_closure_sha256=$(authority_field oci_closure_sha256)" >> "$GITHUB_OUTPUT"
+          echo "oci_descriptor_count=$descriptor_count" >> "$GITHUB_OUTPUT"
+          echo "oci_blob_count=$descriptor_count" >> "$GITHUB_OUTPUT"
           echo "expected_version_state=missing" >> "$GITHUB_OUTPUT"
           echo "expected_latest_state=$expected_latest_state" >> "$GITHUB_OUTPUT"
           echo "expected_latest_manifest_sha256=$expected_latest_manifest_sha256" >> "$GITHUB_OUTPUT"
@@ -2094,7 +2720,7 @@ jobs:
           REPLAY_COMMIT_SHA: ${{ needs.prepare-release.outputs.replay_commit_sha }}
           VERSION_IMAGE_TAG: ${{ needs.prepare-release.outputs.version_image_tag }}
           LATEST_IMAGE_TAG: ${{ needs.prepare-release.outputs.latest_image_tag }}
-          AUTHORIZED_DIGEST: ${{ steps.image_authority.outputs.oci_manifest_digest }}
+          AUTHORIZED_DIGEST: ${{ steps.image_authority.outputs.oci_root_digest }}
           EXPECTED_VERSION_STATE: ${{ steps.image_authority.outputs.expected_version_state }}
           EXPECTED_LATEST_STATE: ${{ steps.image_authority.outputs.expected_latest_state }}
           EXPECTED_LATEST_MANIFEST_SHA256: ${{ steps.image_authority.outputs.expected_latest_manifest_sha256 }}
@@ -2106,11 +2732,33 @@ jobs:
           inspect_current() {
             tag="$1"
             prefix="$2"
-            if docker buildx imagetools inspect "$tag" --raw > "${prefix}.raw" \
+            if oras manifest fetch --descriptor "$tag" > "${prefix}.descriptor.json" \
               2> "${prefix}.err"; then
-              docker buildx imagetools inspect "$tag" --format '{{json .Image}}' > \
-                "${prefix}.json"
-              digest="$(sha256sum "${prefix}.raw" | awk '{print $1}')"
+              descriptor_digest="$(jq -er \
+                '.digest | select(test("^sha256:[0-9a-f]{64}$"))' \
+                "${prefix}.descriptor.json")"
+              descriptor_size="$(jq -er \
+                '.size | select(type == "number" and . >= 0) | tostring' \
+                "${prefix}.descriptor.json")"
+              oras manifest fetch --output "${prefix}.raw" "$tag"
+              [ "$(sha256sum "${prefix}.raw" | awk '{print "sha256:" $1}')" = \
+                "$descriptor_digest" ] || exit 1
+              [ "$(stat -c %s "${prefix}.raw")" = "$descriptor_size" ] || exit 1
+              oras manifest fetch --platform linux/amd64 --output \
+                "${prefix}.platform.raw" "$tag"
+              config_digest="$(jq -er \
+                '.config.digest | select(test("^sha256:[0-9a-f]{64}$"))' \
+                "${prefix}.platform.raw")"
+              config_size="$(jq -er \
+                '.config.size | select(type == "number" and . >= 0) | tostring' \
+                "${prefix}.platform.raw")"
+              repository="${tag%:*}"
+              oras blob fetch --output "${prefix}.json" \
+                "${repository}@${config_digest}"
+              [ "$(sha256sum "${prefix}.json" | awk '{print "sha256:" $1}')" = \
+                "$config_digest" ] || exit 1
+              [ "$(stat -c %s "${prefix}.json")" = "$config_size" ] || exit 1
+              digest="${descriptor_digest#sha256:}"
               version="$(jq -er '.config.Labels["org.opencontainers.image.version"]' \
                 "${prefix}.json")"
               revision="$(jq -er '.config.Labels["org.opencontainers.image.revision"]' \
@@ -2130,7 +2778,9 @@ jobs:
               echo "registry tag is outside the immutable authority: $tag" >&2
               exit 1
             fi
-            if grep -Eiq 'manifest unknown|name unknown|not found|404' "${prefix}.err"; then
+            expected_error="Error response from registry: failed to find \"${tag}\": ${tag}: not found"
+            if [ "$(wc -l < "${prefix}.err")" -eq 1 ] && \
+              grep -Fx "$expected_error" "${prefix}.err" >/dev/null; then
               printf missing
               return
             fi
@@ -2161,7 +2811,11 @@ jobs:
       actions: read
       packages: write
     outputs:
-      published_image_digest: ${{ steps.verify_image.outputs.published_image_digest }}
+      published_image_digest: ${{ steps.publish_image.outputs.published_image_digest }}
+      authorized_image_digest: ${{ steps.publish_image.outputs.authorized_image_digest }}
+      observed_version_digest: ${{ steps.publish_image.outputs.observed_version_digest }}
+      observed_latest_digest: ${{ steps.publish_image.outputs.observed_latest_digest }}
+      staging_state: ${{ steps.publish_image.outputs.staging_state }}
     env:
       VERSION: ${{ needs.prepare-release.outputs.version }}
     runs-on: ubuntu-latest
@@ -2180,11 +2834,22 @@ jobs:
           AUTHORITY_ARTIFACT_NAME: ${{ needs.prepare-image-authority.outputs.authority_artifact_name }}
           AUTHORITY_ARTIFACT_DIGEST: ${{ needs.prepare-image-authority.outputs.authority_artifact_digest }}
           AUTHORIZED_IMAGE_DIGEST: ${{ needs.prepare-image-authority.outputs.authorized_image_digest }}
+          AUTHORIZED_IMAGE_MEDIA_TYPE: ${{ needs.prepare-image-authority.outputs.authorized_image_media_type }}
+          AUTHORIZED_IMAGE_SIZE: ${{ needs.prepare-image-authority.outputs.authorized_image_size }}
+          AUTHORIZED_ARCHIVE_SHA256: ${{ needs.prepare-image-authority.outputs.oci_archive_sha256 }}
+          AUTHORIZED_CLOSURE_SHA256: ${{ needs.prepare-image-authority.outputs.oci_closure_sha256 }}
+          AUTHORIZED_DESCRIPTOR_COUNT: ${{ needs.prepare-image-authority.outputs.oci_descriptor_count }}
+          AUTHORIZED_BLOB_COUNT: ${{ needs.prepare-image-authority.outputs.oci_blob_count }}
           RELEASE_ARTIFACT_ID: ${{ needs.prepare-release.outputs.release_artifact_id }}
           RELEASE_ARTIFACT_DIGEST: ${{ needs.prepare-release.outputs.release_artifact_digest }}
           MANIFEST_SHA256: ${{ needs.prepare-release.outputs.manifest_sha256 }}
           REPLAY_COMMIT_SHA: ${{ needs.prepare-release.outputs.replay_commit_sha }}
+          PATCHSET_SHA: ${{ needs.prepare-release.outputs.patchset_sha }}
+          UPSTREAM_SOURCE_SHA: ${{ needs.prepare-release.outputs.upstream_source_sha }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
+          REPLAY_TREE_SHA: ${{ needs.prepare-release.outputs.replay_tree_sha }}
           PUBLICATION_COMMIT_SHA: ${{ needs.prepare-release.outputs.publication_commit_sha }}
+          PUBLICATION_TREE_SHA: ${{ needs.prepare-release.outputs.publication_tree_sha }}
           VERSION_IMAGE_TAG: ${{ needs.prepare-release.outputs.version_image_tag }}
           LATEST_IMAGE_TAG: ${{ needs.prepare-release.outputs.latest_image_tag }}
           EXPECTED_VERSION_STATE: ${{ needs.prepare-image-authority.outputs.expected_version_state }}
@@ -2210,12 +2875,12 @@ jobs:
           mkdir authorized-image
           unzip -q "${archives[0]}" -d authorized-image
           expected_files="$(printf '%s\n' IMAGE-MANIFEST.SHA256 image-publication.env \
-            release-image.oci.tar | sort)"
+            oci-closure.json release-image.oci.tar | sort)"
           actual_files="$(find authorized-image -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
           [ "$actual_files" = "$expected_files" ] || exit 1
           (cd authorized-image && sha256sum -c IMAGE-MANIFEST.SHA256)
           authority=authorized-image/image-publication.env
-          [ "$(wc -l < "$authority")" -eq 20 ] || exit 1
+          [ "$(wc -l < "$authority")" -eq 37 ] || exit 1
           ! grep -Ev '^[a-z_]+=[^[:cntrl:]]*$' "$authority" || exit 1
           authority_field() {
             [ "$(grep -F "${1}=" "$authority" | wc -l)" -eq 1 ] || exit 1
@@ -2231,6 +2896,11 @@ jobs:
           [ "$(authority_field version)" = "$VERSION" ] || exit 1
           [ "$(authority_field replay_commit_sha)" = "$REPLAY_COMMIT_SHA" ] || exit 1
           [ "$(authority_field publication_commit_sha)" = "$PUBLICATION_COMMIT_SHA" ] || exit 1
+          [ "$(authority_field patchset_sha)" = "$PATCHSET_SHA" ] || exit 1
+          [ "$(authority_field upstream_source_sha)" = "$UPSTREAM_SOURCE_SHA" ] || exit 1
+          [ "$(authority_field mirror_candidate_sha)" = "$MIRROR_CANDIDATE_SHA" ] || exit 1
+          [ "$(authority_field replay_tree_sha)" = "$REPLAY_TREE_SHA" ] || exit 1
+          [ "$(authority_field publication_tree_sha)" = "$PUBLICATION_TREE_SHA" ] || exit 1
           [ "$(authority_field version_image_tag)" = "$VERSION_IMAGE_TAG" ] || exit 1
           [ "$(authority_field latest_image_tag)" = "$LATEST_IMAGE_TAG" ] || exit 1
           [ "$(authority_field expected_version_state)" = "$EXPECTED_VERSION_STATE" ] || exit 1
@@ -2241,61 +2911,45 @@ jobs:
             "$EXPECTED_LATEST_VERSION_LABEL" ] || exit 1
           [ "$(authority_field expected_latest_revision_label)" = \
             "$EXPECTED_LATEST_REVISION_LABEL" ] || exit 1
+          [ "$(authority_field runtime_platforms)" = linux/amd64 ] || exit 1
+          [ "$(authority_field build_provenance)" = false ] || exit 1
+          [ "$(authority_field build_sbom)" = false ] || exit 1
           [ "$(authority_field oci_archive_sha256)" = \
             "$(sha256sum authorized-image/release-image.oci.tar | awk '{print $1}')" ] || exit 1
-          mkdir authorized-layout
-          ! tar -tf authorized-image/release-image.oci.tar | \
-            grep -Eq '(^/|(^|/)\.\.(/|$))' || exit 1
-          tar -tvf authorized-image/release-image.oci.tar | \
-            awk 'substr($1, 1, 1) !~ /[-d]/ { exit 1 }'
-          tar -xf authorized-image/release-image.oci.tar -C authorized-layout
-          jq -e '.imageLayoutVersion == "1.0.0"' authorized-layout/oci-layout >/dev/null
-          jq -e '.schemaVersion == 2 and (.manifests | length) == 1 and
-            .manifests[0].mediaType == "application/vnd.oci.image.manifest.v1+json" and
-            .manifests[0].platform.os == "linux" and
-            .manifests[0].platform.architecture == "amd64"' \
-            authorized-layout/index.json >/dev/null
-          descriptor_digest="$(jq -er '.manifests[0].digest' authorized-layout/index.json)"
-          descriptor_size="$(jq -er '.manifests[0].size' authorized-layout/index.json)"
-          [[ "$descriptor_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-          [[ "$descriptor_size" =~ ^[0-9]+$ ]] || exit 1
-          manifest_blob="authorized-layout/blobs/sha256/${descriptor_digest#sha256:}"
-          [ "$(stat -c %s "$manifest_blob")" = "$descriptor_size" ] || exit 1
-          [ "$(sha256sum "$manifest_blob" | awk '{print $1}')" = \
-            "${descriptor_digest#sha256:}" ] || exit 1
-          [ "${descriptor_digest#sha256:}" = "$(authority_field oci_manifest_digest)" ] || exit 1
-          [ "${descriptor_digest#sha256:}" = "$AUTHORIZED_IMAGE_DIGEST" ] || exit 1
-          config_digest="$(jq -er '.config.digest' "$manifest_blob")"
-          config_size="$(jq -er '.config.size' "$manifest_blob")"
-          [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-          [[ "$config_size" =~ ^[0-9]+$ ]] || exit 1
-          config_blob="authorized-layout/blobs/sha256/${config_digest#sha256:}"
-          [ "$(stat -c %s "$config_blob")" = "$config_size" ] || exit 1
-          [ "$(sha256sum "$config_blob" | awk '{print $1}')" = \
-            "${config_digest#sha256:}" ] || exit 1
-          [ "${config_digest#sha256:}" = "$(authority_field oci_config_digest)" ] || exit 1
-          jq -e --arg version "$VERSION" --arg revision "$REPLAY_COMMIT_SHA" \
-            '.config.Labels["org.opencontainers.image.version"] == $version and
-             .config.Labels["org.opencontainers.image.revision"] == $revision' \
-            "$config_blob" >/dev/null
-          while IFS=$'\t' read -r layer_digest layer_size; do
-            [[ "$layer_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-            [[ "$layer_size" =~ ^[0-9]+$ ]] || exit 1
-            layer_blob="authorized-layout/blobs/sha256/${layer_digest#sha256:}"
-            [ "$(stat -c %s "$layer_blob")" = "$layer_size" ] || exit 1
-            [ "$(sha256sum "$layer_blob" | awk '{print $1}')" = \
-              "${layer_digest#sha256:}" ] || exit 1
-          done < <(jq -er '.layers[] | [.digest, (.size | tostring)] | @tsv' "$manifest_blob")
-          expected_blobs="$({ printf '%s\n' "${descriptor_digest#sha256:}" \
-            "${config_digest#sha256:}"; jq -r '.layers[].digest | sub("^sha256:"; "")' \
-            "$manifest_blob"; } | sort -u)"
-          actual_blobs="$(find authorized-layout/blobs/sha256 -mindepth 1 -maxdepth 1 \
-            -type f -printf '%f\n' | sort)"
-          [ "$actual_blobs" = "$expected_blobs" ] || exit 1
-          echo "oci_manifest_digest=${descriptor_digest#sha256:}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx for registry verification
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+          [ "$(authority_field oci_archive_sha256)" = "$AUTHORIZED_ARCHIVE_SHA256" ] || exit 1
+          [ "$(authority_field oci_archive_size)" = \
+            "$(stat -c %s authorized-image/release-image.oci.tar)" ] || exit 1
+          python3 -c "$OCI_CLOSURE_VERIFIER" authorized-image/release-image.oci.tar \
+            authorized-layout regenerated-oci-closure.json "$VERSION" "$REPLAY_COMMIT_SHA" \
+            "$REPLAY_TREE_SHA" "$PUBLICATION_TREE_SHA" "$PATCHSET_SHA" \
+            "$UPSTREAM_SOURCE_SHA" "$MIRROR_CANDIDATE_SHA" "$PUBLICATION_COMMIT_SHA"
+          cmp authorized-image/oci-closure.json regenerated-oci-closure.json
+          [ "$(authority_field oci_closure_sha256)" = \
+            "$(sha256sum regenerated-oci-closure.json | awk '{print $1}')" ] || exit 1
+          [ "$(authority_field oci_closure_sha256)" = "$AUTHORIZED_CLOSURE_SHA256" ] || exit 1
+          [ "$(authority_field oci_root_media_type)" = \
+            "$(jq -er .root.mediaType regenerated-oci-closure.json)" ] || exit 1
+          [ "$(authority_field oci_root_media_type)" = "$AUTHORIZED_IMAGE_MEDIA_TYPE" ] || exit 1
+          descriptor_digest="$(jq -er '.root.digest | sub("^sha256:"; "")' regenerated-oci-closure.json)"
+          [ "$descriptor_digest" = "$(authority_field oci_root_digest)" ] || exit 1
+          [ "$descriptor_digest" = "$AUTHORIZED_IMAGE_DIGEST" ] || exit 1
+          [ "$(authority_field oci_root_size)" = \
+            "$(jq -er '.root.size | tostring' regenerated-oci-closure.json)" ] || exit 1
+          [ "$(authority_field oci_root_size)" = "$AUTHORIZED_IMAGE_SIZE" ] || exit 1
+          [ "$(authority_field oci_layout_sha256)" = \
+            "$(jq -er .layout.ociLayout.sha256 regenerated-oci-closure.json)" ] || exit 1
+          [ "$(authority_field oci_layout_size)" = \
+            "$(jq -er '.layout.ociLayout.size | tostring' regenerated-oci-closure.json)" ] || exit 1
+          [ "$(authority_field oci_index_sha256)" = \
+            "$(jq -er .layout.index.sha256 regenerated-oci-closure.json)" ] || exit 1
+          [ "$(authority_field oci_index_size)" = \
+            "$(jq -er '.layout.index.size | tostring' regenerated-oci-closure.json)" ] || exit 1
+          descriptor_count="$(jq -er '.blobs | length' regenerated-oci-closure.json)"
+          [ "$(authority_field oci_descriptor_count)" = "$descriptor_count" ] || exit 1
+          [ "$(authority_field oci_blob_count)" = "$descriptor_count" ] || exit 1
+          [ "$descriptor_count" = "$AUTHORIZED_DESCRIPTOR_COUNT" ] || exit 1
+          [ "$descriptor_count" = "$AUTHORIZED_BLOB_COUNT" ] || exit 1
+          echo "oci_root_digest=$descriptor_digest" >> "$GITHUB_OUTPUT"
 
       - name: Set up ORAS for content-addressed publication
         uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
@@ -2304,14 +2958,12 @@ jobs:
           checksum: 6cdc692f929100feb08aa8de584d02f7bcc30ec7d88bc2adc2054d782db57c64
 
       - name: Log in to GHCR
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | oras login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
 
-      - name: Resolve exact image publication state
-        id: image_state
+      - name: Publish and read back the exact authorized image in order
+        id: publish_image
         env:
           VERSION: ${{ needs.prepare-release.outputs.version }}
           REPLAY_COMMIT_SHA: ${{ needs.prepare-release.outputs.replay_commit_sha }}
@@ -2322,90 +2974,107 @@ jobs:
           EXPECTED_LATEST_MANIFEST_SHA256: ${{ needs.prepare-image-authority.outputs.expected_latest_manifest_sha256 }}
           EXPECTED_LATEST_VERSION_LABEL: ${{ needs.prepare-image-authority.outputs.expected_latest_version_label }}
           EXPECTED_LATEST_REVISION_LABEL: ${{ needs.prepare-image-authority.outputs.expected_latest_revision_label }}
-          AUTHORIZED_DIGEST: ${{ steps.image_authority.outputs.oci_manifest_digest }}
+          AUTHORIZED_DIGEST: ${{ steps.image_authority.outputs.oci_root_digest }}
         run: |
           set -euo pipefail
-          inspect_tag() {
+          repository="${VERSION_IMAGE_TAG%:*}"
+          root_media_type="$(jq -er .root.mediaType regenerated-oci-closure.json)"
+          root_size="$(jq -er '.root.size | tostring' regenerated-oci-closure.json)"
+          root_blob="authorized-layout/blobs/sha256/${AUTHORIZED_DIGEST}"
+
+          probe_tag() {
             tag="$1"
             prefix="$2"
-            if docker buildx imagetools inspect "$tag" --raw > "${prefix}.raw" 2> "${prefix}.err"; then
-              docker buildx imagetools inspect "$tag" --format '{{json .Image}}' > "${prefix}.json"
-              digest="$(sha256sum "${prefix}.raw" | awk '{print $1}')"
-              version="$(jq -er '.config.Labels["org.opencontainers.image.version"]' "${prefix}.json")"
-              revision="$(jq -er '.config.Labels["org.opencontainers.image.revision"]' "${prefix}.json")"
-              if [ "$digest" = "$AUTHORIZED_DIGEST" ] && [ "$version" = "$VERSION" ] && \
-                [ "$revision" = "$REPLAY_COMMIT_SHA" ]; then printf target; return; fi
-              if [ "$prefix" = latest ] && [ "$EXPECTED_LATEST_STATE" = present ] && \
-                [ "$digest" = "$EXPECTED_LATEST_MANIFEST_SHA256" ] && \
-                [ "$version" = "$EXPECTED_LATEST_VERSION_LABEL" ] && \
-                [ "$revision" = "$EXPECTED_LATEST_REVISION_LABEL" ]; then printf historical; return; fi
-              echo "existing image tag is outside the authorized state: $tag" >&2
-              exit 1
+            if oras manifest fetch --descriptor "$tag" > "${prefix}.descriptor.json" \
+              2> "${prefix}.err"; then
+              digest="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$")) | sub("^sha256:"; "")' \
+                "${prefix}.descriptor.json")"
+              printf '%s' "$digest"
+              return
             fi
-            grep -Eiq 'manifest unknown|name unknown|not found|404' "${prefix}.err" || {
-              cat "${prefix}.err" >&2; exit 1;
-            }
-            [ "$prefix" != latest ] || [ "$EXPECTED_LATEST_STATE" = missing ] || exit 1
-            printf missing
+            expected_error="Error response from registry: failed to find \"${tag}\": ${tag}: not found"
+            if [ "$(wc -l < "${prefix}.err")" -eq 1 ] && \
+              grep -Fx "$expected_error" "${prefix}.err" >/dev/null; then
+              printf missing
+              return
+            fi
+            cat "${prefix}.err" >&2
+            exit 1
           }
-          version_state="$(inspect_tag "$VERSION_IMAGE_TAG" version)"
-          latest_state="$(inspect_tag "$LATEST_IMAGE_TAG" latest)"
-          [ "$EXPECTED_VERSION_STATE" = missing ] || exit 1
-          [ "$version_state" = target ] || [ "$version_state" = missing ] || exit 1
-          case "$EXPECTED_LATEST_STATE:$latest_state" in
-            missing:missing|missing:target|present:historical|present:target) ;;
-            *) exit 1 ;;
-          esac
-          if [ "$version_state" = target ]; then
-            echo "publish_version=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish_version=true" >> "$GITHUB_OUTPUT"
-          fi
-          if [ "$latest_state" = target ]; then
-            echo "publish_latest=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish_latest=true" >> "$GITHUB_OUTPUT"
-          fi
 
-      - name: Publish authorized version image from OCI layout
-        if: ${{ steps.image_state.outputs.publish_version == 'true' }}
-        env:
-          VERSION_IMAGE_TAG: ${{ needs.prepare-release.outputs.version_image_tag }}
-          OCI_MANIFEST_DIGEST: ${{ steps.image_authority.outputs.oci_manifest_digest }}
-        run: oras cp --from-oci-layout "authorized-layout@sha256:${OCI_MANIFEST_DIGEST}" "$VERSION_IMAGE_TAG"
-
-      - name: Publish authorized latest image from OCI layout
-        if: ${{ steps.image_state.outputs.publish_latest == 'true' }}
-        env:
-          LATEST_IMAGE_TAG: ${{ needs.prepare-release.outputs.latest_image_tag }}
-          OCI_MANIFEST_DIGEST: ${{ steps.image_authority.outputs.oci_manifest_digest }}
-        run: oras cp --from-oci-layout "authorized-layout@sha256:${OCI_MANIFEST_DIGEST}" "$LATEST_IMAGE_TAG"
-
-      - name: Verify exact published image identities
-        id: verify_image
-        env:
-          VERSION: ${{ needs.prepare-release.outputs.version }}
-          REPLAY_COMMIT_SHA: ${{ needs.prepare-release.outputs.replay_commit_sha }}
-          VERSION_IMAGE_TAG: ${{ needs.prepare-release.outputs.version_image_tag }}
-          LATEST_IMAGE_TAG: ${{ needs.prepare-release.outputs.latest_image_tag }}
-          AUTHORIZED_DIGEST: ${{ steps.image_authority.outputs.oci_manifest_digest }}
-        run: |
-          set -euo pipefail
-          for entry in "version:$VERSION_IMAGE_TAG" "latest:$LATEST_IMAGE_TAG"; do
-            prefix="${entry%%:*}"
-            tag="${entry#*:}"
-            docker buildx imagetools inspect "$tag" --raw > "${prefix}-final.raw"
-            docker buildx imagetools inspect "$tag" --format '{{json .Image}}' > "${prefix}-final.json"
-            [ "$(sha256sum "${prefix}-final.raw" | awk '{print $1}')" = "$AUTHORIZED_DIGEST" ] || exit 1
-            jq -e --arg version "$VERSION" --arg revision "$REPLAY_COMMIT_SHA" \
+          verify_reference() {
+            tag="$1"
+            prefix="$2"
+            expected_digest="$3"
+            expected_version="$4"
+            expected_revision="$5"
+            exact_authority="$6"
+            oras manifest fetch --descriptor "$tag" > "${prefix}.descriptor.json"
+            jq -e --arg digest "sha256:${expected_digest}" \
+              '.digest == $digest and (.size | type == "number" and . >= 0) and
+               (.mediaType | type == "string" and length > 0)' \
+              "${prefix}.descriptor.json" >/dev/null
+            oras manifest fetch --output "${prefix}.raw" "$tag"
+            [ "$(sha256sum "${prefix}.raw" | awk '{print $1}')" = "$expected_digest" ] || exit 1
+            [ "$(stat -c %s "${prefix}.raw")" = \
+              "$(jq -er '.size | tostring' "${prefix}.descriptor.json")" ] || exit 1
+            if [ "$exact_authority" = true ]; then
+              [ "$(jq -er .mediaType "${prefix}.descriptor.json")" = "$root_media_type" ] || exit 1
+              [ "$(jq -er '.size | tostring' "${prefix}.descriptor.json")" = "$root_size" ] || exit 1
+              cmp "${prefix}.raw" "$root_blob"
+            fi
+            oras manifest fetch --platform linux/amd64 --output "${prefix}.platform.raw" "$tag"
+            config_digest="$(jq -er '.config.digest | select(test("^sha256:[0-9a-f]{64}$"))' \
+              "${prefix}.platform.raw")"
+            config_size="$(jq -er '.config.size | select(type == "number" and . >= 0) | tostring' \
+              "${prefix}.platform.raw")"
+            oras blob fetch --output "${prefix}.config.json" "${repository}@${config_digest}"
+            [ "$(sha256sum "${prefix}.config.json" | awk '{print "sha256:" $1}')" = \
+              "$config_digest" ] || exit 1
+            [ "$(stat -c %s "${prefix}.config.json")" = "$config_size" ] || exit 1
+            jq -e --arg version "$expected_version" --arg revision "$expected_revision" \
               '.config.Labels["org.opencontainers.image.version"] == $version and
                .config.Labels["org.opencontainers.image.revision"] == $revision' \
-              "${prefix}-final.json" >/dev/null
-          done
+              "${prefix}.config.json" >/dev/null
+          }
+
+          [ "$EXPECTED_VERSION_STATE" = missing ] || exit 1
+          version_before="$(probe_tag "$VERSION_IMAGE_TAG" version-before)"
+          case "$version_before" in
+            missing)
+              oras cp --from-oci-layout --no-tty \
+                "authorized-layout@sha256:${AUTHORIZED_DIGEST}" "$VERSION_IMAGE_TAG"
+              ;;
+            "$AUTHORIZED_DIGEST") ;;
+            *) echo "version tag conflicts with immutable authority" >&2; exit 1 ;;
+          esac
+          verify_reference "$VERSION_IMAGE_TAG" version-final "$AUTHORIZED_DIGEST" \
+            "$VERSION" "$REPLAY_COMMIT_SHA" true
+
+          latest_before="$(probe_tag "$LATEST_IMAGE_TAG" latest-before)"
+          case "$EXPECTED_LATEST_STATE:$latest_before" in
+            "missing:missing") ;;
+            "missing:$AUTHORIZED_DIGEST") ;;
+            "present:$EXPECTED_LATEST_MANIFEST_SHA256")
+              verify_reference "$LATEST_IMAGE_TAG" latest-historical \
+                "$EXPECTED_LATEST_MANIFEST_SHA256" "$EXPECTED_LATEST_VERSION_LABEL" \
+                "$EXPECTED_LATEST_REVISION_LABEL" false
+              ;;
+            "present:$AUTHORIZED_DIGEST") ;;
+            *) echo "latest-patch tag conflicts with immutable authority" >&2; exit 1 ;;
+          esac
+          if [ "$latest_before" != "$AUTHORIZED_DIGEST" ]; then
+            oras cp --from-oci-layout --no-tty \
+              "authorized-layout@sha256:${AUTHORIZED_DIGEST}" "$LATEST_IMAGE_TAG"
+          fi
+          verify_reference "$LATEST_IMAGE_TAG" latest-final "$AUTHORIZED_DIGEST" \
+            "$VERSION" "$REPLAY_COMMIT_SHA" true
           cmp version-final.raw latest-final.raw
-          published_image_digest="$(sha256sum version-final.raw | awk '{print $1}')"
-          [ "$published_image_digest" = "$AUTHORIZED_DIGEST" ] || exit 1
-          echo "published_image_digest=$published_image_digest" >> "$GITHUB_OUTPUT"
+          echo "authorized_image_digest=$AUTHORIZED_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "observed_version_digest=$AUTHORIZED_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "observed_latest_digest=$AUTHORIZED_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "published_image_digest=$AUTHORIZED_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "staging_state=not-used" >> "$GITHUB_OUTPUT"
 
   create-release:
     needs: [prepare-release, prepare-image-authority, mutate-git, publish-image]
@@ -2615,7 +3284,7 @@ jobs:
             }
 
   report-publication-outcome:
-    needs: [prepare-release, prepare-image-authority, mutate-git, publish-image, create-release]
+    needs: [prepare-release, prepare-image-authority, authorize-git-mutation, mutate-git, publish-image, create-release]
     if: ${{ always() }}
     permissions:
       actions: read
@@ -2643,7 +3312,12 @@ jobs:
           MANIFEST_SHA256: ${{ needs.prepare-release.outputs.manifest_sha256 }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
           REPLAY_COMMIT_SHA: ${{ needs.prepare-release.outputs.replay_commit_sha }}
+          PATCHSET_SHA: ${{ needs.prepare-release.outputs.patchset_sha }}
+          UPSTREAM_SOURCE_SHA: ${{ needs.prepare-release.outputs.upstream_source_sha }}
+          MIRROR_CANDIDATE_SHA: ${{ needs.prepare-release.outputs.mirror_candidate_sha }}
+          REPLAY_TREE_SHA: ${{ needs.prepare-release.outputs.replay_tree_sha }}
           PUBLICATION_COMMIT_SHA: ${{ needs.prepare-release.outputs.publication_commit_sha }}
+          PUBLICATION_TREE_SHA: ${{ needs.prepare-release.outputs.publication_tree_sha }}
           VERSION_IMAGE_TAG: ${{ needs.prepare-release.outputs.version_image_tag }}
           LATEST_IMAGE_TAG: ${{ needs.prepare-release.outputs.latest_image_tag }}
         run: |
@@ -2671,12 +3345,12 @@ jobs:
           mkdir reporter-authority
           unzip -q reporter-authority.zip -d reporter-authority
           expected="$(printf '%s\n' IMAGE-MANIFEST.SHA256 image-publication.env \
-            release-image.oci.tar | sort)"
+            oci-closure.json release-image.oci.tar | sort)"
           actual="$(find reporter-authority -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
           [ "$actual" = "$expected" ] || exit 1
           (cd reporter-authority && sha256sum -c IMAGE-MANIFEST.SHA256)
           authority=reporter-authority/image-publication.env
-          [ "$(wc -l < "$authority")" -eq 20 ] || exit 1
+          [ "$(wc -l < "$authority")" -eq 37 ] || exit 1
           authority_field() {
             [ "$(grep -F "${1}=" "$authority" | wc -l)" -eq 1 ] || exit 1
             sed -n "s/^${1}=//p" "$authority"
@@ -2710,41 +3384,45 @@ jobs:
           esac
           [ "$(authority_field oci_archive_sha256)" = \
             "$(sha256sum reporter-authority/release-image.oci.tar | awk '{print $1}')" ] || exit 1
-          mkdir reporter-layout
-          tar -xf reporter-authority/release-image.oci.tar -C reporter-layout
-          descriptor="$(jq -er '.manifests | select(length == 1) | .[0].digest' \
-            reporter-layout/index.json)"
-          digest="${descriptor#sha256:}"
+          python3 -c "$OCI_CLOSURE_VERIFIER" reporter-authority/release-image.oci.tar \
+            reporter-layout reporter-oci-closure.json "$VERSION" "$REPLAY_COMMIT_SHA" \
+            "$REPLAY_TREE_SHA" "$PUBLICATION_TREE_SHA" "$PATCHSET_SHA" \
+            "$UPSTREAM_SOURCE_SHA" "$MIRROR_CANDIDATE_SHA" "$PUBLICATION_COMMIT_SHA"
+          cmp reporter-authority/oci-closure.json reporter-oci-closure.json
+          [ "$(authority_field oci_closure_sha256)" = \
+            "$(sha256sum reporter-oci-closure.json | awk '{print $1}')" ] || exit 1
+          digest="$(jq -er '.root.digest | sub("^sha256:"; "")' reporter-oci-closure.json)"
           [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
-          [ "$digest" = "$(authority_field oci_manifest_digest)" ] || exit 1
-          manifest_blob="reporter-layout/blobs/sha256/${digest}"
-          [ "$(sha256sum "$manifest_blob" | awk '{print $1}')" = "$digest" ] || exit 1
-          config_digest="$(jq -er '.config.digest' "$manifest_blob")"
-          [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-          [ "${config_digest#sha256:}" = "$(authority_field oci_config_digest)" ] || exit 1
-          config_blob="reporter-layout/blobs/sha256/${config_digest#sha256:}"
-          [ "$(sha256sum "$config_blob" | awk '{print $1}')" = "${config_digest#sha256:}" ] || exit 1
-          jq -e --arg version "$VERSION" --arg revision "$REPLAY_COMMIT_SHA" \
-            '.config.Labels["org.opencontainers.image.version"] == $version and
-             .config.Labels["org.opencontainers.image.revision"] == $revision' \
-            "$config_blob" >/dev/null
+          [ "$digest" = "$(authority_field oci_root_digest)" ] || exit 1
+          [ "$(authority_field oci_root_media_type)" = \
+            "$(jq -er .root.mediaType reporter-oci-closure.json)" ] || exit 1
+          [ "$(authority_field oci_root_size)" = \
+            "$(jq -er '.root.size | tostring' reporter-oci-closure.json)" ] || exit 1
           echo "authorized_digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Set up ORAS for outcome classification
+        id: reporter_oras
+        if: ${{ always() && steps.reporter_authority.outcome == 'success' }}
+        continue-on-error: true
+        uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
+        with:
+          url: https://github.com/oras-project/oras/releases/download/v1.3.0/oras_1.3.0_linux_amd64.tar.gz
+          checksum: 6cdc692f929100feb08aa8de584d02f7bcc30ec7d88bc2adc2054d782db57c64
 
       - name: Log in to private GHCR for outcome classification
         id: reporter_login
-        if: ${{ always() && steps.reporter_authority.outcome == 'success' }}
+        if: ${{ always() && steps.reporter_oras.outcome == 'success' }}
         continue-on-error: true
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | oras login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
 
       - name: Record completed and missing publication outputs
         id: outcome
         env:
           PREPARE_RESULT: ${{ needs.prepare-release.result }}
           AUTHORITY_RESULT: ${{ needs.prepare-image-authority.result }}
+          GIT_AUTHORIZATION_RESULT: ${{ needs.authorize-git-mutation.result }}
           MUTATE_RESULT: ${{ needs.mutate-git.result }}
           IMAGE_RESULT: ${{ needs.publish-image.result }}
           RELEASE_RESULT: ${{ needs.create-release.result }}
@@ -2755,6 +3433,10 @@ jobs:
           VERSION_IMAGE_TAG: ${{ needs.prepare-release.outputs.version_image_tag }}
           LATEST_IMAGE_TAG: ${{ needs.prepare-release.outputs.latest_image_tag }}
           PUBLISHED_IMAGE_DIGEST: ${{ steps.reporter_authority.outputs.authorized_digest }}
+          JOB_AUTHORIZED_IMAGE_DIGEST: ${{ needs.publish-image.outputs.authorized_image_digest }}
+          JOB_OBSERVED_VERSION_DIGEST: ${{ needs.publish-image.outputs.observed_version_digest }}
+          JOB_OBSERVED_LATEST_DIGEST: ${{ needs.publish-image.outputs.observed_latest_digest }}
+          STAGING_STATE: ${{ needs.publish-image.outputs.staging_state }}
           REPORTER_LOGIN_RESULT: ${{ steps.reporter_login.outcome }}
         run: |
           set -u
@@ -2806,40 +3488,60 @@ jobs:
             prefix="$2"
             if [ -z "$image" ] || [ "$REPORTER_LOGIN_RESULT" != success ]; then
               printf unknown
-            elif docker buildx imagetools inspect "$image" --raw > "${prefix}.raw" \
+            elif oras manifest fetch --descriptor "$image" > "${prefix}.descriptor.json" \
               2> "${prefix}.err"; then
-              actual_digest="$(sha256sum "${prefix}.raw" | awk '{print $1}')"
-              if ! docker buildx imagetools inspect "$image" --format '{{json .Image}}' \
-                > "${prefix}.json" 2>> "${prefix}.err"; then
-                if grep -Eiq 'unauthorized|denied|(^|[^0-9])(401|403)([^0-9]|$)' \
-                  "${prefix}.err"; then
-                  printf unknown
-                elif grep -Eiq 'manifest unknown|name unknown|not found|404' \
-                  "${prefix}.err"; then
-                  printf missing
-                else
-                  printf unknown
-                fi
-              elif jq -e --arg version "$VERSION" --arg revision "$REPLAY_COMMIT_SHA" \
-                '.config.Labels["org.opencontainers.image.version"] == $version and
-                 .config.Labels["org.opencontainers.image.revision"] == $revision' \
-                "${prefix}.json" >/dev/null && \
-                [[ "$PUBLISHED_IMAGE_DIGEST" =~ ^[0-9a-f]{64}$ ]] && \
-                [ "$actual_digest" = "$PUBLISHED_IMAGE_DIGEST" ]; then
-                printf completed
+              actual_digest="$(jq -er \
+                '.digest | select(test("^sha256:[0-9a-f]{64}$")) | sub("^sha256:"; "")' \
+                "${prefix}.descriptor.json" 2>> "${prefix}.err" || true)"
+              printf '%s\n' "$actual_digest" > "${prefix}.digest"
+              repository="${image%:*}"
+              if [ -z "$actual_digest" ] || \
+                ! oras manifest fetch --output "${prefix}.raw" "$image" \
+                  2>> "${prefix}.err" || \
+                [ "$(sha256sum "${prefix}.raw" | awk '{print $1}')" != "$actual_digest" ] || \
+                ! oras manifest fetch --platform linux/amd64 --output \
+                  "${prefix}.platform.raw" "$image" 2>> "${prefix}.err"; then
+                printf unknown
               else
-                printf mismatch
+                config_digest="$(jq -er \
+                  '.config.digest | select(test("^sha256:[0-9a-f]{64}$"))' \
+                  "${prefix}.platform.raw" 2>> "${prefix}.err" || true)"
+                config_size="$(jq -er \
+                  '.config.size | select(type == "number" and . >= 0) | tostring' \
+                  "${prefix}.platform.raw" 2>> "${prefix}.err" || true)"
+                if [ -z "$config_digest" ] || [ -z "$config_size" ] || \
+                  ! oras blob fetch --output "${prefix}.json" \
+                    "${repository}@${config_digest}" 2>> "${prefix}.err"; then
+                  printf unknown
+                elif [ "$(sha256sum "${prefix}.json" | awk '{print "sha256:" $1}')" != \
+                  "$config_digest" ] || \
+                  [ "$(stat -c %s "${prefix}.json")" != "$config_size" ]; then
+                  printf mismatch
+                elif jq -e --arg version "$VERSION" --arg revision "$REPLAY_COMMIT_SHA" \
+                  '.config.Labels["org.opencontainers.image.version"] == $version and
+                   .config.Labels["org.opencontainers.image.revision"] == $revision' \
+                  "${prefix}.json" >/dev/null && \
+                  [[ "$PUBLISHED_IMAGE_DIGEST" =~ ^[0-9a-f]{64}$ ]] && \
+                  [ "$actual_digest" = "$PUBLISHED_IMAGE_DIGEST" ]; then
+                  printf completed
+                else
+                  printf mismatch
+                fi
               fi
+            elif expected_error="Error response from registry: failed to find \"${image}\": ${image}: not found" && \
+              [ "$(wc -l < "${prefix}.err")" -eq 1 ] && \
+              grep -Fx "$expected_error" "${prefix}.err" >/dev/null; then
+              printf missing
             elif grep -Eiq 'unauthorized|denied|(^|[^0-9])(401|403)([^0-9]|$)' "${prefix}.err"; then
               printf unknown
-            elif grep -Eiq 'manifest unknown|name unknown|not found|404' "${prefix}.err"; then
-              printf missing
             else
               printf unknown
             fi
           }
           version_image_status="$(report_image_status "$VERSION_IMAGE_TAG" reporter-version-image)"
           latest_image_status="$(report_image_status "$LATEST_IMAGE_TAG" reporter-latest-image)"
+          observed_version_digest="$(cat reporter-version-image.digest 2>/dev/null || true)"
+          observed_latest_digest="$(cat reporter-latest-image.digest 2>/dev/null || true)"
           if [ "$version_image_status" = completed ] && \
             [ "$latest_image_status" = completed ] && \
             ! cmp reporter-version-image.raw reporter-latest-image.raw >/dev/null; then
@@ -2870,8 +3572,13 @@ jobs:
 
           overall=incomplete
           if [ "$PREPARE_RESULT" = success ] && [ "$AUTHORITY_RESULT" = success ] && \
+            [ "$GIT_AUTHORIZATION_RESULT" = success ] && \
             [ "$MUTATE_RESULT" = success ] && \
             [ "$IMAGE_RESULT" = success ] && [ "$RELEASE_RESULT" = success ] && \
+            [ "$JOB_AUTHORIZED_IMAGE_DIGEST" = "$PUBLISHED_IMAGE_DIGEST" ] && \
+            [ "$JOB_OBSERVED_VERSION_DIGEST" = "$PUBLISHED_IMAGE_DIGEST" ] && \
+            [ "$JOB_OBSERVED_LATEST_DIGEST" = "$PUBLISHED_IMAGE_DIGEST" ] && \
+            [ "$STAGING_STATE" = not-used ] && \
             [ "$mirror_status" = completed ] && [ "$main_status" = completed ] && \
             [ "$patched_status" = completed ] && [ "$tag_status" = completed ] && \
             [ "$version_image_status" = completed ] && \
@@ -2893,9 +3600,13 @@ jobs:
           | release tag | ${tag_status} | ${VERSION:-unavailable} at ${PUBLICATION_COMMIT_SHA:-unavailable} |
           | version image | ${version_image_status} | ${VERSION_IMAGE_TAG:-unavailable} at sha256:${PUBLISHED_IMAGE_DIGEST:-unavailable} |
           | latest image | ${latest_image_status} | ${LATEST_IMAGE_TAG:-unavailable} at sha256:${PUBLISHED_IMAGE_DIGEST:-unavailable} |
+          | authorized image digest | ${JOB_AUTHORIZED_IMAGE_DIGEST:-unavailable} | ${PUBLISHED_IMAGE_DIGEST:-unavailable} |
+          | observed version digest | ${observed_version_digest:-unavailable} | ${JOB_OBSERVED_VERSION_DIGEST:-unavailable} |
+          | observed latest digest | ${observed_latest_digest:-unavailable} | ${JOB_OBSERVED_LATEST_DIGEST:-unavailable} |
+          | staging tag | ${STAGING_STATE:-unknown} | not-used |
           | GitHub release | ${release_status} | ${VERSION:-unavailable} |
 
-          Job results: prepare=${PREPARE_RESULT}, authority=${AUTHORITY_RESULT}, mutate=${MUTATE_RESULT}, image=${IMAGE_RESULT}, release=${RELEASE_RESULT}
+          Job results: prepare=${PREPARE_RESULT}, image-authority=${AUTHORITY_RESULT}, git-authority=${GIT_AUTHORIZATION_RESULT}, mutate=${MUTATE_RESULT}, image=${IMAGE_RESULT}, release=${RELEASE_RESULT}
           EOF
           cat publication-outcome/publication-outcome.md >> "$GITHUB_STEP_SUMMARY"
 
