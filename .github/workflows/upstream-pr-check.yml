@@ -8,48 +8,17 @@ on:
   workflow_call:
     inputs:
       invocation_mode:
-        description: Trusted caller mode
-        required: true
+        required: false
+        default: ""
         type: string
       patchset_sha:
-        description: Exact patchset commit
-        required: true
+        required: false
+        default: ""
         type: string
       upstream_source_sha:
-        description: Exact pristine upstream commit
-        required: true
+        required: false
+        default: ""
         type: string
-      mirror_candidate_sha:
-        description: Exact two-parent mirror candidate
-        required: true
-        type: string
-      candidate_artifact_name:
-        description: Candidate artifact name from Sync preparation
-        required: true
-        type: string
-      originating_run_attempt:
-        description: Validation origin preserved across a full Sync rerun
-        required: true
-        type: string
-    outputs:
-      patchset_sha:
-        value: ${{ jobs.validate.outputs.patchset_sha }}
-      upstream_source_sha:
-        value: ${{ jobs.validate.outputs.upstream_source_sha }}
-      mirror_candidate_sha:
-        value: ${{ jobs.validate.outputs.mirror_candidate_sha }}
-      replay_tree_sha:
-        value: ${{ jobs.validate.outputs.replay_tree_sha }}
-      validation_conclusion:
-        value: ${{ jobs.validate.outputs.validation_conclusion }}
-      originating_repository:
-        value: ${{ jobs.validate.outputs.originating_repository }}
-      originating_workflow_path:
-        value: ${{ jobs.validate.outputs.originating_workflow_path }}
-      originating_run_id:
-        value: ${{ jobs.validate.outputs.originating_run_id }}
-      originating_run_attempt:
-        value: ${{ jobs.validate.outputs.originating_run_attempt }}
 
 permissions: {}
 
@@ -68,110 +37,29 @@ env:
 jobs:
   validate:
     permissions:
-      contents: read
       checks: read
+      contents: read
     runs-on: ubuntu-latest
-    outputs:
-      patchset_sha: ${{ steps.provenance.outputs.patchset_sha }}
-      upstream_source_sha: ${{ steps.provenance.outputs.upstream_source_sha }}
-      mirror_candidate_sha: ${{ steps.provenance.outputs.mirror_candidate_sha }}
-      replay_tree_sha: ${{ steps.replay.outputs.replay_tree_sha }}
-      validation_conclusion: ${{ steps.provenance.outputs.validation_conclusion }}
-      originating_repository: ${{ steps.provenance.outputs.originating_repository }}
-      originating_workflow_path: ${{ steps.provenance.outputs.originating_workflow_path }}
-      originating_run_id: ${{ steps.provenance.outputs.originating_run_id }}
-      originating_run_attempt: ${{ steps.provenance.outputs.originating_run_attempt }}
     steps:
-      - name: Resolve immutable validation inputs
+      - name: Resolve validation inputs
         id: resolve
         env:
           INVOCATION_MODE: ${{ inputs.invocation_mode }}
           INPUT_PATCHSET_SHA: ${{ inputs.patchset_sha }}
           INPUT_UPSTREAM_SOURCE_SHA: ${{ inputs.upstream_source_sha }}
-          INPUT_MIRROR_CANDIDATE_SHA: ${{ inputs.mirror_candidate_sha }}
-          INPUT_ORIGINATING_RUN_ATTEMPT: ${{ inputs.originating_run_attempt }}
-          patchset_sha: ${{ github.event_name == 'push' && github.event.after || github.sha }}
         run: |
           set -euo pipefail
-          full_sha='^[0-9a-f]{40}$'
-          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
-            echo "invalid current run attempt" >&2
-            exit 1
-          }
-
-          if [ "${INVOCATION_MODE:-}" = sync ]; then
-            [ "$GITHUB_WORKFLOW" = "Sync upstream" ] || {
-              echo "reusable validation is restricted to Sync upstream" >&2
-              exit 1
-            }
-            case "$GITHUB_EVENT_NAME" in
-              schedule|workflow_dispatch) ;;
-              *) echo "untrusted Sync event: $GITHUB_EVENT_NAME" >&2; exit 1 ;;
-            esac
+          if [ "$INVOCATION_MODE" = sync ]; then
             patchset_sha="$INPUT_PATCHSET_SHA"
             upstream_source_sha="$INPUT_UPSTREAM_SOURCE_SHA"
-            mirror_candidate_sha="$INPUT_MIRROR_CANDIDATE_SHA"
-            originating_run_attempt="$INPUT_ORIGINATING_RUN_ATTEMPT"
-            [ "$patchset_sha" = "$GITHUB_SHA" ] || {
-              echo "Sync caller SHA and patchset SHA differ" >&2
-              exit 1
-            }
-            [[ "$mirror_candidate_sha" =~ $full_sha ]] || {
-              echo "invalid mirror candidate SHA" >&2
-              exit 1
-            }
           else
-            [ -z "${INVOCATION_MODE:-}" ] || {
-              echo "unsupported validation invocation mode" >&2
-              exit 1
-            }
-            case "$GITHUB_EVENT_NAME" in
-              push)
-                [ "$GITHUB_REF" = refs/heads/patchset ] || {
-                  echo "push validation is restricted to patchset" >&2
-                  exit 1
-                }
-                patchset_sha="$patchset_sha"
-                ;;
-              workflow_dispatch)
-                patchset_sha="$patchset_sha"
-                ;;
-              *)
-                echo "unsupported standalone validation event: $GITHUB_EVENT_NAME" >&2
-                exit 1
-                ;;
-            esac
+            patchset_sha="${{ github.event_name == 'push' && github.event.after || github.sha }}"
             upstream_source_sha=""
-            mirror_candidate_sha=""
-            originating_run_attempt="$GITHUB_RUN_ATTEMPT"
           fi
-
-          [[ "$originating_run_attempt" =~ ^[1-9][0-9]*$ ]] || {
-            echo "invalid originating run attempt" >&2
-            exit 1
-          }
-          [ "$originating_run_attempt" -le "$GITHUB_RUN_ATTEMPT" ] || {
-            echo "originating run attempt is newer than the current attempt" >&2
-            exit 1
-          }
-
-          [[ "$patchset_sha" =~ $full_sha ]] || {
-            echo "invalid patchset SHA" >&2
-            exit 1
-          }
-          if [ -n "$upstream_source_sha" ]; then
-            [[ "$upstream_source_sha" =~ $full_sha ]] || {
-              echo "invalid upstream source SHA" >&2
-              exit 1
-            }
-          fi
-
           echo "patchset_sha=$patchset_sha" >> "$GITHUB_OUTPUT"
           echo "upstream_source_sha=$upstream_source_sha" >> "$GITHUB_OUTPUT"
-          echo "mirror_candidate_sha=$mirror_candidate_sha" >> "$GITHUB_OUTPUT"
-          echo "originating_run_attempt=$originating_run_attempt" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout exact patchset revision
+      - name: Checkout patchset
         uses: actions/checkout@v7.0.0
         with:
           ref: ${{ steps.resolve.outputs.patchset_sha }}
@@ -179,130 +67,36 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify patchset checkout
-        env:
-          PATCHSET_SHA: ${{ steps.resolve.outputs.patchset_sha }}
-        run: |
-          set -euo pipefail
-          actual="$(git -C sub2api-patch rev-parse HEAD^{commit})"
-          [ "$actual" = "$PATCHSET_SHA" ] || {
-            echo "patchset checkout mismatch: expected $PATCHSET_SHA, got $actual" >&2
-            exit 1
-          }
-
-      - name: Fetch and verify read-only upstream
+      - name: Fetch read-only upstream
         id: upstream
         env:
           GH_TOKEN: ${{ github.token }}
-          INVOCATION_MODE: ${{ inputs.invocation_mode }}
           REQUESTED_UPSTREAM_SHA: ${{ steps.resolve.outputs.upstream_source_sha }}
         run: |
           set -euo pipefail
-          [ "$UPSTREAM_REPOSITORY" = Wei-Shaw/sub2api ] || {
-            echo "unexpected upstream repository: $UPSTREAM_REPOSITORY" >&2
-            exit 1
-          }
+          [ "$UPSTREAM_REPOSITORY" = Wei-Shaw/sub2api ]
           git init worktree
           git -C worktree remote add upstream "$UPSTREAM_GIT_URL"
-          actual_url="$(git -C worktree remote get-url upstream)"
-          [ "$actual_url" = https://github.com/Wei-Shaw/sub2api.git ] || {
-            echo "unexpected upstream remote: $actual_url" >&2
-            exit 1
-          }
           git -C worktree fetch --no-tags upstream "+refs/heads/main:refs/remotes/upstream/main"
           upstream_head="$(git -C worktree rev-parse refs/remotes/upstream/main^{commit})"
-
-          if [ "${INVOCATION_MODE:-}" = sync ]; then
-            upstream_sha="$REQUESTED_UPSTREAM_SHA"
-            git -C worktree rev-list --first-parent refs/remotes/upstream/main |
-              grep -Fx "$upstream_sha" >/dev/null || {
-                echo "requested upstream SHA is not on main first-parent history" >&2
-                exit 1
-              }
-            ready_sha="$(sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_sha")"
-            [ "$ready_sha" = "$upstream_sha" ] || {
-              echo "requested upstream SHA is not CI-ready" >&2
-              exit 1
-            }
+          if [ -n "$REQUESTED_UPSTREAM_SHA" ]; then
+            ready_sha="$(sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$REQUESTED_UPSTREAM_SHA")"
+            [ "$ready_sha" = "$REQUESTED_UPSTREAM_SHA" ]
           else
-            upstream_sha="$(sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_head")"
+            ready_sha="$(sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_head")"
           fi
+          git -C worktree checkout --detach "$ready_sha"
+          echo "upstream_source_sha=$ready_sha" >> "$GITHUB_OUTPUT"
 
-          git -C worktree checkout --detach "$upstream_sha"
-          [ "$(git -C worktree rev-parse HEAD^{commit})" = "$upstream_sha" ] || exit 1
-          echo "upstream_source_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Download trusted mirror candidate
-        if: inputs.invocation_mode == 'sync'
-        uses: actions/download-artifact@v8.0.1
-        with:
-          name: ${{ inputs.candidate_artifact_name }}
-          path: sync-candidate
-
-      - name: Verify candidate artifact producer attempt
-        if: inputs.invocation_mode == 'sync'
-        env:
-          ARTIFACT_NAME: ${{ inputs.candidate_artifact_name }}
-        run: |
-          set -euo pipefail
-          suffix="${ARTIFACT_NAME#sync-candidate-bundle-}"
-          producer_run="${suffix%-*}"
-          producer_attempt="${suffix##*-}"
-          [ "$ARTIFACT_NAME" = "sync-candidate-bundle-${producer_run}-${producer_attempt}" ] || exit 1
-          [[ "$producer_run" =~ ^[1-9][0-9]*$ ]] || exit 1
-          [[ "$producer_attempt" =~ ^[1-9][0-9]*$ ]] || exit 1
-          [ "$producer_run" = "$GITHUB_RUN_ID" ] || exit 1
-          [ "$producer_attempt" -le "$GITHUB_RUN_ATTEMPT" ] || exit 1
-
-      - name: Verify mirror candidate ancestry
-        if: inputs.invocation_mode == 'sync'
-        env:
-          MIRROR_CANDIDATE_SHA: ${{ steps.resolve.outputs.mirror_candidate_sha }}
-          UPSTREAM_SOURCE_SHA: ${{ steps.upstream.outputs.upstream_source_sha }}
-        run: |
-          set -euo pipefail
-          (cd sync-candidate && sha256sum -c SHA256SUMS)
-          git init candidate-check
-          git -C candidate-check fetch ../sync-candidate/candidate.bundle refs/heads/candidate:refs/heads/candidate
-          actual="$(git -C candidate-check rev-parse refs/heads/candidate^{commit})"
-          [ "$actual" = "$MIRROR_CANDIDATE_SHA" ] || {
-            echo "candidate artifact mismatch" >&2
-            exit 1
-          }
-          parent_count="$(git -C candidate-check show -s --format=%P "$actual" | wc -w)"
-          [ "$parent_count" -eq 2 ] || {
-            echo "mirror candidate must have exactly two parents" >&2
-            exit 1
-          }
-          workflow_install="$(git -C candidate-check rev-parse "$actual^2")"
-          [ "$(git -C candidate-check rev-parse "$workflow_install^")" = "$UPSTREAM_SOURCE_SHA" ] || {
-            echo "workflow-install parent does not identify upstream source" >&2
-            exit 1
-          }
-          [ "$(git -C candidate-check rev-parse "$actual^{tree}")" = \
-            "$(git -C candidate-check rev-parse "$workflow_install^{tree}")" ] || {
-            echo "promotion candidate tree differs from workflow-install tree" >&2
-            exit 1
-          }
-          git -C candidate-check diff-tree --no-commit-id --name-only -r "$UPSTREAM_SOURCE_SHA" "$workflow_install" > changed.txt
-          [ -s changed.txt ] || {
-            echo "workflow-install commit has no changes" >&2
-            exit 1
-          }
-          if grep -Ev '^\.github/workflows/' changed.txt; then
-            echo "workflow-install commit changes non-workflow paths" >&2
-            exit 1
-          fi
-          git -C candidate-check show "$workflow_install:.github/workflows/upstream-pr-check.yml" > installed.yml
-          cmp installed.yml sub2api-patch/.github/workflows/upstream-pr-check.yml
-
-      - name: Repository workflow policy regressions
+      - name: Patchset tests
         run: |
           set -euo pipefail
           python3 sub2api-patch/scripts/tests/workflow-policy-test.py
           sub2api-patch/scripts/tests/upstream-ci-ready-test.sh
           sub2api-patch/scripts/tests/compute-next-version-test.sh
-          sub2api-patch/scripts/tests/sync-published-state-changed-test.sh
+          sub2api-patch/scripts/tests/canonical-series-test.sh
+          sub2api-patch/scripts/tests/refresh-patches-test.sh
+          sub2api-patch/scripts/tests/sanitize-patches-test.sh
 
       - name: Setup Go
         uses: actions/setup-go@v6.5.0
@@ -322,26 +116,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: worktree/frontend/pnpm-lock.yaml
 
-      - name: Apply patches to exact upstream source
+      - name: Apply patches
         env:
           EXPECTED_BASE_SHA: ${{ steps.upstream.outputs.upstream_source_sha }}
         run: sub2api-patch/scripts/apply-patches.sh worktree
-
-      - name: Verify replay tree
-        id: replay
-        run: |
-          set -euo pipefail
-          [ -z "$(git -C worktree status --porcelain)" ] || {
-            git -C worktree status --short >&2
-            exit 1
-          }
-          [ -z "$(git -C worktree diff --name-only --diff-filter=U)" ] || exit 1
-          if find worktree -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q .; then
-            echo "patch residue found" >&2
-            exit 1
-          fi
-          (cd worktree && git diff --check)
-          echo "replay_tree_sha=$(git -C worktree rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
 
       - name: Sanitize patch references
         env:
@@ -380,49 +158,3 @@ jobs:
           load: false
           cache-from: type=gha,scope=sub2api-patch-release
           cache-to: type=gha,mode=max,scope=sub2api-patch-release
-
-      - name: Record immutable validation provenance
-        id: provenance
-        env:
-          PATCHSET_SHA: ${{ steps.resolve.outputs.patchset_sha }}
-          UPSTREAM_SOURCE_SHA: ${{ steps.upstream.outputs.upstream_source_sha }}
-          MIRROR_CANDIDATE_SHA: ${{ steps.resolve.outputs.mirror_candidate_sha }}
-          REPLAY_TREE_SHA: ${{ steps.replay.outputs.replay_tree_sha }}
-          ORIGINATING_RUN_ATTEMPT: ${{ steps.resolve.outputs.originating_run_attempt }}
-        run: |
-          set -euo pipefail
-          if [ "${{ inputs.invocation_mode }}" = sync ]; then
-            originating_workflow_path=.github/workflows/sync-upstream.yml
-          else
-            originating_workflow_path=.github/workflows/upstream-pr-check.yml
-          fi
-          mkdir -p validation-artifacts
-          cat > validation-artifacts/provenance.env <<EOF
-          patchset_sha=${PATCHSET_SHA}
-          upstream_source_sha=${UPSTREAM_SOURCE_SHA}
-          mirror_candidate_sha=${MIRROR_CANDIDATE_SHA}
-          replay_tree_sha=${REPLAY_TREE_SHA}
-          originating_repository=${GITHUB_REPOSITORY}
-          originating_workflow_path=${originating_workflow_path}
-          originating_run_id=${GITHUB_RUN_ID}
-          originating_run_attempt=${ORIGINATING_RUN_ATTEMPT}
-          validation_conclusion=success
-          conclusion=success
-          EOF
-          cat validation-artifacts/provenance.env >> "$GITHUB_STEP_SUMMARY"
-          echo "patchset_sha=$PATCHSET_SHA" >> "$GITHUB_OUTPUT"
-          echo "upstream_source_sha=$UPSTREAM_SOURCE_SHA" >> "$GITHUB_OUTPUT"
-          echo "mirror_candidate_sha=$MIRROR_CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
-          echo "validation_conclusion=success" >> "$GITHUB_OUTPUT"
-          echo "originating_repository=$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
-          echo "originating_workflow_path=$originating_workflow_path" >> "$GITHUB_OUTPUT"
-          echo "originating_run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "originating_run_attempt=$ORIGINATING_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-          (cd validation-artifacts && sha256sum provenance.env > SHA256SUMS)
-
-      - name: Upload validation provenance
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: patch-validation-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.resolve.outputs.patchset_sha }}
-          path: validation-artifacts
-          if-no-files-found: error

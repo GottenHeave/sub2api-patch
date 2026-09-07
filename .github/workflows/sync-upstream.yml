@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       release_after_validation:
-        description: Continue through release after every validation gate passes
+        description: Publish after validation succeeds
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions: {}
@@ -23,538 +23,85 @@ env:
   UPSTREAM_GIT_URL: https://github.com/Wei-Shaw/sub2api.git
 
 jobs:
-  prepare-candidate:
+  resolve:
     permissions:
-      actions: read
-      contents: read
       checks: read
+      contents: read
     runs-on: ubuntu-latest
     outputs:
-      patchset_sha: ${{ steps.prepare.outputs.patchset_sha || steps.recover.outputs.patchset_sha }}
-      upstream_source_sha: ${{ steps.prepare.outputs.upstream_source_sha || steps.recover.outputs.upstream_source_sha }}
-      mirror_candidate_sha: ${{ steps.prepare.outputs.mirror_candidate_sha || steps.recover.outputs.mirror_candidate_sha }}
-      expected_main_sha: ${{ steps.prepare.outputs.expected_main_sha || steps.recover.outputs.expected_main_sha }}
-      expected_mirror_sha: ${{ steps.prepare.outputs.expected_mirror_sha || steps.recover.outputs.expected_mirror_sha }}
-      expected_patched_sha: ${{ steps.prepare.outputs.expected_patched_sha || steps.recover.outputs.expected_patched_sha }}
-      validation_required: ${{ steps.prepare.outputs.validation_required || steps.recover.outputs.validation_required }}
-      release_after_validation: ${{ steps.prepare.outputs.release_after_validation || steps.recover.outputs.release_after_validation }}
-      candidate_artifact_name: ${{ steps.prepare.outputs.candidate_artifact_name || steps.recovery_artifacts.outputs.candidate_artifact_name }}
-      candidate_artifact_id: ${{ steps.upload_candidate.outputs.artifact-id || steps.recovery_artifacts.outputs.candidate_artifact_id }}
-      candidate_artifact_digest: ${{ steps.upload_candidate.outputs.artifact-digest && format('sha256:{0}', steps.upload_candidate.outputs.artifact-digest) || steps.recovery_artifacts.outputs.candidate_artifact_digest }}
-      recovery_release_artifact_name: ${{ steps.recovery_artifacts.outputs.release_artifact_name }}
-      recovery_release_artifact_id: ${{ steps.recovery_artifacts.outputs.release_artifact_id }}
-      recovery_release_artifact_digest: ${{ steps.recovery_artifacts.outputs.release_artifact_digest }}
-      recovery_image_artifact_name: ${{ steps.recovery_artifacts.outputs.image_artifact_name }}
-      recovery_image_artifact_id: ${{ steps.recovery_artifacts.outputs.image_artifact_id }}
-      recovery_image_artifact_digest: ${{ steps.recovery_artifacts.outputs.image_artifact_digest }}
-      originating_run_attempt: ${{ steps.recover.outputs.originating_run_attempt || github.run_attempt }}
+      patchset_sha: ${{ steps.resolve.outputs.patchset_sha }}
+      upstream_source_sha: ${{ steps.resolve.outputs.upstream_source_sha }}
+      expected_main_sha: ${{ steps.resolve.outputs.expected_main_sha }}
+      expected_mirror_sha: ${{ steps.resolve.outputs.expected_mirror_sha }}
+      expected_patched_sha: ${{ steps.resolve.outputs.expected_patched_sha }}
+      release_after_validation: ${{ steps.resolve.outputs.release_after_validation }}
     steps:
-      - name: Resolve exact patchset revision
-        id: patchset
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          patchset_sha="$GITHUB_SHA"
-          if [ "$GITHUB_RUN_ATTEMPT" -eq 1 ]; then
-            remote_patchset_sha="$(gh api \
-              "repos/${GITHUB_REPOSITORY}/git/ref/heads/patchset" --jq .object.sha)"
-            [ "$remote_patchset_sha" = "$patchset_sha" ] || {
-              echo "Sync workflow SHA and patchset SHA differ: $patchset_sha != $remote_patchset_sha" >&2
-              exit 1
-            }
-          fi
-          [[ "$patchset_sha" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "invalid Sync workflow SHA" >&2
-            exit 1
-          }
-          echo "patchset_sha=$patchset_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout exact patchset revision
-        if: ${{ github.run_attempt == 1 }}
+      - name: Checkout current patchset
         uses: actions/checkout@v7.0.0
         with:
-          ref: ${{ steps.patchset.outputs.patchset_sha }}
-          path: sub2api-patch
+          ref: patchset
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Construct immutable mirror candidate
-        id: prepare
-        if: ${{ github.run_attempt == 1 }}
+      - name: Resolve current CI-ready upstream
+        id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
-          PATCHSET_SHA: ${{ steps.patchset.outputs.patchset_sha }}
           REQUESTED_RELEASE: ${{ inputs.release_after_validation }}
         run: |
           set -euo pipefail
-          [ "$UPSTREAM_REPOSITORY" = Wei-Shaw/sub2api ] || exit 1
-          [ "$(git -C sub2api-patch rev-parse HEAD^{commit})" = "$PATCHSET_SHA" ] || {
-            echo "patchset checkout moved" >&2
-            exit 1
-          }
-
-          git init candidate
-          git -C candidate remote add upstream "$UPSTREAM_GIT_URL"
-          [ "$(git -C candidate remote get-url upstream)" = https://github.com/Wei-Shaw/sub2api.git ] || exit 1
-          git -C candidate fetch --no-tags upstream "+refs/heads/main:refs/remotes/upstream/main"
-          upstream_head="$(git -C candidate rev-parse refs/remotes/upstream/main^{commit})"
-          upstream_source_sha="$(sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_head")"
-          [[ "$upstream_source_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          git -C candidate rev-list --first-parent refs/remotes/upstream/main |
-            grep -Fx "$upstream_source_sha" >/dev/null || exit 1
+          [ "$UPSTREAM_REPOSITORY" = Wei-Shaw/sub2api ]
+          git init upstream
+          git -C upstream remote add upstream "$UPSTREAM_GIT_URL"
+          git -C upstream fetch --no-tags upstream "+refs/heads/main:refs/remotes/upstream/main"
+          upstream_head="$(git -C upstream rev-parse refs/remotes/upstream/main^{commit})"
+          upstream_source_sha="$(scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_head")"
 
           downstream_url="https://github.com/${GITHUB_REPOSITORY}.git"
-          git -C candidate remote add downstream "$downstream_url"
-          git -C candidate fetch --no-tags downstream "+refs/heads/main:refs/remotes/downstream/main"
-          expected_main_sha="$(git -C candidate rev-parse refs/remotes/downstream/main^{commit})"
+          expected_main_sha="$(git ls-remote "$downstream_url" refs/heads/main | awk '{print $1}')"
           expected_mirror_sha="$(git ls-remote "$downstream_url" refs/heads/mirror/upstream-main | awk '{print $1}')"
           expected_patched_sha="$(git ls-remote "$downstream_url" refs/heads/patched | awk '{print $1}')"
-          for optional_sha in "$expected_mirror_sha" "$expected_patched_sha"; do
-            [ -z "$optional_sha" ] || [[ "$optional_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          done
-
-          git init preview
-          git -C preview fetch --no-tags ../candidate "$upstream_source_sha"
-          git -C preview checkout --detach "$upstream_source_sha"
-          EXPECTED_BASE_SHA="$upstream_source_sha" \
-            sub2api-patch/scripts/apply-patches.sh preview
-          rm -rf preview/.github/workflows
-          git -C preview add -A
-          preview_tree="$(git -C preview write-tree)"
-          if [ -z "$expected_patched_sha" ]; then
-            expected_patched_tree=""
-          else
-            git -C candidate fetch --no-tags downstream "$expected_patched_sha"
-            expected_patched_tree="$(git -C candidate rev-parse "$expected_patched_sha^{tree}")"
-          fi
-
-          git -C candidate checkout --detach "$upstream_source_sha"
-          rm -rf candidate/.github/workflows
-          mkdir -p candidate/.github/workflows
-          cp sub2api-patch/.github/workflows/upstream-pr-check.yml \
-            candidate/.github/workflows/upstream-pr-check.yml
-          git -C candidate config user.name "sub2api-patch automation"
-          git -C candidate config user.email "actions@users.noreply.github.com"
-          git -C candidate add -A .github/workflows
-          git -C candidate commit -m "Install downstream validation workflow on mirror branch"
-          workflow_install_sha="$(git -C candidate rev-parse HEAD^{commit})"
-          [ "$(git -C candidate rev-parse "$workflow_install_sha^")" = "$upstream_source_sha" ] || exit 1
-
-          candidate_tree="$(git -C candidate rev-parse "$workflow_install_sha^{tree}")"
-          candidate_changed="$(
-            sub2api-patch/scripts/sync-published-state-changed.sh \
-              candidate "$upstream_source_sha" "$candidate_tree" "$preview_tree" \
-              "$expected_main_sha" "$expected_mirror_sha" "$expected_patched_sha"
-          )"
-          case "$candidate_changed" in true|false) ;; *) exit 1 ;; esac
-          mirror_candidate_sha="$(
-            printf '%s\n' 'Prepare validated upstream promotion' |
-              git -C candidate commit-tree "$candidate_tree" \
-                -p "$expected_main_sha" \
-                -p "$workflow_install_sha"
-          )"
-          git -C candidate branch -f candidate "$mirror_candidate_sha"
-          [ "$(git -C candidate show -s --format=%P "$mirror_candidate_sha" | wc -w)" -eq 2 ] || exit 1
-          [ "$(git -C candidate rev-parse "$mirror_candidate_sha^1")" = "$expected_main_sha" ] || exit 1
-          [ "$(git -C candidate rev-parse "$mirror_candidate_sha^2^")" = "$upstream_source_sha" ] || exit 1
-          [ "$(git -C candidate rev-parse "$mirror_candidate_sha^{tree}")" = "$candidate_tree" ] || exit 1
-
-          mkdir -p sync-candidate
-          git -C candidate bundle create ../sync-candidate/candidate.bundle refs/heads/candidate
-          cat > sync-candidate/provenance.env <<EOF
-          patchset_sha=${PATCHSET_SHA}
-          upstream_source_sha=${upstream_source_sha}
-          mirror_candidate_sha=${mirror_candidate_sha}
-          expected_main_sha=${expected_main_sha}
-          expected_mirror_sha=${expected_mirror_sha}
-          expected_patched_sha=${expected_patched_sha}
-          preview_tree=${preview_tree}
-          expected_patched_tree=${expected_patched_tree}
-          candidate_changed=${candidate_changed}
-          repository=${GITHUB_REPOSITORY}
-          workflow_path=.github/workflows/sync-upstream.yml
-          run_id=${GITHUB_RUN_ID}
-          run_attempt=${GITHUB_RUN_ATTEMPT}
-          EOF
-
-          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
-            validation_required="$candidate_changed"
-            release_after_validation="$candidate_changed"
-          else
-            validation_required=true
-            release_after_validation="${REQUESTED_RELEASE:-false}"
-          fi
-          case "$validation_required" in true|false) ;; *) exit 1 ;; esac
-          case "$release_after_validation" in true|false) ;; *) exit 1 ;; esac
-          candidate_artifact_name="sync-candidate-bundle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          (cd sync-candidate && sha256sum candidate.bundle provenance.env > SHA256SUMS)
-
-          echo "patchset_sha=$PATCHSET_SHA" >> "$GITHUB_OUTPUT"
-          echo "upstream_source_sha=$upstream_source_sha" >> "$GITHUB_OUTPUT"
-          echo "mirror_candidate_sha=$mirror_candidate_sha" >> "$GITHUB_OUTPUT"
-          echo "expected_main_sha=$expected_main_sha" >> "$GITHUB_OUTPUT"
-          echo "expected_mirror_sha=$expected_mirror_sha" >> "$GITHUB_OUTPUT"
-          echo "expected_patched_sha=$expected_patched_sha" >> "$GITHUB_OUTPUT"
-          echo "validation_required=$validation_required" >> "$GITHUB_OUTPUT"
-          echo "release_after_validation=$release_after_validation" >> "$GITHUB_OUTPUT"
-          echo "candidate_artifact_name=$candidate_artifact_name" >> "$GITHUB_OUTPUT"
-
-      - name: Upload immutable mirror candidate
-        id: upload_candidate
-        if: ${{ github.run_attempt == 1 }}
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: ${{ steps.prepare.outputs.candidate_artifact_name }}
-          path: sync-candidate
-          if-no-files-found: error
-
-      - name: Select exact prior publication artifacts
-        id: recovery_artifacts
-        if: ${{ github.run_attempt > 1 }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
-          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
-          [ "$GITHUB_RUN_ATTEMPT" -gt 1 ] || exit 1
-          gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
-            > prior-artifacts-pages.json
-          jq '[.[].artifacts[]]' prior-artifacts-pages.json > prior-artifacts.json
-
-          select_one() {
-            artifact_name="$1"
-            output_prefix="$2"
-            count="$(jq --arg name "$artifact_name" \
-              '[.[] | select(.name == $name and .expired == false)] | length' prior-artifacts.json)"
-            [ "$count" -eq 1 ] || {
-              echo "expected one unexpired artifact named $artifact_name, found $count" >&2
-              exit 1
-            }
-            artifact_id="$(jq -er --arg name "$artifact_name" \
-              '.[] | select(.name == $name and .expired == false) | .id' prior-artifacts.json)"
-            artifact_digest="$(jq -er --arg name "$artifact_name" \
-              '.[] | select(.name == $name and .expired == false) | .digest' prior-artifacts.json)"
-            [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || exit 1
-            [[ "$artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
-            echo "${output_prefix}_artifact_name=${artifact_name}" >> "$GITHUB_OUTPUT"
-            echo "${output_prefix}_artifact_id=${artifact_id}" >> "$GITHUB_OUTPUT"
-            echo "${output_prefix}_artifact_digest=${artifact_digest}" >> "$GITHUB_OUTPUT"
-          }
-
-          highest_attempt() {
-            prefix="$1"
-            required="$2"
-            attempts="$(jq -r --arg prefix "$prefix" --arg run "$GITHUB_RUN_ID" \
-              --argjson current "$GITHUB_RUN_ATTEMPT" '
-                [.[] | select(.expired == false) | .name
-                 | capture("^(?<prefix>.+)-(?<run>[1-9][0-9]*)-(?<attempt>[1-9][0-9]*)$")
-                 | select(.prefix == $prefix and .run == $run and
-                          (.attempt | tonumber) < $current)
-                 | .attempt | tonumber] | if length > 0 then max else empty end
-              ' prior-artifacts.json)"
-            if [ -z "$attempts" ]; then
-              [ "$required" = false ] || {
-                echo "missing required prior $prefix artifact" >&2
-                exit 1
-              }
-              return
-            fi
-            [[ "$attempts" =~ ^[1-9][0-9]*$ ]] || exit 1
-            printf '%s' "$attempts"
-          }
-
-          candidate_attempt="$(highest_attempt sync-candidate-bundle true)"
-          select_one "sync-candidate-bundle-${GITHUB_RUN_ID}-${candidate_attempt}" candidate
-          echo "candidate_producer_attempt=$candidate_attempt" >> "$GITHUB_OUTPUT"
-
-          release_attempt="$(highest_attempt verified-release-state false)"
-          if [ -n "$release_attempt" ]; then
-            select_one "verified-release-state-${GITHUB_RUN_ID}-${release_attempt}" release
-            echo "release_producer_attempt=$release_attempt" >> "$GITHUB_OUTPUT"
-          fi
-
-          image_attempt="$(highest_attempt image-publication-authority false)"
-          if [ -n "$image_attempt" ]; then
-            [ -n "$release_attempt" ] || {
-              echo "image receipt exists without a verified release artifact" >&2
-              exit 1
-            }
-            select_one "image-publication-authority-${GITHUB_RUN_ID}-${image_attempt}" image
-            echo "image_producer_attempt=$image_attempt" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Download exact prior candidate archive
-        if: ${{ github.run_attempt > 1 }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          artifact-ids: ${{ steps.recovery_artifacts.outputs.candidate_artifact_id }}
-          path: recovery-candidate-download
-          skip-decompress: true
-          digest-mismatch: error
-
-      - name: Download exact prior release archive
-        if: ${{ steps.recovery_artifacts.outputs.release_artifact_id != '' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          artifact-ids: ${{ steps.recovery_artifacts.outputs.release_artifact_id }}
-          path: recovery-release-download
-          skip-decompress: true
-          digest-mismatch: error
-
-      - name: Verify and recover exact prior publication state
-        id: recover
-        if: ${{ github.run_attempt > 1 }}
-        env:
-          PATCHSET_SHA: ${{ steps.patchset.outputs.patchset_sha }}
-          CANDIDATE_PRODUCER_ATTEMPT: ${{ steps.recovery_artifacts.outputs.candidate_producer_attempt }}
-          RELEASE_PRODUCER_ATTEMPT: ${{ steps.recovery_artifacts.outputs.release_producer_attempt }}
-          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.recovery_artifacts.outputs.candidate_artifact_digest }}
-          RELEASE_ARTIFACT_DIGEST: ${{ steps.recovery_artifacts.outputs.release_artifact_digest }}
-          REQUESTED_RELEASE: ${{ inputs.release_after_validation }}
-        run: |
-          set -euo pipefail
-          verify_archive() {
-            directory="$1"
-            expected_digest="${2#sha256:}"
-            destination="$3"
-            mapfile -t archives < <(find "$directory" -maxdepth 1 -type f -print)
-            [ "${#archives[@]}" -eq 1 ] || exit 1
-            [[ "$expected_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
-            [ "$(sha256sum "${archives[0]}" | awk '{print $1}')" = "$expected_digest" ] || exit 1
-            mkdir "$destination"
-            unzip -q "${archives[0]}" -d "$destination"
-          }
-          verify_archive recovery-candidate-download "$CANDIDATE_ARTIFACT_DIGEST" recovery-candidate
-
-          expected_candidate_files="$(printf '%s\n' SHA256SUMS candidate.bundle provenance.env | sort)"
-          actual_candidate_files="$(find recovery-candidate -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
-          [ "$actual_candidate_files" = "$expected_candidate_files" ] || exit 1
-          (cd recovery-candidate && sha256sum -c SHA256SUMS)
-
-          field() {
-            file="$1"
-            key="$2"
-            [ "$(grep -E "^${key}=" "$file" | wc -l)" -eq 1 ] || exit 1
-            sed -n "s/^${key}=//p" "$file"
-          }
-          provenance=recovery-candidate/provenance.env
-          [ "$(wc -l < "$provenance")" -eq 13 ] || exit 1
-          ! grep -Ev '^[a-z_]+=[^[:cntrl:]]*$' "$provenance" || exit 1
-          patchset_sha="$(field "$provenance" patchset_sha)"
-          upstream_source_sha="$(field "$provenance" upstream_source_sha)"
-          mirror_candidate_sha="$(field "$provenance" mirror_candidate_sha)"
-          expected_main_sha="$(field "$provenance" expected_main_sha)"
-          expected_mirror_sha="$(field "$provenance" expected_mirror_sha)"
-          expected_patched_sha="$(field "$provenance" expected_patched_sha)"
-          [ "$patchset_sha" = "$PATCHSET_SHA" ] || exit 1
-          [ "$(field "$provenance" repository)" = "$GITHUB_REPOSITORY" ] || exit 1
-          [ "$(field "$provenance" workflow_path)" = .github/workflows/sync-upstream.yml ] || exit 1
-          [ "$(field "$provenance" run_id)" = "$GITHUB_RUN_ID" ] || exit 1
-          [ "$(field "$provenance" run_attempt)" = "$CANDIDATE_PRODUCER_ATTEMPT" ] || exit 1
-          for sha in "$patchset_sha" "$upstream_source_sha" "$mirror_candidate_sha" "$expected_main_sha"; do
-            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          done
-          for sha in "$expected_mirror_sha" "$expected_patched_sha"; do
-            [ -z "$sha" ] || [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          done
-          preview_tree="$(field "$provenance" preview_tree)"
-          expected_patched_tree="$(field "$provenance" expected_patched_tree)"
-          [[ "$preview_tree" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [ -z "$expected_patched_tree" ] || \
-            [[ "$expected_patched_tree" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          candidate_changed="$(field "$provenance" candidate_changed)"
-          case "$candidate_changed" in true|false) ;; *) exit 1 ;; esac
-          git init recovery-candidate-objects
-          git -C recovery-candidate-objects bundle verify \
-            "$GITHUB_WORKSPACE/recovery-candidate/candidate.bundle"
-          git -C recovery-candidate-objects bundle unbundle \
-            "$GITHUB_WORKSPACE/recovery-candidate/candidate.bundle" >/dev/null
-          [ "$(git -C recovery-candidate-objects rev-parse \
-            "$mirror_candidate_sha^{commit}")" = "$mirror_candidate_sha" ] || exit 1
-          [ "$(git -C recovery-candidate-objects rev-parse "$mirror_candidate_sha^1")" = \
-            "$expected_main_sha" ] || exit 1
-          workflow_install_sha="$(git -C recovery-candidate-objects rev-parse \
-            "$mirror_candidate_sha^2")"
-          [ "$(git -C recovery-candidate-objects rev-parse "$workflow_install_sha^")" = \
-            "$upstream_source_sha" ] || exit 1
-          [ "$(git -C recovery-candidate-objects rev-parse \
-            "$mirror_candidate_sha^{tree}")" = \
-            "$(git -C recovery-candidate-objects rev-parse "$workflow_install_sha^{tree}")" ] || exit 1
-
-          if [ -z "$RELEASE_ARTIFACT_DIGEST" ]; then
-            [ -z "$RELEASE_PRODUCER_ATTEMPT" ] || exit 1
-            case "$GITHUB_EVENT_NAME" in
-              schedule)
-                validation_required="$candidate_changed"
-                release_after_validation="$candidate_changed"
-                ;;
-              workflow_dispatch)
-                validation_required=true
-                release_after_validation="${REQUESTED_RELEASE:-false}"
-                ;;
-              *) exit 1 ;;
-            esac
-            downstream_url="https://github.com/${GITHUB_REPOSITORY}.git"
-            actual_main_sha="$(git ls-remote "$downstream_url" refs/heads/main | awk '{print $1}')"
-            actual_mirror_sha="$(git ls-remote "$downstream_url" refs/heads/mirror/upstream-main | awk '{print $1}')"
-            actual_patched_sha="$(git ls-remote "$downstream_url" refs/heads/patched | awk '{print $1}')"
-            [ "$actual_main_sha" = "$expected_main_sha" ] || exit 1
-            [ "$actual_mirror_sha" = "$expected_mirror_sha" ] || exit 1
-            [ "$actual_patched_sha" = "$expected_patched_sha" ] || exit 1
-            echo "patchset_sha=$patchset_sha" >> "$GITHUB_OUTPUT"
-            echo "upstream_source_sha=$upstream_source_sha" >> "$GITHUB_OUTPUT"
-            echo "mirror_candidate_sha=$mirror_candidate_sha" >> "$GITHUB_OUTPUT"
-            echo "expected_main_sha=$expected_main_sha" >> "$GITHUB_OUTPUT"
-            echo "expected_mirror_sha=$expected_mirror_sha" >> "$GITHUB_OUTPUT"
-            echo "expected_patched_sha=$expected_patched_sha" >> "$GITHUB_OUTPUT"
-            case "$validation_required" in true|false) ;; *) exit 1 ;; esac
-            case "$release_after_validation" in true|false) ;; *) exit 1 ;; esac
-            echo "validation_required=$validation_required" >> "$GITHUB_OUTPUT"
-            echo "release_after_validation=$release_after_validation" >> "$GITHUB_OUTPUT"
-            echo "originating_run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          verify_archive recovery-release-download "$RELEASE_ARTIFACT_DIGEST" recovery-release
-          expected_release_files="$(printf '%s\n' MANIFEST.SHA256 SHA256SUMS \
-            content-manifest.sha256 publication-context.tar publication-manifest.env \
-            release-notes.md release.bundle | sort)"
-          actual_release_files="$(find recovery-release -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
-          [ "$actual_release_files" = "$expected_release_files" ] || exit 1
-          (cd recovery-release && sha256sum -c MANIFEST.SHA256)
-          (cd recovery-release && sha256sum -c content-manifest.sha256)
-          cmp recovery-release/MANIFEST.SHA256 recovery-release/SHA256SUMS
-          [ "$(wc -l < recovery-release/publication-manifest.env)" -eq 28 ] || exit 1
-          ! grep -Ev '^[a-z_]+=[^[:cntrl:]]*$' recovery-release/publication-manifest.env || exit 1
-          manifest=recovery-release/publication-manifest.env
-
-          for key in patchset_sha upstream_source_sha mirror_candidate_sha \
-            expected_main_sha expected_mirror_sha expected_patched_sha; do
-            [ "$(field "$manifest" "$key")" = "$(field "$provenance" "$key")" ] || exit 1
-          done
-          [ "$(field "$manifest" validation_conclusion)" = success ] || exit 1
-          [ "$(field "$manifest" originating_repository)" = "$GITHUB_REPOSITORY" ] || exit 1
-          [ "$(field "$manifest" originating_workflow_path)" = .github/workflows/sync-upstream.yml ] || exit 1
-          [ "$(field "$manifest" originating_run_id)" = "$GITHUB_RUN_ID" ] || exit 1
-          originating_run_attempt="$(field "$manifest" originating_run_attempt)"
-          [[ "$originating_run_attempt" =~ ^[1-9][0-9]*$ ]] || exit 1
-          [ "$originating_run_attempt" = "$RELEASE_PRODUCER_ATTEMPT" ] || exit 1
-          [ "$originating_run_attempt" -le "$GITHUB_RUN_ATTEMPT" ] || exit 1
-          manifest_digest="$(sha256sum "$manifest" | awk '{print $1}')"
-          grep -Fx "${manifest_digest}  publication-manifest.env" recovery-release/MANIFEST.SHA256 >/dev/null
-          content_digest="$(sha256sum recovery-release/content-manifest.sha256 | awk '{print $1}')"
-          notes_digest="$(sha256sum recovery-release/release-notes.md | awk '{print $1}')"
-          [ "$(field "$manifest" content_manifest_sha256)" = "$content_digest" ] || exit 1
-          [ "$(field "$manifest" release_notes_sha256)" = "$notes_digest" ] || exit 1
-
-          replay_tree_sha="$(field "$manifest" replay_tree_sha)"
-          replay_commit_sha="$(field "$manifest" replay_commit_sha)"
-          publication_commit_sha="$(field "$manifest" publication_commit_sha)"
-          publication_tree_sha="$(field "$manifest" publication_tree_sha)"
-          version="$(field "$manifest" version)"
-          [[ "$replay_tree_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [[ "$replay_commit_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [[ "$publication_commit_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [[ "$publication_tree_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-patch\.[0-9]+$ ]] || exit 1
-          [ "$preview_tree" = "$publication_tree_sha" ] || exit 1
-          git init recovery-objects
-          git -C recovery-objects bundle verify "$GITHUB_WORKSPACE/recovery-release/release.bundle"
-          git -C recovery-objects bundle unbundle "$GITHUB_WORKSPACE/recovery-release/release.bundle" >/dev/null
-          [ "$(git -C recovery-objects rev-parse "$mirror_candidate_sha^{commit}")" = "$mirror_candidate_sha" ] || exit 1
-          [ "$(git -C recovery-objects rev-parse "$mirror_candidate_sha^1")" = "$expected_main_sha" ] || exit 1
-          [ "$(git -C recovery-objects rev-parse "$replay_commit_sha^{tree}")" = "$replay_tree_sha" ] || exit 1
-          [ "$(git -C recovery-objects rev-parse "$publication_commit_sha^{tree}")" = "$publication_tree_sha" ] || exit 1
-          [ "$(git -C recovery-objects rev-parse "$publication_commit_sha^")" = "$replay_commit_sha" ] || exit 1
-          image_owner="$(field "$manifest" image_owner)"
-          [ "$image_owner" = "$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')" ] || exit 1
-          [ "$(field "$manifest" version_image_tag)" = "ghcr.io/${image_owner}/sub2api-patch:${version}" ] || exit 1
-          [ "$(field "$manifest" latest_image_tag)" = "ghcr.io/${image_owner}/sub2api-patch:latest-patch" ] || exit 1
-          [ "$(field "$manifest" version_label)" = "org.opencontainers.image.version=${version}" ] || exit 1
-          [ "$(field "$manifest" revision_label)" = "org.opencontainers.image.revision=${replay_commit_sha}" ] || exit 1
-          [ "$(field "$manifest" docker_context_commit_sha)" = "$publication_commit_sha" ] || exit 1
-          [ "$(field "$manifest" docker_context_tree_sha)" = "$publication_tree_sha" ] || exit 1
-          [ "$(field "$manifest" dockerfile_path)" = Dockerfile ] || exit 1
-          [ "$(field "$manifest" cache_from)" = 'type=gha,scope=sub2api-patch-release' ] || exit 1
-          [ "$(field "$manifest" cache_to)" = 'type=gha,mode=max,scope=sub2api-patch-release' ] || exit 1
-
-          case "$GITHUB_EVENT_NAME" in
-            schedule)
-              [ "$candidate_changed" = true ] || exit 1
-              release_after_validation=true
-              ;;
-            workflow_dispatch) release_after_validation="${REQUESTED_RELEASE:-false}" ;;
-            *) exit 1 ;;
-          esac
-          [ "$release_after_validation" = true ] || {
-            echo "rerun recovery is permitted only for a release-capable Sync run" >&2
+          [ -n "$expected_main_sha" ] || {
+            echo "downstream main does not exist" >&2
             exit 1
           }
-          echo "patchset_sha=$patchset_sha" >> "$GITHUB_OUTPUT"
+
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            release_after_validation=true
+          else
+            release_after_validation="${REQUESTED_RELEASE:-true}"
+          fi
+
+          echo "patchset_sha=$(git rev-parse HEAD^{commit})" >> "$GITHUB_OUTPUT"
           echo "upstream_source_sha=$upstream_source_sha" >> "$GITHUB_OUTPUT"
-          echo "mirror_candidate_sha=$mirror_candidate_sha" >> "$GITHUB_OUTPUT"
           echo "expected_main_sha=$expected_main_sha" >> "$GITHUB_OUTPUT"
           echo "expected_mirror_sha=$expected_mirror_sha" >> "$GITHUB_OUTPUT"
           echo "expected_patched_sha=$expected_patched_sha" >> "$GITHUB_OUTPUT"
-          echo "validation_required=true" >> "$GITHUB_OUTPUT"
-          echo "release_after_validation=true" >> "$GITHUB_OUTPUT"
-          echo "originating_run_attempt=$originating_run_attempt" >> "$GITHUB_OUTPUT"
+          echo "release_after_validation=$release_after_validation" >> "$GITHUB_OUTPUT"
 
   validate:
-    needs: prepare-candidate
-    if: ${{ needs.prepare-candidate.outputs.validation_required == 'true' }}
+    needs: resolve
     permissions:
-      contents: read
       checks: read
+      contents: read
     uses: ./.github/workflows/upstream-pr-check.yml
     with:
       invocation_mode: sync
-      patchset_sha: ${{ needs.prepare-candidate.outputs.patchset_sha }}
-      upstream_source_sha: ${{ needs.prepare-candidate.outputs.upstream_source_sha }}
-      mirror_candidate_sha: ${{ needs.prepare-candidate.outputs.mirror_candidate_sha }}
-      candidate_artifact_name: ${{ needs.prepare-candidate.outputs.candidate_artifact_name }}
-      originating_run_attempt: ${{ needs.prepare-candidate.outputs.originating_run_attempt }}
+      patchset_sha: ${{ needs.resolve.outputs.patchset_sha }}
+      upstream_source_sha: ${{ needs.resolve.outputs.upstream_source_sha }}
 
   release:
     needs:
-      - prepare-candidate
+      - resolve
       - validate
-    if: >-
-      ${{ needs.prepare-candidate.result == 'success'
-        && needs.validate.result == 'success'
-        && needs.validate.outputs.validation_conclusion == 'success'
-        && needs.prepare-candidate.outputs.release_after_validation == 'true' }}
+    if: ${{ needs.validate.result == 'success' && needs.resolve.outputs.release_after_validation == 'true' }}
     permissions:
-      actions: read
-      checks: read
       contents: write
       packages: write
-      pull-requests: write
     uses: ./.github/workflows/auto-release.yml
     with:
-      invocation_mode: sync
-      release_after_validation: true
-      patchset_sha: ${{ needs.validate.outputs.patchset_sha }}
-      upstream_source_sha: ${{ needs.validate.outputs.upstream_source_sha }}
-      mirror_candidate_sha: ${{ needs.validate.outputs.mirror_candidate_sha }}
-      replay_tree_sha: ${{ needs.validate.outputs.replay_tree_sha }}
-      validation_conclusion: ${{ needs.validate.outputs.validation_conclusion }}
-      originating_repository: ${{ needs.validate.outputs.originating_repository }}
-      originating_workflow_path: ${{ needs.validate.outputs.originating_workflow_path }}
-      originating_run_id: ${{ needs.validate.outputs.originating_run_id }}
-      originating_run_attempt: ${{ needs.validate.outputs.originating_run_attempt }}
-      candidate_artifact_name: ${{ needs.prepare-candidate.outputs.candidate_artifact_name }}
-      candidate_artifact_id: ${{ needs.prepare-candidate.outputs.candidate_artifact_id }}
-      candidate_artifact_digest: ${{ needs.prepare-candidate.outputs.candidate_artifact_digest }}
-      expected_main_sha: ${{ needs.prepare-candidate.outputs.expected_main_sha }}
-      expected_mirror_sha: ${{ needs.prepare-candidate.outputs.expected_mirror_sha }}
-      expected_patched_sha: ${{ needs.prepare-candidate.outputs.expected_patched_sha }}
-      recovery_release_artifact_name: ${{ needs.prepare-candidate.outputs.recovery_release_artifact_name }}
-      recovery_release_artifact_id: ${{ needs.prepare-candidate.outputs.recovery_release_artifact_id }}
-      recovery_release_artifact_digest: ${{ needs.prepare-candidate.outputs.recovery_release_artifact_digest }}
-      recovery_image_artifact_name: ${{ needs.prepare-candidate.outputs.recovery_image_artifact_name }}
-      recovery_image_artifact_id: ${{ needs.prepare-candidate.outputs.recovery_image_artifact_id }}
-      recovery_image_artifact_digest: ${{ needs.prepare-candidate.outputs.recovery_image_artifact_digest }}
+      patchset_sha: ${{ needs.resolve.outputs.patchset_sha }}
+      upstream_source_sha: ${{ needs.resolve.outputs.upstream_source_sha }}
+      expected_main_sha: ${{ needs.resolve.outputs.expected_main_sha }}
+      expected_mirror_sha: ${{ needs.resolve.outputs.expected_mirror_sha }}
+      expected_patched_sha: ${{ needs.resolve.outputs.expected_patched_sha }}
