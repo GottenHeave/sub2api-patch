@@ -29,8 +29,7 @@ not claim that a later upstream branch or release has accepted the capability.
     - Patch 4 adds request-context markers for Realtime REST and audio
       transcription selection.
   - Account eligibility
-    - Patch 4 limits public Realtime REST to API-key accounts. Audio
-      transcription retains API-key and OAuth account support.
+    - Patch 4 limits both endpoint families to API-key and OAuth accounts.
     - It requires explicit account model support for unknown transcription
       models while allowing the known transcription fallback model.
   - Endpoint selectors
@@ -57,9 +56,9 @@ not claim that a later upstream branch or release has accepted the capability.
   - WebSocket transport
     - Patch 7 adds `/v1/realtime` session and translation WebSocket dispatch,
       upstream URL construction, model mapping, and relay behavior.
-    - Realtime uses API-key accounts independently of Responses WebSocket
-      settings, preserves caller session aliases and Codex protocol headers,
-      and holds concurrency for the connection to cover server VAD responses.
+    - Realtime selects independently of Responses WebSocket settings,
+      preserves caller session aliases and Codex protocol headers, and holds
+      concurrency for the connection to cover server VAD responses.
     - It preserves Grok dispatch on the shared `/v1/realtime` route and leaves
       the root `/realtime` route Grok-only.
   - REST transport
@@ -81,10 +80,13 @@ not claim that a later upstream branch or release has accepted the capability.
     - Patch 10 is the single-file integration hook that makes the Realtime REST
       handler use the moderation constant from patch 9.
   - Authentication and protocol boundary
-    - Public Realtime endpoints require OpenAI API-key accounts. ChatGPT OAuth
-      voice uses a separate backend protocol and is not implemented here.
-    - Codex V1 and default V2 use the retained Realtime endpoints. Opt-in V3
-      `/live` is outside this capability.
+    - Standalone WebSocket sessions use API-key accounts. OAuth WebRTC calls
+      use the Codex backend JSON endpoint and retain that account's bearer and
+      account ID for the public `call_id` sideband.
+    - Explicit `quicksilver=v1` backend calls use the Realtime REST handler.
+      Default and `quicksilver=v2` requests retain upstream Live routing,
+      attestation, call storage, and duration billing.
+    - Codex V1 and V2 use Realtime endpoints; upstream supplies opt-in V3 Live.
 - Codex prompt handling
   - Caller prompt preservation
     - Patch 11 suppresses default prompt injection only when the caller already
@@ -141,7 +143,7 @@ test. It remains independent of audio pricing and accounting.
 
 The complete 11-patch series cleanly replays from the selected upstream commit.
 The replay produces tree
-`a0defeaaf3a4ee6b2e9fc931a8dc31bf107d93b0`, exactly matching the refreshed
+`740c9d44902bdc254438f933df75cee7a68df330`, exactly matching the refreshed
 integration tree.
 
 The functional follow-up adds regression coverage for protocol-preserving
