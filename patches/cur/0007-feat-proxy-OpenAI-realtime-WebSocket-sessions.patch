@@ -12,7 +12,7 @@ Subject: [PATCH 07/11] feat: proxy OpenAI realtime WebSocket sessions
  .../service/openai_fast_policy_ws_test.go     |  14 ++
  .../service/openai_gateway_scheduling.go      |   3 +
  .../internal/service/openai_ws_forwarder.go   |   3 +-
- .../service/openai_ws_forwarder_ingress.go    |  48 +++++
+ .../service/openai_ws_forwarder_ingress.go    |  45 +++++
  .../service/openai_ws_forwarder_payload.go    | 119 ++++++++++-
  .../openai_ws_forwarder_success_test.go       |  45 +++++
  .../service/openai_ws_protocol_resolver.go    |   2 +
@@ -20,7 +20,7 @@ Subject: [PATCH 07/11] feat: proxy OpenAI realtime WebSocket sessions
  .../passthrough_relay_internal_test.go        |  60 ++++++
  .../openai_ws_v2_passthrough_adapter.go       | 183 +++++++++++++----
  .../openai_ws_v2_realtime_relay_test.go       | 183 +++++++++++++++++
- 16 files changed, 926 insertions(+), 102 deletions(-)
+ 16 files changed, 923 insertions(+), 102 deletions(-)
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
 index b45b101d890eb59fbeeee0814c4fcb646e8afc2c..8ee8928b2540bdb8d3712a4318f64d7767f2b5cc 100644
@@ -436,7 +436,7 @@ index b5a466949f3955c9ba5fd92be8d6cf2cec79d94e..67ebfc1b191904bb4ec220f485a81141
 +	// MaxReasoningEffortOverLimit controls whether an over-limit value is capped or rejected.
  	MaxReasoningEffortOverLimit string
 diff --git a/backend/internal/service/openai_ws_forwarder_ingress.go b/backend/internal/service/openai_ws_forwarder_ingress.go
-index f24dc256978264b541a9db4cb7fa13ddc411871d..ec1861f11d577303e702bed1946f6cc0a42ac01e 100644
+index f24dc256978264b541a9db4cb7fa13ddc411871d..5326867da3694c1ce77f47fb60b6551deeb06817 100644
 --- a/backend/internal/service/openai_ws_forwarder_ingress.go
 +++ b/backend/internal/service/openai_ws_forwarder_ingress.go
 @@ -151,2 +151,4 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
@@ -444,7 +444,7 @@ index f24dc256978264b541a9db4cb7fa13ddc411871d..ec1861f11d577303e702bed1946f6cc0
 +				"/v1/responses",
 +				"",
  			)
-@@ -1947 +1949,47 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
+@@ -1947 +1949,44 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
  }
 +
 +// ProxyRealtimeWebSocketFromClient relays an OpenAI Realtime connection over
@@ -477,9 +477,6 @@ index f24dc256978264b541a9db4cb7fa13ddc411871d..ec1861f11d577303e702bed1946f6cc0
 +	}
 +	if account.Type == AccountTypeOAuth && strings.TrimSpace(c.Query("call_id")) == "" {
 +		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "OAuth realtime requires an existing WebRTC call_id", nil)
-+	}
-+	if err := validateOpenAIWSBearerToken(account, token); err != nil {
-+		return err
 +	}
 +	if s.settingService != nil {
 +		if settings, err := s.settingService.GetOpenAIFastPolicySettings(ctx); err == nil && settings != nil {

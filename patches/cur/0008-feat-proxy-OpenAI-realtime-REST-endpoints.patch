@@ -10,9 +10,9 @@ Subject: [PATCH 08/11] feat: proxy OpenAI realtime REST endpoints
  backend/internal/server/routes/gateway.go     |  30 +-
  .../internal/server/routes/gateway_test.go    |  29 +
  .../prompt_audit_route_coverage_test.go       |  10 +
- .../internal/service/openai_realtime_calls.go | 514 +++++++++++++++++
+ .../internal/service/openai_realtime_calls.go | 512 +++++++++++++++++
  .../service/openai_realtime_calls_test.go     | 541 ++++++++++++++++++
- 8 files changed, 1744 insertions(+), 1 deletion(-)
+ 8 files changed, 1742 insertions(+), 1 deletion(-)
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
 index 8ee8928b2540bdb8d3712a4318f64d7767f2b5cc..80ad3e686ce6474dfc7c951ee1f7486c6c822dee 100644
@@ -757,10 +757,10 @@ index 0083c8b95544bbccad5652a8709c1b39e29cbe6a..f954e135142f467ec400f2b199789e1e
  	}
 diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..c1417f4983ddb8314dee9d6767691239ed2e4923
+index 0000000000000000000000000000000000000000..64a7713d2b675c6d1de00f5e407639029b08c93c
 --- /dev/null
 +++ b/backend/internal/service/openai_realtime_calls.go
-@@ -0,0 +1,514 @@
+@@ -0,0 +1,512 @@
 +package service
 +
 +import (
@@ -1248,9 +1248,7 @@ index 0000000000000000000000000000000000000000..c1417f4983ddb8314dee9d6767691239
 +		req.Header.Set("Content-Type", "application/json")
 +	}
 +	if account.Type == AccountTypeOAuth {
-+		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
-+			req.Header.Set("chatgpt-account-id", chatgptAccountID)
-+		}
++		setOpenAIChatGPTAccountHeaders(req.Header, account)
 +		isCodexOfficialClient := false
 +		if c != nil {
 +			isCodexOfficialClient = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
