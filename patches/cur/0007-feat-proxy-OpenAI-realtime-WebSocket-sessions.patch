@@ -1121,7 +1121,7 @@ index 556ad0627436419c07db3d6d9457870325761eae..03738d9122c87ea988270aa4e30d0566
  					turnLifecycle.finishTerminalWrite(writeErr == nil, clientFrameConn.markTurnCompleted)
 diff --git a/backend/internal/service/openai_ws_v2_realtime_relay_test.go b/backend/internal/service/openai_ws_v2_realtime_relay_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..7bc0e51c38766a590ce531df98e0d56e3435a6f9
+index 0000000000000000000000000000000000000000..aef181cd33f8f26f5c631cefe01ec66db7d8b6b2
 --- /dev/null
 +++ b/backend/internal/service/openai_ws_v2_realtime_relay_test.go
 @@ -0,0 +1,183 @@
@@ -1215,7 +1215,7 @@ index 0000000000000000000000000000000000000000..7bc0e51c38766a590ce531df98e0d56e
 +					serverErr <- err
 +					return
 +				}
-+				defer conn.CloseNow()
++				defer func() { _ = conn.CloseNow() }()
 +				c, _ := gin.CreateTestContext(httptest.NewRecorder())
 +				c.Request = r.WithContext(ctx)
 +				serverErr <- svc.ProxyRealtimeWebSocketFromClient(ctx, c, conn, account, token, []byte(tc.firstFrame), "voice-alias", "/v1/realtime", hooks)
@@ -1226,7 +1226,7 @@ index 0000000000000000000000000000000000000000..7bc0e51c38766a590ce531df98e0d56e
 +				"X-Oai-Attestation": []string{"attestation-test"},
 +			}})
 +			require.NoError(t, err)
-+			defer client.CloseNow()
++			defer func() { _ = client.CloseNow() }()
 +			select {
 +			case handshake := <-dialer.handshakes:
 +				require.Equal(t, "Bearer "+token, handshake.headers.Get("Authorization"))

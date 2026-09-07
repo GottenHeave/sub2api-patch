@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 base_sha="5485f368b29d05adb95a00f71801c7c23d8f48af"
-expected_tree="11e770ee9a65f7cb1b3260d8b09979052fceaeaf"
+expected_tree="84f8bcabbb145e0612b6d3f957686675eda52142"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
