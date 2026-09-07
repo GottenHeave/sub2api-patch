@@ -58,7 +58,7 @@ class ReleaseRecoveryTest(unittest.TestCase):
             "scripts/release-publication-state.sh",
             "scripts/compute-next-version.sh",
         ):
-            self.write(f"sub2api-patch/{name}", (ROOT / name).read_text(), executable=True)
+            self.write(f"sub2api-patch/{name}", (ROOT / name).read_text(), executable=name.endswith(".sh"))
         self.write("sub2api-patch/scripts/apply-patches.sh", "#!/bin/bash\nexit 0\n", executable=True)
         self.write("bin/curl", '#!/bin/bash\nprintf "%s" "$RELEASE_STATUS"\n', executable=True)
         self.write("bin/docker", textwrap.dedent("""\
