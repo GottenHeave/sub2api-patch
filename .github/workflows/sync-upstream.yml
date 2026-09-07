@@ -40,7 +40,7 @@ jobs:
       release_after_validation: ${{ steps.prepare.outputs.release_after_validation || steps.recover.outputs.release_after_validation }}
       candidate_artifact_name: ${{ steps.prepare.outputs.candidate_artifact_name || steps.recovery_artifacts.outputs.candidate_artifact_name }}
       candidate_artifact_id: ${{ steps.upload_candidate.outputs.artifact-id || steps.recovery_artifacts.outputs.candidate_artifact_id }}
-      candidate_artifact_digest: ${{ steps.upload_candidate.outputs.artifact-digest || steps.recovery_artifacts.outputs.candidate_artifact_digest }}
+      candidate_artifact_digest: ${{ steps.upload_candidate.outputs.artifact-digest && format('sha256:{0}', steps.upload_candidate.outputs.artifact-digest) || steps.recovery_artifacts.outputs.candidate_artifact_digest }}
       recovery_release_artifact_name: ${{ steps.recovery_artifacts.outputs.release_artifact_name }}
       recovery_release_artifact_id: ${{ steps.recovery_artifacts.outputs.release_artifact_id }}
       recovery_release_artifact_digest: ${{ steps.recovery_artifacts.outputs.release_artifact_digest }}

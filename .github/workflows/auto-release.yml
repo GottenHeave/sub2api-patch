@@ -455,7 +455,7 @@ jobs:
       manifest_sha256: ${{ steps.release.outputs.manifest_sha256 || steps.recover_release.outputs.manifest_sha256 }}
       release_artifact_name: ${{ steps.release.outputs.release_artifact_name || steps.recovery.outputs.release_artifact_name }}
       release_artifact_id: ${{ steps.upload_release.outputs.artifact-id || steps.recovery.outputs.release_artifact_id }}
-      release_artifact_digest: ${{ steps.upload_release.outputs.artifact-digest || steps.recovery.outputs.release_artifact_digest }}
+      release_artifact_digest: ${{ steps.upload_release.outputs.artifact-digest && format('sha256:{0}', steps.upload_release.outputs.artifact-digest) || steps.recovery.outputs.release_artifact_digest }}
       recovered_image_digest: ${{ steps.recover_release.outputs.recovered_image_digest }}
       recovery_image_artifact_name: ${{ steps.recovery.outputs.image_artifact_name }}
       recovery_image_artifact_id: ${{ steps.recovery.outputs.image_artifact_id }}
@@ -1287,7 +1287,7 @@ jobs:
     outputs:
       authority_artifact_name: ${{ steps.git_authority.outputs.authority_artifact_name }}
       authority_artifact_id: ${{ steps.upload_git_authority.outputs.artifact-id }}
-      authority_artifact_digest: ${{ steps.upload_git_authority.outputs.artifact-digest }}
+      authority_artifact_digest: ${{ format('sha256:{0}', steps.upload_git_authority.outputs.artifact-digest) }}
       release_artifact_name: ${{ steps.git_authority.outputs.release_artifact_name }}
       release_artifact_id: ${{ steps.git_authority.outputs.release_artifact_id }}
       release_artifact_digest: ${{ steps.git_authority.outputs.release_artifact_digest }}
@@ -2038,7 +2038,7 @@ jobs:
     outputs:
       authority_artifact_name: ${{ needs.prepare-release.outputs.recovery_image_artifact_name || steps.image_authority.outputs.authority_artifact_name }}
       authority_artifact_id: ${{ needs.prepare-release.outputs.recovery_image_artifact_id || steps.upload_image_authority.outputs.artifact-id }}
-      authority_artifact_digest: ${{ needs.prepare-release.outputs.recovery_image_artifact_digest || steps.upload_image_authority.outputs.artifact-digest }}
+      authority_artifact_digest: ${{ needs.prepare-release.outputs.recovery_image_artifact_digest || format('sha256:{0}', steps.upload_image_authority.outputs.artifact-digest) }}
       authorized_image_digest: ${{ steps.image_authority.outputs.oci_root_digest }}
       authorized_image_media_type: ${{ steps.image_authority.outputs.oci_root_media_type }}
       authorized_image_size: ${{ steps.image_authority.outputs.oci_root_size }}
@@ -2578,7 +2578,7 @@ jobs:
           RECOVERY_AUTHORITY_NAME: ${{ needs.prepare-release.outputs.recovery_image_artifact_name }}
           RECOVERY_AUTHORITY_ID: ${{ needs.prepare-release.outputs.recovery_image_artifact_id }}
           RECOVERY_AUTHORITY_DIGEST: ${{ needs.prepare-release.outputs.recovery_image_artifact_digest }}
-          FRESH_AUTHORITY_DIGEST: ${{ steps.upload_image_authority.outputs.artifact-digest }}
+          FRESH_AUTHORITY_DIGEST: ${{ format('sha256:{0}', steps.upload_image_authority.outputs.artifact-digest) }}
           RELEASE_ARTIFACT_ID: ${{ needs.prepare-release.outputs.release_artifact_id }}
           RELEASE_ARTIFACT_DIGEST: ${{ needs.prepare-release.outputs.release_artifact_digest }}
           MANIFEST_SHA256: ${{ needs.prepare-release.outputs.manifest_sha256 }}
