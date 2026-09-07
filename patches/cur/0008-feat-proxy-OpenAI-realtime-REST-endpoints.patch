@@ -9,10 +9,10 @@ Subject: [PATCH 08/11] feat: proxy OpenAI realtime REST endpoints
  .../handler/openai_realtime_calls_test.go     | 302 +++++++++++++
  backend/internal/server/routes/gateway.go     |  22 +
  .../internal/server/routes/gateway_test.go    |  29 ++
- .../prompt_audit_route_coverage_test.go       |  12 +-
+ .../prompt_audit_route_coverage_test.go       |  10 +
  .../internal/service/openai_realtime_calls.go | 380 ++++++++++++++++
  .../service/openai_realtime_calls_test.go     | 412 ++++++++++++++++++
- 8 files changed, 1426 insertions(+), 1 deletion(-)
+ 8 files changed, 1425 insertions(+)
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
 index 8ee8928b2540bdb8d3712a4318f64d7767f2b5cc..80ad3e686ce6474dfc7c951ee1f7486c6c822dee 100644
@@ -615,10 +615,10 @@ index 0000000000000000000000000000000000000000..d3cf895bacca892b6d541f91bc8e5238
 +	}
 +}
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index cace97ea8402476267976111d1da79ad6a3715d7..8f7af707d397850fbf9f8c83b9a7a181a268941d 100644
+index 68a2a9e5141860fc9c8fa8cb823058911a6032b6..ce3912ec1ff9a15e4082c704fbc569c80953c096 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -261,2 +261,24 @@ func RegisterGatewayRoutes(
+@@ -262,2 +262,24 @@ func RegisterGatewayRoutes(
  		})
 +		realtimeRESTHandler := func(c *gin.Context) {
 +			if getGroupPlatform(c) != service.PlatformOpenAI {
@@ -680,10 +680,10 @@ index 03f4b97fcc0d4dc8ae2fdfe10cccc3c1bae707ca..3f545b22ecf7f8ad7e6e42366be6a854
 +
  func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
 diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-index 97953c5fb12aec009787a4a0c71421ebedf38ff3..e1cf21da618990f51d4bf9ec85c4dd11fb2a0def 100644
+index 0083c8b95544bbccad5652a8709c1b39e29cbe6a..f954e135142f467ec400f2b199789e1e4a41a10f 100644
 --- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
 +++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-@@ -59,2 +59,12 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
+@@ -59,1 +59,11 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
 +		"/realtime/client_secrets":              "realtime control request is forwarded outside the Codex Chat and Responses transformers",
 +		"/realtime/translations/client_secrets": "realtime translation control request is forwarded outside the Codex Chat and Responses transformers",
 +		"/realtime/calls":                       "realtime call request is forwarded outside the Codex Chat and Responses transformers",
@@ -694,12 +694,10 @@ index 97953c5fb12aec009787a4a0c71421ebedf38ff3..e1cf21da618990f51d4bf9ec85c4dd11
 +		"/realtime/calls/:call_id/reject":       "realtime call control request is forwarded outside the Codex Chat and Responses transformers",
 +		"/realtime/sessions":                    "realtime session request is forwarded outside the Codex Chat and Responses transformers",
 +		"/realtime/transcription_sessions":      "realtime transcription session request is forwarded outside the Codex Chat and Responses transformers",
--		"/custom-voices":             "voice profile management has no model prompt",
-+		"/custom-voices":                        "voice profile management has no model prompt",
  	}
 diff --git a/backend/internal/service/openai_realtime_calls.go b/backend/internal/service/openai_realtime_calls.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..9844270d2b575ae30eefd9dfe21e4f3b838ac386
+index 0000000000000000000000000000000000000000..a0a1b3e8a8e20902fab37efe8fdc7bd2e89525fe
 --- /dev/null
 +++ b/backend/internal/service/openai_realtime_calls.go
 @@ -0,0 +1,380 @@
@@ -924,7 +922,7 @@ index 0000000000000000000000000000000000000000..9844270d2b575ae30eefd9dfe21e4f3b
 +		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 +		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 +		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-+		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
++		if s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody) {
 +			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 +				Platform:           account.Platform,
 +				AccountID:          account.ID,

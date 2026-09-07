@@ -13,10 +13,10 @@ Subject: [PATCH 07/11] feat: proxy OpenAI realtime WebSocket sessions
  .../service/openai_ws_forwarder_ingress.go    |  48 ++++++
  .../service/openai_ws_forwarder_payload.go    |  75 +++++++-
  .../openai_ws_forwarder_success_test.go       |  28 +++
- .../service/openai_ws_v2/passthrough_relay.go | 112 +++++++++---
+ .../service/openai_ws_v2/passthrough_relay.go |  97 +++++++++--
  .../passthrough_relay_internal_test.go        |  60 +++++++
- .../openai_ws_v2_passthrough_adapter.go       | 144 +++++++++++-----
- 12 files changed, 604 insertions(+), 113 deletions(-)
+ .../openai_ws_v2_passthrough_adapter.go       |  71 ++++++--
+ 12 files changed, 554 insertions(+), 75 deletions(-)
 
 diff --git a/backend/internal/handler/endpoint.go b/backend/internal/handler/endpoint.go
 index b45b101d890eb59fbeeee0814c4fcb646e8afc2c..8ee8928b2540bdb8d3712a4318f64d7767f2b5cc 100644
@@ -38,10 +38,10 @@ index b45b101d890eb59fbeeee0814c4fcb646e8afc2c..8ee8928b2540bdb8d3712a4318f64d77
 +		}
  		// OpenAI forwards everything to the Responses API.
 diff --git a/backend/internal/handler/openai_gateway_handler.go b/backend/internal/handler/openai_gateway_handler.go
-index ce67e07e85d86b36374452fe92109f18fc089d0a..51d9826183350fa7efaa9c84dcc4efd61c895b0b 100644
+index 741379e63169a262aef4c3b82965fc8f772f2178..35dd4c3a8f6a2c637092897b01fb0a5a7eddbad2 100644
 --- a/backend/internal/handler/openai_gateway_handler.go
 +++ b/backend/internal/handler/openai_gateway_handler.go
-@@ -2148,2 +2148,7 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
+@@ -2234,2 +2234,7 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
  
 +type openAIWebSocketEndpointOptions struct {
 +	Realtime    bool
@@ -49,7 +49,7 @@ index ce67e07e85d86b36374452fe92109f18fc089d0a..51d9826183350fa7efaa9c84dcc4efd6
 +}
 +
  // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
-@@ -2151,2 +2156,18 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
+@@ -2237,2 +2242,18 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
  func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 +	h.openAIWebSocket(c, openAIWebSocketEndpointOptions{})
 +}
@@ -68,16 +68,16 @@ index ce67e07e85d86b36374452fe92109f18fc089d0a..51d9826183350fa7efaa9c84dcc4efd6
 +
 +func (h *OpenAIGatewayHandler) openAIWebSocket(c *gin.Context, opts openAIWebSocketEndpointOptions) {
  	if !isOpenAIWSUpgradeRequest(c.Request) {
-@@ -2170,3 +2191,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2256,3 +2277,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  		c,
 -		"handler.openai_gateway.responses_ws",
 +		openAIWebSocketLoggerName(opts),
  		zap.Int64("user_id", subject.UserID),
-@@ -2175,2 +2196,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2261,2 +2282,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  		zap.Bool("openai_ws_mode", true),
 +		zap.Bool("realtime", opts.Realtime),
  	)
-@@ -2226,39 +2248,49 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2312,39 +2334,49 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
 -	firstMessageTimeout := service.ResolveOpenAIWSClientFirstMessageTimeout(h.cfg)
 -	msgType, firstMessage, err := service.ReadOpenAIWSClientMessage(
@@ -157,17 +157,17 @@ index ce67e07e85d86b36374452fe92109f18fc089d0a..51d9826183350fa7efaa9c84dcc4efd6
 -		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "model is required in first response.create payload")
 +		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, openAIWebSocketMissingModelReason(opts))
  		return
-@@ -2298,3 +2330,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2394,3 +2426,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
 -	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 +	if !opts.Realtime && imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
  		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
-@@ -2493,3 +2525,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2587,3 +2619,3 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  			apiKey.GroupID,
 -			previousResponseID,
 +			openAIWebSocketPreviousResponseID(previousResponseID, opts),
  			sessionHash,
-@@ -2874,3 +2906,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -2984,3 +3016,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  		for {
 -			err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks)
 +			var err error
@@ -181,7 +181,7 @@ index ce67e07e85d86b36374452fe92109f18fc089d0a..51d9826183350fa7efaa9c84dcc4efd6
 +				err = h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks)
 +			}
  			if err == nil {
-@@ -2989,2 +3030,54 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
+@@ -3099,2 +3140,54 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
  
 +func openAIWebSocketLoggerName(opts openAIWebSocketEndpointOptions) string {
 +	if opts.Realtime {
@@ -237,10 +237,10 @@ index ce67e07e85d86b36374452fe92109f18fc089d0a..51d9826183350fa7efaa9c84dcc4efd6
 +
  func (h *OpenAIGatewayHandler) recoverResponsesPanic(c *gin.Context, streamStarted *bool) {
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index deed8d2c84c75f7523d8d3cc4f7862b3cbdbb736..cace97ea8402476267976111d1da79ad6a3715d7 100644
+index 233fe2a3f30b4ec531464249d53da9fc80178a2f..68a2a9e5141860fc9c8fa8cb823058911a6032b6 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -231,2 +231,32 @@ func RegisterGatewayRoutes(
+@@ -232,2 +232,32 @@ func RegisterGatewayRoutes(
  		})
 +		gateway.GET("/realtime", func(c *gin.Context) {
 +			platform := getGroupPlatform(c)
@@ -273,7 +273,7 @@ index deed8d2c84c75f7523d8d3cc4f7862b3cbdbb736..cace97ea8402476267976111d1da79ad
 +			h.OpenAIGateway.RealtimeTranslationWebSocket(c)
 +		})
  		// OpenAI Chat Completions API: auto-route based on group platform
-@@ -318,10 +348,2 @@ func RegisterGatewayRoutes(
+@@ -319,10 +349,2 @@ func RegisterGatewayRoutes(
  		gateway.DELETE("/custom-voices/:voice_id", customVoicePathHandler)
 -		gateway.GET("/realtime", func(c *gin.Context) {
 -			if getGroupPlatform(c) != service.PlatformGrok {
@@ -284,8 +284,8 @@ index deed8d2c84c75f7523d8d3cc4f7862b3cbdbb736..cace97ea8402476267976111d1da79ad
 -			h.OpenAIGateway.GrokRealtime(c)
 -		})
  		gateway.POST("/web_search", func(c *gin.Context) {
-@@ -435,3 +457,2 @@ func RegisterGatewayRoutes(
- 	r.GET("/videos/:request_id/content", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, videoContentHandler)
+@@ -442,3 +464,2 @@ func RegisterGatewayRoutes(
+ 	rootRoute(http.MethodGet, "/videos/:request_id/content", bodyLimit, videoContentHandler)
 -
  	rootVoiceHandler := func(endpoint string) gin.HandlerFunc {
 diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
@@ -323,7 +323,7 @@ index 9ab241bdf4f5514051396a0666288e86746cf793..03f4b97fcc0d4dc8ae2fdfe10cccc3c1
 +
  func TestGatewayRoutesAsyncImagesPathsAreRegistered(t *testing.T) {
 diff --git a/backend/internal/service/openai_fast_policy_ws_test.go b/backend/internal/service/openai_fast_policy_ws_test.go
-index 607d32a22a9613c3e5ee1a8667b2752838329297..5c4598a720c479f2fa7056e5a41586096571d4bc 100644
+index c154f32abfc1fb3e17db6c209ea2ea6ef19354ae..7fe0183a52a4f7990248aa140adc00f3402b50b0 100644
 --- a/backend/internal/service/openai_fast_policy_ws_test.go
 +++ b/backend/internal/service/openai_fast_policy_ws_test.go
 @@ -866,2 +866,16 @@ func TestPolicyModelFromSessionFrame_OnlySessionUpdate(t *testing.T) {
@@ -354,7 +354,7 @@ index b5a466949f3955c9ba5fd92be8d6cf2cec79d94e..67ebfc1b191904bb4ec220f485a81141
 +	// MaxReasoningEffortOverLimit controls whether an over-limit value is capped or rejected.
  	MaxReasoningEffortOverLimit string
 diff --git a/backend/internal/service/openai_ws_forwarder_ingress.go b/backend/internal/service/openai_ws_forwarder_ingress.go
-index e57c2dd89938efd80551cff14d5a76dde7d06ddf..b2db790f6103258c7a0496be9d1a66fca4159239 100644
+index f24dc256978264b541a9db4cb7fa13ddc411871d..f95016198ec016c4eca023bbafbd2b49b5e32daf 100644
 --- a/backend/internal/service/openai_ws_forwarder_ingress.go
 +++ b/backend/internal/service/openai_ws_forwarder_ingress.go
 @@ -151,2 +151,4 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
@@ -362,7 +362,7 @@ index e57c2dd89938efd80551cff14d5a76dde7d06ddf..b2db790f6103258c7a0496be9d1a66fc
 +				"/v1/responses",
 +				"",
  			)
-@@ -1896 +1898,47 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
+@@ -1947 +1949,47 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
  }
 +
 +// ProxyRealtimeWebSocketFromClient relays an OpenAI Realtime connection over
@@ -411,10 +411,10 @@ index e57c2dd89938efd80551cff14d5a76dde7d06ddf..b2db790f6103258c7a0496be9d1a66fc
 +	return s.proxyResponsesWebSocketV2Passthrough(ctx, c, clientConn, account, token, firstClientMessage, hooks, wsDecision, upstreamEndpoint, model)
 +}
 diff --git a/backend/internal/service/openai_ws_forwarder_payload.go b/backend/internal/service/openai_ws_forwarder_payload.go
-index 939db28437880d8c1eb9cfde85969bc58ac383c1..785cbfbb52b64d8bf459049878c0c3ea101f16d5 100644
+index bc24ebc265509c62890228dea79ad9db3fcbe0c7..681a69072b58fa6780e02dafd31f528d78e51cce 100644
 --- a/backend/internal/service/openai_ws_forwarder_payload.go
 +++ b/backend/internal/service/openai_ws_forwarder_payload.go
-@@ -76,2 +76,67 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
+@@ -77,2 +77,67 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
  
 +func (s *OpenAIGatewayService) buildOpenAIRealtimeWSURL(account *Account, model string) (string, error) {
 +	return s.buildOpenAIRealtimeWSURLForEndpoint(account, "/v1/realtime", model)
@@ -482,7 +482,7 @@ index 939db28437880d8c1eb9cfde85969bc58ac383c1..785cbfbb52b64d8bf459049878c0c3ea
 +}
 +
  func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
-@@ -155,7 +220,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
+@@ -156,7 +221,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
  
 -	betaValue := openAIWSBetaV2Value
 -	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
@@ -532,44 +532,10 @@ index 6923352d7d55cada7cbccc1fb20ca09e5429d2f6..bd1d68611683cebe7fdc2a6821132dad
 +
  func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(t *testing.T) {
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay.go b/backend/internal/service/openai_ws_v2/passthrough_relay.go
-index fdb539a073242fdf0c5fcf20bcd6e3328bd55ee8..aeb9916ab4e659db9183ed478dfc4c85498ec761 100644
+index 3c6bd076dcef463896d7f8b2d42b045e06f25b49..624c71245f50b403d6b941395c3bc5cba5fbe70b 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay.go
 +++ b/backend/internal/service/openai_ws_v2/passthrough_relay.go
-@@ -78,2 +78,3 @@ type RelayOptions struct {
- 	FirstMessageType                coderws.MessageType
-+	InitialRequestModel             string
- 	FirstMessageSent                bool
-@@ -157,2 +158,5 @@ func Relay(
- 	result := RelayResult{RequestModel: strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())}
-+	if result.RequestModel == "" {
-+		result.RequestModel = strings.TrimSpace(options.InitialRequestModel)
-+	}
- 	if clientConn == nil || upstreamConn == nil {
-@@ -247,3 +251,3 @@ func Relay(
- 		})
--	} else {
-+	} else if len(firstClientMessage) > 0 {
- 		if err := writeUpstream(firstMessageType, firstClientMessage); err != nil {
-@@ -259,2 +263,3 @@ func Relay(
- 		}
-+		clientToUpstreamFrames.Add(1)
- 		emitRelayTrace(onTrace, RelayTraceEvent{
-@@ -265,6 +270,4 @@ func Relay(
- 		})
-+		markActivity()
- 	}
--	clientToUpstreamFrames.Add(1)
--	markActivity()
--
- 	exitCh := make(chan relayExitSignal, 3)
-@@ -536,6 +539,2 @@ func runUpstreamToClient(
- 			graceful := isDisconnectError(err)
--			// A clean WebSocket close only describes the transport handshake. Once
--			// the upstream has started a Responses turn, success still requires a
--			// terminal protocol event. Treat an early 1000/EOF as a relay failure so
--			// the adapter does not report relay_completed with an active turn.
- 			if graceful && openAIWSRelayActiveTurnID(state) != "" {
-@@ -1070,14 +1069,10 @@ func parseUsageAndAccumulate(
+@@ -1103,14 +1103,10 @@ func parseUsageAndAccumulate(
  
 -	inputResult := usageResult.Get("input_tokens")
 -	if !inputResult.Exists() {
@@ -592,7 +558,7 @@ index fdb539a073242fdf0c5fcf20bcd6e3328bd55ee8..aeb9916ab4e659db9183ed478dfc4c85
 +		"prompt_tokens_details.cached_tokens",
 +	)
  	imageTokens := usageResult.Get("output_tokens_details.image_tokens").Int()
-@@ -1108,2 +1103,15 @@ func parseUsageAndAccumulate(
+@@ -1132,2 +1128,15 @@ func parseUsageAndAccumulate(
  	}
 +	cachedTokens = realtimeCachedTokensWithoutAudio(usageResult, cachedTokens)
 +	inputTokens = realtimeTextTokensFromUsage(
@@ -607,8 +573,8 @@ index fdb539a073242fdf0c5fcf20bcd6e3328bd55ee8..aeb9916ab4e659db9183ed478dfc4c85
 +		[]string{"output_tokens_details.text_tokens", "output_token_details.text_tokens", "completion_tokens_details.text_tokens"},
 +		[]string{"output_tokens_details.audio_tokens", "output_token_details.audio_tokens", "completion_tokens_details.audio_tokens"},
 +	)
- 	parsedUsage := Usage{
-@@ -1127,2 +1135,56 @@ func parseUsageAndAccumulate(
+ 	reasoningTokens := usageResult.Get("output_tokens_details.reasoning_tokens").Int()
+@@ -1160,2 +1169,56 @@ func parseUsageAndAccumulate(
  
 +func realtimeTextTokensFromUsage(usage gjson.Result, aggregate int, textPaths, audioPaths []string) int {
 +	audioResult := firstUsageResult(usage, audioPaths...)
@@ -665,7 +631,7 @@ index fdb539a073242fdf0c5fcf20bcd6e3328bd55ee8..aeb9916ab4e659db9183ed478dfc4c85
 +}
 +
  func relayUsageHasTokens(usage Usage) bool {
-@@ -1168,2 +1230,12 @@ func finalizeRelayTurnUsage(state *relayState) Usage {
+@@ -1201,2 +1264,12 @@ func finalizeRelayTurnUsage(state *relayState) Usage {
  
 +func firstUsageResult(value gjson.Result, paths ...string) gjson.Result {
 +	for _, path := range paths {
@@ -746,24 +712,18 @@ index 80fef47d44042d023ccf940131c87c3efb296bf0..8e3a416617dcaa04fad99d2052ed84b7
 +
  func TestParseUsageAndAccumulateIncludesIndependentReasoningTokens(t *testing.T) {
 diff --git a/backend/internal/service/openai_ws_v2_passthrough_adapter.go b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
-index 715a747918153562701c486480d007fe52edd5ae..26aea6f220e2b4c9a0154ec44c8003e230bf137c 100644
+index 556ad0627436419c07db3d6d9457870325761eae..2799d3c398591fe79c914af11a63c8f5040c9735 100644
 --- a/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 +++ b/backend/internal/service/openai_ws_v2_passthrough_adapter.go
 @@ -19,2 +19,3 @@ import (
  	"github.com/tidwall/gjson"
 +	"github.com/tidwall/sjson"
  )
-@@ -595,2 +596,35 @@ func openAIWSPassthroughIsTerminalOutput(payload []byte) bool {
+@@ -595,2 +596,26 @@ func openAIWSPassthroughIsTerminalOutput(payload []byte) bool {
  
 +func rewriteOpenAIRealtimeSessionModel(payload []byte, model string) []byte {
 +	model = strings.TrimSpace(model)
-+	if len(payload) == 0 || model == "" {
-+		return payload
-+	}
-+	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "session.update" {
-+		return payload
-+	}
-+	if !gjson.GetBytes(payload, "session.model").Exists() {
++	if len(payload) == 0 || model == "" || strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "session.update" || !gjson.GetBytes(payload, "session.model").Exists() {
 +		return payload
 +	}
 +	updated, err := sjson.SetBytes(payload, "session.model", model)
@@ -773,129 +733,56 @@ index 715a747918153562701c486480d007fe52edd5ae..26aea6f220e2b4c9a0154ec44c8003e2
 +	return updated
 +}
 +
-+func rewriteOpenAIRealtimeSessionModelForAccount(account *Account, payload []byte, requestedModel string) []byte {
-+	return rewriteOpenAIRealtimeSessionModel(payload, openAIRealtimeUpstreamModel(account, requestedModel))
-+}
-+
 +func openAIRealtimeUpstreamModel(account *Account, model string) string {
 +	model = strings.TrimSpace(model)
-+	if model == "" {
-+		return ""
-+	}
-+	if account == nil {
++	if model == "" || account == nil {
 +		return model
 +	}
 +	return normalizeOpenAIModelForUpstream(account, account.GetMappedModel(model))
 +}
 +
++func rewriteOpenAIRealtimeSessionModelForAccount(account *Account, payload []byte, requestedModel string) []byte {
++	return rewriteOpenAIRealtimeSessionModel(payload, openAIRealtimeUpstreamModel(account, requestedModel))
++}
++
  var _ openaiwsv2.FrameConn = (*openAIWSClientFrameConn)(nil)
-@@ -674,2 +708,4 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -674,2 +699,4 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	wsDecision OpenAIWSProtocolDecision,
 +	upstreamEndpoint string,
 +	realtimeModel string,
  ) error {
-@@ -703,3 +739,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
- 	}
-+	realtimeUpstreamModel := ""
-+	if isOpenAIRealtimeWSEndpoint(upstreamEndpoint) {
-+		realtimeUpstreamModel = openAIRealtimeUpstreamModel(account, realtimeModel)
-+		if realtimeUpstreamModel != "" {
-+			realtimeModel = realtimeUpstreamModel
-+		}
-+	}
+@@ -704,2 +731,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	requestModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
 +	if requestModel == "" {
 +		requestModel = strings.TrimSpace(realtimeModel)
 +	}
  	requestPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
-@@ -770,2 +816,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -734,2 +764,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	}
 +	if initialRequestModel == "" {
 +		initialRequestModel = strings.TrimSpace(realtimeModel)
 +	}
- 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
-@@ -793,2 +842,3 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 	if hooks != nil && hooks.MapRequestModel != nil {
+@@ -793,2 +826,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	firstClientMessage = updatedFirst
-+	firstClientMessage = rewriteOpenAIRealtimeSessionModel(firstClientMessage, realtimeModel)
++	realtimeUpstreamModel := ""
++	if isOpenAIRealtimeWSEndpoint(upstreamEndpoint) {
++		realtimeUpstreamModel = openAIRealtimeUpstreamModel(account, realtimeModel)
++		firstClientMessage = rewriteOpenAIRealtimeSessionModel(firstClientMessage, realtimeUpstreamModel)
++	}
  
-@@ -811,3 +861,3 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -811,3 +849,3 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	SetOpsUpstreamModel(c, initialUpstreamModel)
 -	wsURL, err := s.buildOpenAIResponsesWSURL(account)
-+	wsURL, err := s.buildOpenAIWSURL(account, upstreamEndpoint, realtimeModel)
++	wsURL, err := s.buildOpenAIWSURL(account, upstreamEndpoint, realtimeUpstreamModel)
  	if err != nil {
-@@ -1041,2 +1091,19 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1081,2 +1119,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			}
-+			// Refresh the captured session model before policy evaluation. Realtime
-+			// clients may change it in a session.update frame.
-+			sessionFrameModel := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload)
-+			if sessionFrameModel != "" {
-+				capturedSessionModel = sessionFrameModel
-+			}
 +			if realtimeUpstreamModel != "" {
-+				modelForSessionRewrite := sessionFrameModel
-+				if modelForSessionRewrite == "" {
-+					modelForSessionRewrite = capturedSessionModel
-+				}
-+				if modelForSessionRewrite == "" {
-+					modelForSessionRewrite = realtimeUpstreamModel
-+				}
-+				payload = rewriteOpenAIRealtimeSessionModelForAccount(account, payload, modelForSessionRewrite)
++				payload = rewriteOpenAIRealtimeSessionModel(payload, openAIRealtimeUpstreamModel(account, capturedSessionModel))
 +			}
-+			usageMeta.updateSessionRequestModel(payload)
- 			turnNo := int(completedTurns.Load()) + 1
-@@ -1045,37 +1112,20 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
- 			}
--			requestModelForThisFrame := ""
--			if isResponseCreate {
--				requestModelForThisFrame = usageMeta.requestModelForFrame(payload)
--				if requestModelForThisFrame == "" {
--					requestModelForThisFrame = capturedSessionModel
-+			requestModelForThisFrame := usageMeta.requestModelForFrame(payload)
-+			if requestModelForThisFrame == "" {
-+				requestModelForThisFrame = capturedSessionModel
-+			}
-+			if hooks != nil && hooks.BeforeRequest != nil {
-+				if err := hooks.BeforeRequest(turnNo, payload, requestModelForThisFrame); err != nil {
-+					return payload, nil, err
- 				}
--				if hooks != nil && hooks.BeforeRequest != nil {
--					if err := hooks.BeforeRequest(turnNo, payload, requestModelForThisFrame); err != nil {
--						return payload, nil, err
--					}
-+			}
-+			if isResponseCreate && hooks != nil && hooks.MapRequestModel != nil {
-+				upstreamModel, err := hooks.MapRequestModel(turnNo, requestModelForThisFrame)
-+				if err != nil {
-+					return payload, nil, err
- 				}
--				if hooks != nil && hooks.MapRequestModel != nil {
--					upstreamModel, err := hooks.MapRequestModel(turnNo, requestModelForThisFrame)
--					if err != nil {
--						return payload, nil, err
--					}
--					if upstreamModel = strings.TrimSpace(upstreamModel); upstreamModel != "" {
--						payload = s.ReplaceModelInBody(payload, upstreamModel)
--					}
-+				if upstreamModel = strings.TrimSpace(upstreamModel); upstreamModel != "" {
-+					payload = s.ReplaceModelInBody(payload, upstreamModel)
- 				}
- 			}
--			// 在评估策略前先刷新 capturedSessionModel：客户端可能通过
--			// session.update 修改 session-level model（Realtime /
--			// Responses WS 协议允许），如果不刷新就会出现
--			// "首帧 model=gpt-4o（pass）→ session.update 改成 gpt-5.5
--			// → 不带 model 的 response.create fallback 到 gpt-4o" 的
--			// 绕过路径。这里只看 session.update 事件中的 session.model
--			// 字段，response.create 自己的 model 仍然由其本帧字段决定。
--			if updated := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload); updated != "" {
--				capturedSessionModel = updated
--			}
--			usageMeta.updateSessionRequestModel(payload)
--			if requestModelForThisFrame == "" {
--				requestModelForThisFrame = usageMeta.requestModelForFrame(payload)
--			}
- 			// Per-frame model first; if the client omits "model" on a
-@@ -1131,14 +1181,19 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+ 			usageMeta.updateSessionRequestModel(payload)
+@@ -1136,14 +1177,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	}
 -	upstreamFirstMessageSent := false
 -	firstWriteCtx, cancelFirstWrite := context.WithTimeout(ctx, s.openAIWSWriteTimeout())
@@ -907,8 +794,8 @@ index 715a747918153562701c486480d007fe52edd5ae..26aea6f220e2b4c9a0154ec44c8003e2
 -			fmt.Errorf("write first upstream websocket request: %w", firstWriteErr),
 -			false,
 -		)
-+	upstreamFirstMessageSent := len(firstClientMessage) > 0
-+	if upstreamFirstMessageSent {
++	hasFirstClientMessage := len(firstClientMessage) > 0
++	if hasFirstClientMessage {
 +		firstWriteCtx, cancelFirstWrite := context.WithTimeout(ctx, s.openAIWSWriteTimeout())
 +		firstWriteErr := relayUpstreamFrameConn.WriteFrame(firstWriteCtx, coderws.MessageText, firstClientMessage)
 +		cancelFirstWrite()
@@ -919,17 +806,14 @@ index 715a747918153562701c486480d007fe52edd5ae..26aea6f220e2b4c9a0154ec44c8003e2
 +				false,
 +			)
 +		}
-+	}
-+	startClientAfterFirstDownstream := !upstreamFirstMessageSent
-+	if upstreamFirstMessageSent && !isOpenAIRealtimeWSEndpoint(upstreamEndpoint) {
-+		startClientAfterFirstDownstream = true
  	}
 -	upstreamFirstMessageSent = true
++	startClientAfterFirstDownstream := hasFirstClientMessage && !isOpenAIRealtimeWSEndpoint(upstreamEndpoint)
  
-@@ -1184,4 +1239,5 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
+@@ -1189,4 +1232,4 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  			FirstMessageType:                coderws.MessageText,
-+			InitialRequestModel:             strings.TrimSpace(realtimeModel),
- 			FirstMessageSent:                upstreamFirstMessageSent,
+-			FirstMessageSent:                upstreamFirstMessageSent,
 -			StartClientAfterFirstDownstream: true,
++			FirstMessageSent:                true,
 +			StartClientAfterFirstDownstream: startClientAfterFirstDownstream,
  			ReadClientFrame:                 readNextClientFrame,

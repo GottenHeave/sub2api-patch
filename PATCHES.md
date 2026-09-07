@@ -1,10 +1,11 @@
 # Patchset
 
 The current downstream delta is stored as replayable capability patches under
-`patches/cur`. The series is based on upstream `0.2.0` at commit
-`5097b31457e6dc9f49e5f5c9c72b925ce79543b3`.
+`patches/cur`. The series is based on the upstream `0.2.2` release line at
+the latest CI-eligible commit selected on 2026-09-07,
+`5485f368b29d05adb95a00f71801c7c23d8f48af`.
 
-"Upstream status" below means the state of that pinned upstream commit. It does
+"Upstream status" below means the state of that selected upstream commit. It does
 not claim that a later upstream branch or release has accepted the capability.
 
 ## Capability tree
@@ -45,8 +46,8 @@ not claim that a later upstream branch or release has accepted the capability.
     - Patch 6 adds `/v1/audio/transcriptions` and `/transcribe`, request-body
       reading and limits, parser invocation, handler dispatch, route
       registration, and focused handler tests.
-    - Patch 6 owns the prompt-audit classifications for both transcription
-      routes, so selecting Realtime REST alone does not create stale entries.
+    - Patch 6 classifies the explicit `/v1/audio/transcriptions` POST route.
+      The root alias uses the shared `rootRoute` middleware registration.
   - Billing boundary
     - Patch 5 records one best-effort usage row with zero tokens and zero cost.
       It adds no audio pricing, balance or quota deduction, audio-token schema,
@@ -80,7 +81,7 @@ not claim that a later upstream branch or release has accepted the capability.
 
 ## Patch ownership and upstream status
 
-| Patch | Topic and owned surface | Status in pinned upstream `0.2.0` |
+| Patch | Topic and owned surface | Status in selected upstream |
 | --- | --- | --- |
 | 1 | Downstream Docker image publication; `.github/workflows/docker-ghcr.yml` | Workflow absent |
 | 2 | pnpm BuildKit cache mount; `Dockerfile` | Frontend build exists without the pnpm store cache mount |
@@ -125,13 +126,12 @@ test. It remains independent of audio pricing and accounting.
 
 ## Replay evidence
 
-The complete 11-patch series cleanly replays from the pinned upstream commit.
+The complete 11-patch series cleanly replays from the selected upstream commit.
 The replay produces tree
-`db5773c6a547bba992cba30430b1ae5fbf208234`, exactly matching approved
-integration commit `f50d520a5`.
+`f189f1721a9eeb2973c4347aefede025bf728b8d`, exactly matching the refreshed
+integration tree.
 
-Verification recorded for that exact final tree includes `go test ./...`.
-Independent checks recorded during the rebuild cover Docker publication, the
+Verification recorded during the rebuild covers Docker publication, the
 pnpm cache, the singular cached-token parser, Realtime transport without
 transcription, transcription without Realtime, and Codex prompt preservation.
 After ordering the transcription service before its ingress and Realtime, and

@@ -7,8 +7,8 @@ Subject: [PATCH 06/11] feat: expose OpenAI audio transcription transport
  .../handler/openai_audio_transcriptions.go    | 298 ++++++++
  .../openai_audio_transcriptions_test.go       | 698 ++++++++++++++++++
  backend/internal/server/routes/gateway.go     |  16 +
- .../prompt_audit_route_coverage_test.go       |   8 +-
- 4 files changed, 1017 insertions(+), 3 deletions(-)
+ .../prompt_audit_route_coverage_test.go       |   9 +-
+ 4 files changed, 1017 insertions(+), 4 deletions(-)
 
 diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
 new file mode 100644
@@ -1019,10 +1019,10 @@ index 0000000000000000000000000000000000000000..787c5233f70a9600b583cd5b8b6eec07
 +	}
 +}
 diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
-index fe753b2389932e80709e0cc9a4b24b61e2674274..deed8d2c84c75f7523d8d3cc4f7862b3cbdbb736 100644
+index e2db4fb6fe120b13fb2da03ab8c8763c2f9430d5..233fe2a3f30b4ec531464249d53da9fc80178a2f 100644
 --- a/backend/internal/server/routes/gateway.go
 +++ b/backend/internal/server/routes/gateway.go
-@@ -252,2 +252,10 @@ func RegisterGatewayRoutes(
+@@ -253,2 +253,10 @@ func RegisterGatewayRoutes(
  		})
 +		gateway.POST("/audio/transcriptions", func(c *gin.Context) {
 +			if !isOpenAIOnlyEndpointGatewayPlatform(c) {
@@ -1033,9 +1033,9 @@ index fe753b2389932e80709e0cc9a4b24b61e2674274..deed8d2c84c75f7523d8d3cc4f7862b3
 +			h.OpenAIGateway.AudioTranscriptions(c)
 +		})
  		gateway.POST("/images/generations", imagesHandler)
-@@ -402,2 +410,10 @@ func RegisterGatewayRoutes(
+@@ -409,2 +417,10 @@ func RegisterGatewayRoutes(
  	})
-+	r.POST("/transcribe", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, func(c *gin.Context) {
++	rootRoute(http.MethodPost, "/transcribe", bodyLimit, func(c *gin.Context) {
 +		if !isOpenAIOnlyEndpointGatewayPlatform(c) {
 +			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 +			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Audio transcriptions API is not supported for this platform"}})
@@ -1043,19 +1043,20 @@ index fe753b2389932e80709e0cc9a4b24b61e2674274..deed8d2c84c75f7523d8d3cc4f7862b3
 +		}
 +		h.OpenAIGateway.AudioTranscriptions(c)
 +	})
- 	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, imagesHandler)
+ 	rootRoute(http.MethodPost, "/images/generations", bodyLimit, imagesHandler)
 diff --git a/backend/internal/server/routes/prompt_audit_route_coverage_test.go b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-index af4272cb897b8dd7629aa5d0e34c9f68ccda2a9e..97953c5fb12aec009787a4a0c71421ebedf38ff3 100644
+index af4272cb897b8dd7629aa5d0e34c9f68ccda2a9e..0083c8b95544bbccad5652a8709c1b39e29cbe6a 100644
 --- a/backend/internal/server/routes/prompt_audit_route_coverage_test.go
 +++ b/backend/internal/server/routes/prompt_audit_route_coverage_test.go
-@@ -53,5 +53,7 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
+@@ -53,6 +53,7 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
  	excluded := map[string]string{
 -		"/messages/count_tokens":     "tokenization only; it does not execute a model request",
 -		"/images/batches/:id/cancel": "control-plane cancellation with no user prompt",
 -		"/stt":                       "speech transcription is not a text-generation prompt",
+-		"/custom-voices":             "voice profile management has no model prompt",
 +		"/messages/count_tokens":                "tokenization only; it does not execute a model request",
 +		"/images/batches/:id/cancel":            "control-plane cancellation with no user prompt",
 +		"/stt":                                  "speech transcription is not a text-generation prompt",
 +		"/audio/transcriptions":                 "speech transcription is forwarded outside the Codex Chat and Responses transformers",
-+		"/transcribe":                           "speech transcription is forwarded outside the Codex Chat and Responses transformers",
- 		"/custom-voices":             "voice profile management has no model prompt",
++		"/custom-voices":                        "voice profile management has no model prompt",
+ 	}

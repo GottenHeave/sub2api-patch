@@ -30,7 +30,11 @@ def trim_realtime_optional_context(path: Path) -> None:
         if line.startswith("diff --git "):
             in_route_audit = line.rstrip("\r\n") == ROUTE_AUDIT_DIFF
         match = HUNK_HEADER.match(line.rstrip("\r\n")) if in_route_audit else None
-        if match and index + 1 < len(lines) and '"/transcribe":' in lines[index + 1]:
+        if (
+            match
+            and index + 1 < len(lines)
+            and '"/custom-voices":' in lines[index + 1]
+        ):
             end = index + 1
             while end < len(lines) and not lines[end].startswith(("@@ ", "diff --git ")):
                 end += 1
@@ -40,14 +44,12 @@ def trim_realtime_optional_context(path: Path) -> None:
             additions = [item for item in body if item.startswith("+")]
             contexts = [item for item in body if item.startswith(" ")]
             if (
-                (old_count, new_count) != (3, 13)
-                or len(deletions) != 1
-                or len(additions) != 11
+                (old_count, new_count) != (2, 12)
+                or deletions
+                or len(additions) != 10
                 or len(contexts) != 2
-                or '"/transcribe":' not in contexts[0]
+                or '"/custom-voices":' not in contexts[0]
                 or contexts[-1].strip() != "}"
-                or '"/custom-voices":' not in deletions[0]
-                or '"/custom-voices":' not in additions[-1]
             ):
                 raise SystemExit(f"unexpected Realtime optional-context hunk in {path}")
             suffix = match.group(5)
@@ -56,8 +58,8 @@ def trim_realtime_optional_context(path: Path) -> None:
                 f"@@ -{old_start + 1},{old_count - 1} "
                 f"+{new_start + 1},{new_count - 1} @@{suffix}{newline}"
             )
-            output.extend(additions[:-1])
-            output.extend((deletions[0], additions[-1], contexts[-1]))
+            output.extend(additions)
+            output.append(contexts[-1])
             index = end
             trimmed += 1
             continue

@@ -9,10 +9,10 @@ Subject: [PATCH 03/11] fix: parse singular OpenAI cached token details
  2 files changed, 20 insertions(+)
 
 diff --git a/backend/internal/service/openai_gateway_response_handling.go b/backend/internal/service/openai_gateway_response_handling.go
-index 104f319dc56a3e2e71a8a4a90115a7ba1f9d9306..9b55c87cebfc1bb3202e4ca86739e78e5aa64533 100644
+index d5b35e85856b7016304d8c77d0fd1bccfb16ff04..71cbdbad47754b4f7629f88f72b48af26c74473a 100644
 --- a/backend/internal/service/openai_gateway_response_handling.go
 +++ b/backend/internal/service/openai_gateway_response_handling.go
-@@ -1524,2 +1524,3 @@ func openAICacheReadTokensFromUsage(value gjson.Result) int {
+@@ -1531,2 +1531,3 @@ func openAICacheReadTokensFromUsage(value gjson.Result) int {
  	for _, nested := range []gjson.Result{
 +		value.Get("input_token_details.cached_tokens"),
  		value.Get("input_tokens_details.cached_tokens"),

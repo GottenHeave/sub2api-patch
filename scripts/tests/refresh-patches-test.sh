@@ -136,7 +136,7 @@ diff -ru "$tmp/post-swap-original-series" "$post_swap_metadata/patches/cur"
 test -z "$(find "$post_swap_metadata/patches" -maxdepth 1 -type d -name '.*' -print)"
 test -z "$(find "$post_swap_metadata" -maxdepth 1 -type d -name '.cur-backup.*' -print)"
 
-canonical_base="5097b31457e6dc9f49e5f5c9c72b925ce79543b3"
+canonical_base="5485f368b29d05adb95a00f71801c7c23d8f48af"
 real_patches=("$source_root"/patches/cur/*.patch)
 if [ "${#real_patches[@]}" -ne 11 ]; then
   echo "expected 11 canonical patches, found ${#real_patches[@]}" >&2
