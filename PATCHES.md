@@ -94,6 +94,33 @@ not claim that a later upstream branch or release has accepted the capability.
     - It covers transformed, raw passthrough, and Responses-shaped request
       bodies without adding a setting, admin API, or frontend control.
 
+## Codex Realtime proxy configuration
+
+Set these top-level keys in Codex `config.toml` when routing WebRTC through
+this proxy. Use the proxy API base, without `/realtime/calls` or a call ID:
+
+```toml
+experimental_realtime_webrtc_call_base_url = "https://your-proxy.example/v1"
+experimental_realtime_ws_base_url = "https://your-proxy.example/v1"
+```
+
+The HTTP override is `experimental_realtime_webrtc_call_base_url`; without it,
+call creation uses the selected provider base. WebRTC sideband uses a separate
+base that defaults to `https://api.openai.com/v1`, so setting only the provider
+base does not route that connection through the proxy. Keep the existing Codex
+authentication configured with the proxy key; these URL settings do not set it.
+
+For V1, Codex appends `/realtime/calls` to the HTTP base and opens
+`wss://your-proxy.example/v1/realtime?intent=quicksilver&call_id=...` for the
+sideband. V3 uses `/v1/live` and `/v1/live/<call_id>` with these public API bases;
+the proxy retains upstream Live handling for that protocol.
+
+The [official configuration reference](https://developers.openai.com/codex/config-reference/)
+documents the WebSocket override. The separate HTTP override and provider
+fallback are in [Codex realtime setup](https://github.com/openai/codex/blob/main/codex-rs/core/src/realtime_conversation.rs),
+with endpoint construction in [HTTP calls](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/realtime_call.rs)
+and [WebSocket methods](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs).
+
 ## Patch ownership and upstream status
 
 | Patch | Topic and owned surface | Status in selected upstream |
@@ -143,7 +170,7 @@ test. It remains independent of audio pricing and accounting.
 
 The complete 11-patch series cleanly replays from the selected upstream commit.
 The replay produces tree
-`740c9d44902bdc254438f933df75cee7a68df330`, exactly matching the refreshed
+`11e770ee9a65f7cb1b3260d8b09979052fceaeaf`, exactly matching the refreshed
 integration tree.
 
 The functional follow-up adds regression coverage for protocol-preserving
