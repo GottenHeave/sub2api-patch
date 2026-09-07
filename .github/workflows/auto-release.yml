@@ -73,6 +73,7 @@ jobs:
           git -C worktree remote add upstream "$UPSTREAM_GIT_URL"
           git -C worktree remote add downstream "https://github.com/${GITHUB_REPOSITORY}.git"
           git -C worktree fetch --no-tags upstream "+refs/heads/main:refs/remotes/upstream/main"
+          git -C worktree fetch --no-tags upstream 'refs/tags/v*:refs/upstream-tags/v*'
           git -C worktree fetch --tags downstream "$EXPECTED_MAIN_SHA"
           if [ -n "$EXPECTED_MIRROR_SHA" ]; then
             git -C worktree fetch --no-tags downstream "$EXPECTED_MIRROR_SHA"
@@ -134,14 +135,17 @@ jobs:
             current_patched_tree=""
           fi
           patched_tree="$(git -C worktree rev-parse "$patched_commit^{tree}")"
-          if [ -n "$previous_version" ] && [ "$mirror_tree" = "$current_main_tree" ] && \
+          upstream_tag="$(git -C worktree for-each-ref --points-at "$UPSTREAM_SOURCE_SHA" --format='%(refname:strip=2)' refs/upstream-tags | sed -nE '/^v[0-9]+\.[0-9]+\.[0-9]+$/p' | sort -V | tail -1)"
+          upstream_version="${upstream_tag#v}"
+          upstream_version="${upstream_version:-$(tr -d '[:space:]' < worktree/backend/cmd/server/VERSION)}"
+          if [[ "$previous_version" == "v${upstream_version}-patch."* ]] && [ "$mirror_tree" = "$current_main_tree" ] && \
             [ "$mirror_tree" = "$current_mirror_tree" ] && [ "$patched_tree" = "$current_patched_tree" ]; then
             echo "Published branches already have the selected upstream and patchset content."
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          version="$(RELEASE_REPOSITORY="$GITHUB_REPOSITORY" sub2api-patch/scripts/compute-next-version.sh worktree)"
+          version="$(UPSTREAM_VERSION="$upstream_version" RELEASE_REPOSITORY="$GITHUB_REPOSITORY" sub2api-patch/scripts/compute-next-version.sh worktree)"
           git -C worktree tag "$version" "$patched_commit"
           echo "changed=true" >> "$GITHUB_OUTPUT"
           echo "resume=false" >> "$GITHUB_OUTPUT"
@@ -168,6 +172,10 @@ jobs:
             echo "$VERSION"
             echo
             echo "Base:"
+            upstream_tag="$(git -C worktree for-each-ref --points-at "$UPSTREAM_SOURCE_SHA" --format='%(refname:strip=2)' refs/upstream-tags | sed -nE '/^v[0-9]+\.[0-9]+\.[0-9]+$/p' | sort -V | tail -1)"
+            if [ -n "$upstream_tag" ]; then
+              echo "- upstream tag: ${upstream_tag}"
+            fi
             echo "- upstream VERSION: ${upstream_version}"
             echo "- upstream commit: ${upstream_short}"
             echo "- source revision: ${PATCHED_COMMIT}"

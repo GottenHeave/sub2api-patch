@@ -3,8 +3,10 @@
 The current downstream delta is stored as replayable capability patches under
 `patches/cur`. The upstream source is the latest CI-eligible commit selected
 on 2026-09-07, `5485f368b29d05adb95a00f71801c7c23d8f48af`, whose `VERSION`
-is `0.2.1`. The subsequent `0.2.2` VERSION-only tip lacked its own passing
-required checks at selection; its only source difference is the version file.
+is `0.2.1`. Upstream's annotated `v0.2.2` release tag points to this exact
+commit. Release names use the exact upstream release tag when available;
+the source VERSION is reported separately. The subsequent `0.2.2`
+VERSION-only tip lacked its own passing required checks at selection.
 
 "Upstream status" below means the state of that selected upstream commit. It does
 not claim that a later upstream branch or release has accepted the capability.

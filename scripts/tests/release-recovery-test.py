@@ -158,6 +158,25 @@ class ReleaseRecoveryTest(unittest.TestCase):
         self.assertEqual(self.outputs()["resume"], "false")
         self.assertEqual(self.outputs()["version"], "v0.2.1-patch.2")
 
+    def test_exact_annotated_tag_updates_release_name_without_source_changes(self) -> None:
+        self.git(self.upstream, "tag", "-a", "v0.2.2", "-m", "release", self.source)
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.outputs()["version"], "v0.2.2-patch.1")
+        self.assertEqual(self.outputs()["resume"], "false")
+        self.assertEqual(
+            self.git(self.path / "worktree", "rev-parse", "HEAD^{tree}"),
+            self.git(self.downstream, "rev-parse", f"{self.patched}^{{tree}}"),
+        )
+
+    def test_release_tag_on_other_commit_does_not_change_selected_version(self) -> None:
+        self.write("upstream/backend/cmd/server/VERSION", "0.2.2\n")
+        self.commit(self.upstream, "next upstream")
+        self.git(self.upstream, "tag", "-a", "v0.2.2", "-m", "release")
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.outputs(), {"changed": "false"})
+
     def test_lookup_failures_do_not_become_noop(self) -> None:
         for env in ({"IMAGE_STATE": "error"}, {"RELEASE_STATUS": "503"}):
             with self.subTest(env=env):

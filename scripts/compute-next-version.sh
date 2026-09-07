@@ -9,7 +9,7 @@ if [ -z "$release_repo" ]; then
 fi
 
 cd "$worktree"
-upstream_version="$(tr -d '[:space:]' < backend/cmd/server/VERSION)"
+upstream_version="${UPSTREAM_VERSION:-$(tr -d '[:space:]' < backend/cmd/server/VERSION)}"
 base="v${upstream_version}"
 prefix="${base}-patch."
 
