@@ -246,6 +246,9 @@ jobs:
           context: worktree
           file: worktree/Dockerfile
           push: true
+          build-args: |
+            VERSION=${{ steps.prepare.outputs.version }}
+            COMMIT=${{ steps.prepare.outputs.patched_commit }}
           tags: |
             ${{ steps.image.outputs.name }}:${{ steps.prepare.outputs.version }}
             ${{ steps.image.outputs.name }}:latest-patch
