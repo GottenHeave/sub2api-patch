@@ -1093,7 +1093,7 @@ jobs:
             exit 1
           fi
           (cd worktree && git diff --check)
-          PATCH_BASE_REPO=worktree EXPECTED_BASE_SHA="$UPSTREAM_SOURCE_SHA" \
+          PATCH_BASE_REPO="$GITHUB_WORKSPACE/worktree" EXPECTED_BASE_SHA="$UPSTREAM_SOURCE_SHA" \
             sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
 
           upstream_version="$(tr -d '[:space:]' < worktree/backend/cmd/server/VERSION)"
@@ -1131,7 +1131,7 @@ jobs:
           10. connect realtime REST moderation protocol
           11. preserve caller Codex system prompts
           EOF
-          PATCH_BASE_REPO=worktree EXPECTED_BASE_SHA="$UPSTREAM_SOURCE_SHA" \
+          PATCH_BASE_REPO="$GITHUB_WORKSPACE/worktree" EXPECTED_BASE_SHA="$UPSTREAM_SOURCE_SHA" \
             sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
           blocked='(^|[^A-Za-z0-9_])#[0-9]+|PR[[:space:]]*#[0-9]+|pull request[[:space:]]*#[0-9]+|issue[[:space:]]*#[0-9]+|/issues/[0-9]+|/pull/[0-9]+|github\.com/[^[:space:]]+/(issues|pull)/[0-9]+|(^|[^A-Za-z0-9_])@[A-Za-z0-9_-]+'
           ! grep -E "$blocked" release-notes.md || exit 1
@@ -1168,7 +1168,7 @@ jobs:
           [ -z "$(git -C worktree status --porcelain)" ] || exit 1
           git -C worktree diff --check "$replay_commit_sha" "$publication_commit_sha"
           ! git -C worktree show -s --format=%B "$publication_commit_sha" | grep -E "$blocked" || exit 1
-          PATCH_BASE_REPO=worktree EXPECTED_BASE_SHA="$UPSTREAM_SOURCE_SHA" \
+          PATCH_BASE_REPO="$GITHUB_WORKSPACE/worktree" EXPECTED_BASE_SHA="$UPSTREAM_SOURCE_SHA" \
             sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
           publication_tree_sha="$(git -C worktree rev-parse "$publication_commit_sha^{tree}")"
           provenance_preview_tree="$(sed -n 's/^preview_tree=//p' \

@@ -345,7 +345,7 @@ jobs:
 
       - name: Sanitize patch references
         env:
-          PATCH_BASE_REPO: worktree
+          PATCH_BASE_REPO: ${{ github.workspace }}/worktree
           EXPECTED_BASE_SHA: ${{ steps.upstream.outputs.upstream_source_sha }}
         run: sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
 
