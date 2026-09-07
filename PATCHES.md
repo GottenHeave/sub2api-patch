@@ -1,9 +1,10 @@
 # Patchset
 
 The current downstream delta is stored as replayable capability patches under
-`patches/cur`. The series is based on the upstream `0.2.2` release line at
-the latest CI-eligible commit selected on 2026-09-07,
-`5485f368b29d05adb95a00f71801c7c23d8f48af`.
+`patches/cur`. The upstream source is the latest CI-eligible commit selected
+on 2026-09-07, `5485f368b29d05adb95a00f71801c7c23d8f48af`, whose `VERSION`
+is `0.2.1`. The subsequent `0.2.2` VERSION-only tip lacked its own passing
+required checks at selection; its only source difference is the version file.
 
 "Upstream status" below means the state of that selected upstream commit. It does
 not claim that a later upstream branch or release has accepted the capability.
@@ -170,7 +171,7 @@ test. It remains independent of audio pricing and accounting.
 
 The complete 11-patch series cleanly replays from the selected upstream commit.
 The replay produces tree
-`11e770ee9a65f7cb1b3260d8b09979052fceaeaf`, exactly matching the refreshed
+`84f8bcabbb145e0612b6d3f957686675eda52142`, exactly matching the refreshed
 integration tree.
 
 The functional follow-up adds regression coverage for protocol-preserving
