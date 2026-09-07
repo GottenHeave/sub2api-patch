@@ -337,7 +337,7 @@ jobs:
           field() {
             file="$1"
             key="$2"
-            [ "$(grep -F "${key}=" "$file" | wc -l)" -eq 1 ] || exit 1
+            [ "$(grep -E "^${key}=" "$file" | wc -l)" -eq 1 ] || exit 1
             sed -n "s/^${key}=//p" "$file"
           }
           provenance=recovery-candidate/provenance.env

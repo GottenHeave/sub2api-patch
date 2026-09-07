@@ -774,7 +774,7 @@ jobs:
 
           field() {
             key="$1"
-            [ "$(grep -F "${key}=" "$manifest" | wc -l)" -eq 1 ] || exit 1
+            [ "$(grep -E "^${key}=" "$manifest" | wc -l)" -eq 1 ] || exit 1
             sed -n "s/^${key}=//p" "$manifest"
           }
           require_field() {
@@ -844,7 +844,7 @@ jobs:
           ! grep -Ev '^[a-z_]+=[^[:cntrl:]]*$' "$candidate_provenance" || exit 1
           candidate_field() {
             key="$1"
-            [ "$(grep -F "${key}=" "$candidate_provenance" | wc -l)" -eq 1 ] || exit 1
+            [ "$(grep -E "^${key}=" "$candidate_provenance" | wc -l)" -eq 1 ] || exit 1
             sed -n "s/^${key}=//p" "$candidate_provenance"
           }
           [ "$(candidate_field patchset_sha)" = "$PATCHSET_SHA" ] || exit 1
@@ -939,7 +939,7 @@ jobs:
             ! grep -Ev '^[a-z_]+=[^[:cntrl:]]*$' "$image_manifest" || exit 1
             image_field() {
               key="$1"
-              [ "$(grep -F "${key}=" "$image_manifest" | wc -l)" -eq 1 ] || exit 1
+              [ "$(grep -E "^${key}=" "$image_manifest" | wc -l)" -eq 1 ] || exit 1
               sed -n "s/^${key}=//p" "$image_manifest"
             }
             [ "$(image_field repository)" = "$GITHUB_REPOSITORY" ] || exit 1
@@ -1386,7 +1386,7 @@ jobs:
           require_manifest() {
             key="$1"
             expected="$2"
-            [ "$(grep -F "${key}=" release-state/publication-manifest.env | wc -l)" -eq 1 ] || exit 1
+            [ "$(grep -E "^${key}=" release-state/publication-manifest.env | wc -l)" -eq 1 ] || exit 1
             grep -Fx "${key}=${expected}" release-state/publication-manifest.env >/dev/null
           }
           require_manifest patchset_sha "$PATCHSET_SHA"
@@ -1688,7 +1688,7 @@ jobs:
           require_authority() {
             key="$1"
             expected="$2"
-            [ "$(grep -F "${key}=" authorized/authorization.env | wc -l)" -eq 1 ] || exit 1
+            [ "$(grep -E "^${key}=" authorized/authorization.env | wc -l)" -eq 1 ] || exit 1
             grep -Fx "${key}=${expected}" authorized/authorization.env >/dev/null
           }
           require_authority patchset_sha "$PATCHSET_SHA"
@@ -2150,7 +2150,7 @@ jobs:
           require_manifest() {
             key="$1"
             expected="$2"
-            [ "$(grep -F "${key}=" release-state/publication-manifest.env | wc -l)" -eq 1 ] || exit 1
+            [ "$(grep -E "^${key}=" release-state/publication-manifest.env | wc -l)" -eq 1 ] || exit 1
             grep -Fx "${key}=${expected}" release-state/publication-manifest.env >/dev/null
           }
           require_manifest patchset_sha "$PATCHSET_SHA"
@@ -2216,7 +2216,7 @@ jobs:
             ! grep -Ev '^[a-z_]+=[^[:cntrl:]]*$' "$receipt" || exit 1
             receipt_field() {
               key="$1"
-              [ "$(grep -F "${key}=" "$receipt" | wc -l)" -eq 1 ] || exit 1
+              [ "$(grep -E "^${key}=" "$receipt" | wc -l)" -eq 1 ] || exit 1
               sed -n "s/^${key}=//p" "$receipt"
             }
             [ "$(receipt_field repository)" = "$GITHUB_REPOSITORY" ] || exit 1
@@ -3171,7 +3171,7 @@ jobs:
           require_manifest() {
             key="$1"
             expected="$2"
-            [ "$(grep -F "${key}=" release-state/publication-manifest.env | wc -l)" -eq 1 ] || exit 1
+            [ "$(grep -E "^${key}=" release-state/publication-manifest.env | wc -l)" -eq 1 ] || exit 1
             grep -Fx "${key}=${expected}" release-state/publication-manifest.env >/dev/null
           }
           require_manifest patchset_sha "$PATCHSET_SHA"
