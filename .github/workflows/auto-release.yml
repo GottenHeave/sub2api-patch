@@ -43,12 +43,28 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Set image name
+        id: image
+        run: echo "name=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/sub2api-patch" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
       - name: Prepare mirror and patched commits
         id: prepare
         env:
           EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+          EXPECTED_MIRROR_SHA: ${{ inputs.expected_mirror_sha }}
           EXPECTED_PATCHED_SHA: ${{ inputs.expected_patched_sha }}
           GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.image.outputs.name }}
           UPSTREAM_SOURCE_SHA: ${{ inputs.upstream_source_sha }}
         run: |
           set -euo pipefail
@@ -57,9 +73,33 @@ jobs:
           git -C worktree remote add upstream "$UPSTREAM_GIT_URL"
           git -C worktree remote add downstream "https://github.com/${GITHUB_REPOSITORY}.git"
           git -C worktree fetch --no-tags upstream "+refs/heads/main:refs/remotes/upstream/main"
-          git -C worktree fetch --no-tags downstream "$EXPECTED_MAIN_SHA"
+          git -C worktree fetch --tags downstream "$EXPECTED_MAIN_SHA"
+          if [ -n "$EXPECTED_MIRROR_SHA" ]; then
+            git -C worktree fetch --no-tags downstream "$EXPECTED_MIRROR_SHA"
+          fi
           if [ -n "$EXPECTED_PATCHED_SHA" ]; then
             git -C worktree fetch --no-tags downstream "$EXPECTED_PATCHED_SHA"
+          fi
+
+          previous_version=""
+          if [ -n "$EXPECTED_PATCHED_SHA" ]; then
+            previous_version="$(git -C worktree tag --points-at "$EXPECTED_PATCHED_SHA" --list 'v*-patch.*' --sort=-v:refname | sed -n '1p')"
+          fi
+          if [ -n "$previous_version" ]; then
+            state="$(bash sub2api-patch/scripts/release-publication-state.sh "$IMAGE" "$previous_version")"
+            read -r image_exists release_exists <<< "$state"
+            if [ "$image_exists" = false ] || [ "$release_exists" = false ]; then
+              git -C worktree checkout --detach "$previous_version"
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              echo "resume=true" >> "$GITHUB_OUTPUT"
+              echo "publish_image=$([ "$image_exists" = false ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+              echo "publish_release=$([ "$release_exists" = false ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+              echo "patched_commit=$EXPECTED_PATCHED_SHA" >> "$GITHUB_OUTPUT"
+              echo "version=$previous_version" >> "$GITHUB_OUTPUT"
+              echo "upstream_source_sha=$(git -C worktree merge-base "$UPSTREAM_SOURCE_SHA" "$EXPECTED_PATCHED_SHA")" >> "$GITHUB_OUTPUT"
+              echo "Recovering missing publication outputs for $previous_version; selected content will be evaluated on the next sync."
+              exit 0
+            fi
           fi
           git -C worktree checkout --detach "$UPSTREAM_SOURCE_SHA"
           git -C worktree config user.name "sub2api-patch automation"
@@ -84,13 +124,18 @@ jobs:
 
           mirror_tree="$(git -C worktree rev-parse "$mirror_commit^{tree}")"
           current_main_tree="$(git -C worktree rev-parse "$EXPECTED_MAIN_SHA^{tree}")"
+          current_mirror_tree=""
+          if [ -n "$EXPECTED_MIRROR_SHA" ]; then
+            current_mirror_tree="$(git -C worktree rev-parse "$EXPECTED_MIRROR_SHA^{tree}")"
+          fi
           if [ -n "$EXPECTED_PATCHED_SHA" ]; then
             current_patched_tree="$(git -C worktree rev-parse "$EXPECTED_PATCHED_SHA^{tree}")"
           else
             current_patched_tree=""
           fi
           patched_tree="$(git -C worktree rev-parse "$patched_commit^{tree}")"
-          if [ "$mirror_tree" = "$current_main_tree" ] && [ "$patched_tree" = "$current_patched_tree" ]; then
+          if [ -n "$previous_version" ] && [ "$mirror_tree" = "$current_main_tree" ] && \
+            [ "$mirror_tree" = "$current_mirror_tree" ] && [ "$patched_tree" = "$current_patched_tree" ]; then
             echo "Published branches already have the selected upstream and patchset content."
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -99,15 +144,20 @@ jobs:
           version="$(RELEASE_REPOSITORY="$GITHUB_REPOSITORY" sub2api-patch/scripts/compute-next-version.sh worktree)"
           git -C worktree tag "$version" "$patched_commit"
           echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "resume=false" >> "$GITHUB_OUTPUT"
+          echo "publish_image=true" >> "$GITHUB_OUTPUT"
+          echo "publish_release=true" >> "$GITHUB_OUTPUT"
           echo "mirror_commit=$mirror_commit" >> "$GITHUB_OUTPUT"
           echo "patched_commit=$patched_commit" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "upstream_source_sha=$UPSTREAM_SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Prepare release notes
         if: steps.prepare.outputs.changed == 'true'
         env:
           PATCHED_COMMIT: ${{ steps.prepare.outputs.patched_commit }}
-          UPSTREAM_SOURCE_SHA: ${{ inputs.upstream_source_sha }}
+          UPSTREAM_SOURCE_SHA: ${{ steps.prepare.outputs.upstream_source_sha }}
+          RESUME: ${{ steps.prepare.outputs.resume }}
           VERSION: ${{ steps.prepare.outputs.version }}
         run: |
           set -euo pipefail
@@ -118,39 +168,23 @@ jobs:
             echo "$VERSION"
             echo
             echo "Base:"
-            echo "- upstream tag: v${upstream_version}"
+            echo "- upstream VERSION: ${upstream_version}"
             echo "- upstream commit: ${upstream_short}"
-            echo "- patchset commit: ${patchset_commit}"
+            echo "- source revision: ${PATCHED_COMMIT}"
+            if [ "$RESUME" != true ]; then
+              echo "- patchset commit: ${patchset_commit}"
+            fi
             echo
             echo "Patch topics:"
             git -C worktree log --reverse --format='- %s' "$UPSTREAM_SOURCE_SHA..$PATCHED_COMMIT" | grep -v '^- Remove upstream workflows'
           } > release-notes.md
-          PATCH_BASE_REPO="$GITHUB_WORKSPACE/worktree" EXPECTED_BASE_SHA="$UPSTREAM_SOURCE_SHA" \
-            sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
           if grep -E '#[0-9]+|/issues/[0-9]+|/pull/[0-9]+' release-notes.md; then
             echo "blocked reference found in release notes" >&2
             exit 1
           fi
 
-      - name: Set image name
-        if: steps.prepare.outputs.changed == 'true'
-        id: image
-        run: echo "name=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/sub2api-patch" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        if: steps.prepare.outputs.changed == 'true'
-        uses: docker/setup-buildx-action@v4.2.0
-
-      - name: Log in to GHCR
-        if: steps.prepare.outputs.changed == 'true'
-        uses: docker/login-action@v4.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
-
       - name: Reject publication collisions
-        if: steps.prepare.outputs.changed == 'true'
+        if: steps.prepare.outputs.changed == 'true' && steps.prepare.outputs.resume != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE: ${{ steps.image.outputs.name }}
@@ -165,27 +199,19 @@ jobs:
             [ "$result" -eq 2 ] || exit "$result"
           fi
 
-          status="$(curl --silent --show-error --location --output /tmp/release.json --write-out '%{http_code}' \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}")"
-          case "$status" in
-            404) ;;
-            200) echo "GitHub release already exists: $VERSION" >&2; exit 1 ;;
-            *) echo "GitHub release lookup failed with HTTP $status" >&2; exit 1 ;;
-          esac
-
-          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/tmp/image.json 2>/tmp/image.err; then
+          state="$(bash sub2api-patch/scripts/release-publication-state.sh "$IMAGE" "$VERSION")"
+          read -r image_exists release_exists <<< "$state"
+          if [ "$release_exists" = true ]; then
+            echo "GitHub release already exists: $VERSION" >&2
+            exit 1
+          fi
+          if [ "$image_exists" = true ]; then
             echo "versioned image tag already exists: $IMAGE:$VERSION" >&2
             exit 1
           fi
-          grep -Eqi 'not found|manifest unknown|no such manifest' /tmp/image.err || {
-            cat /tmp/image.err >&2
-            exit 1
-          }
 
       - name: Publish branches and reserve version tag
-        if: steps.prepare.outputs.changed == 'true'
+        if: steps.prepare.outputs.changed == 'true' && steps.prepare.outputs.resume != 'true'
         env:
           EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
           EXPECTED_MIRROR_SHA: ${{ inputs.expected_mirror_sha }}
@@ -206,7 +232,7 @@ jobs:
             "refs/tags/$VERSION:refs/tags/$VERSION"
 
       - name: Build and publish release image
-        if: steps.prepare.outputs.changed == 'true'
+        if: steps.prepare.outputs.publish_image == 'true'
         uses: docker/build-push-action@v7.3.0
         with:
           context: worktree
@@ -221,9 +247,24 @@ jobs:
           cache-from: type=gha,scope=sub2api-patch-release
           cache-to: type=gha,mode=max,scope=sub2api-patch-release
 
+      - name: Restore latest image tag during recovery
+        if: steps.prepare.outputs.resume == 'true' && steps.prepare.outputs.publish_image != 'true'
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+        run: docker buildx imagetools create --tag "$IMAGE:latest-patch" "$IMAGE:$VERSION"
+
       - name: Create GitHub release
-        if: steps.prepare.outputs.changed == 'true'
+        if: steps.prepare.outputs.publish_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.prepare.outputs.version }}
         run: gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --title "$VERSION" --notes-file release-notes.md
+
+      - name: Report recovered release
+        if: steps.prepare.outputs.resume == 'true'
+        env:
+          VERSION: ${{ steps.prepare.outputs.version }}
+        run: |
+          echo "Recovered missing publication outputs for $VERSION." >> "$GITHUB_STEP_SUMMARY"
+          echo "Selected upstream ${{ inputs.upstream_source_sha }} and patchset ${{ inputs.patchset_sha }} will be evaluated on the next sync." >> "$GITHUB_STEP_SUMMARY"

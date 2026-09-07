@@ -23,14 +23,16 @@ run. No configured SHA limits the search to a historical release base.
 The reusable validation workflow checks out the selected patchset, fetches the
 selected upstream commit, and runs these checks:
 
-1. Workflow wiring smoke tests.
+1. Workflow wiring smoke tests and interrupted-release recovery scenarios.
 2. Upstream selection, version computation, canonical series, refresh, and
    sanitizer script tests.
 3. Canonical patch replay from the selected upstream commit.
 4. Patch and release-text reference sanitization.
-5. Backend tests.
+5. Upstream backend `make test-unit` and `make test-integration`, including
+   tagged tests and Docker testcontainers.
 6. Backend lint and format checks.
-7. Frontend frozen-lockfile install, typecheck, and lint.
+7. Frontend frozen-lockfile install and upstream `make test-frontend`, including
+   typecheck, lint, and critical Vitest tests.
 8. A Docker Buildx build with `push: false` and `load: false`.
 
 The release job is a static dependency of successful resolution and validation.
@@ -41,8 +43,18 @@ Validation failures cannot reach publication.
 The single release job reconstructs the mirror and patched commits from the
 resolved inputs. It computes the next `v<upstream-version>-patch.N` version by
 querying both tag and GitHub Release namespaces. Failed remote queries stop the
-job. If the reconstructed mirror and patched trees already equal the published
-branch trees, the job exits before computing or publishing a new version.
+job. Before comparing trees, the job checks the version tag at the published
+`patched` tip for its image and GitHub Release. If either is missing, it checks
+out that existing tag and publishes only the missing outputs. Existing version
+tags, images, and releases are preserved. Recovery also restores `latest-patch`
+from the versioned image when that image already exists. The summary identifies
+the recovered version and reports that newly selected content will be evaluated
+on the next sync.
+
+If that publication is complete and the reconstructed mirror and patched trees
+equal `main`, `mirror/upstream-main`, and `patched`, the job exits before
+computing or publishing a new version. Missing or drifted mirror branches do
+not qualify for this no-op.
 
 Before mutation, the job requires all of the following to be absent:
 
@@ -59,8 +71,10 @@ branch rejects the whole push. The new tag refspec is not forced.
 
 After the Git push, Docker Buildx publishes the immutable version tag and the
 mutable `latest-patch` tag. The workflow then creates the GitHub Release. A
-failed publication remains visible as a failed workflow; the workflow does not
-discover or reuse prior-run artifacts on rerun.
+failed publication remains visible as a failed workflow and the next run can
+resume it from the reserved Git tag. No prior-run build artifacts are required.
+Release notes identify the upstream `VERSION` file value separately from the
+upstream source commit; the version value does not imply an upstream Git tag.
 
 ## Permissions and upstream isolation
 

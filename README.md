@@ -33,11 +33,16 @@ serialized `resolve -> validate -> release` graph:
    version tag with branch leases, publish the image, and create the release.
 
 If the generated mirror and patched trees already match their published branch
-trees, the release job exits without allocating another patch version.
+trees and the published version has its image and GitHub Release, the release
+job exits without allocating another patch version. After interrupted
+publication, it resumes only the missing outputs from the existing version
+tag, preserving versioned outputs that already exist. The run summary reports
+recovery separately; newly selected content is evaluated on the next sync.
 
 The validation gates are:
 
 - workflow smoke tests;
+- interrupted-release recovery tests;
 - upstream selection tests;
 - version computation tests;
 - canonical patch-series tests;
@@ -45,12 +50,19 @@ The validation gates are:
 - patch reference sanitizer tests;
 - patch replay on the selected upstream commit;
 - patch reference sanitization;
-- backend `go test ./...`;
+- upstream backend `make test-unit` and `make test-integration` targets;
 - `golangci-lint` and format checks;
-- frontend frozen-lockfile install, typecheck, and lint; and
+- frontend frozen-lockfile install and upstream `make test-frontend`, including
+  lint, typecheck, and critical Vitest tests; and
 - a non-publishing Docker Buildx build.
 
 See [RELEASE_POLICY.md](RELEASE_POLICY.md) for mutation and collision behavior.
+
+These Make targets come from upstream's `.github/workflows/backend-ci.yml`.
+Integration tests use Docker testcontainers on the GitHub-hosted runner. Unit
+and integration build tags include upstream's existing Astra Pro and failover
+tests. Calling the upstream targets requires no copied test files or extra
+patch hunks to maintain when syncing upstream.
 
 ## Branches
 
