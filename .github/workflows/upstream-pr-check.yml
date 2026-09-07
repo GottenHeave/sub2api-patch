@@ -1,33 +1,102 @@
 name: Patch validation
 
 on:
+  push:
+    branches:
+      - patchset
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      invocation_mode:
+        required: false
+        default: ""
+        type: string
+      patchset_sha:
+        required: false
+        default: ""
+        type: string
+      upstream_source_sha:
+        required: false
+        default: ""
+        type: string
 
-permissions:
-  contents: read
-  actions: write
-  checks: read
+permissions: {}
+
+concurrency:
+  group: >-
+    ${{ inputs.invocation_mode == 'sync'
+      && format('sub2api-sync-validation-{0}', github.run_id)
+      || format('sub2api-patch-validation-{0}', github.event_name == 'push' && github.event.after || github.sha) }}
+  cancel-in-progress: ${{ inputs.invocation_mode != 'sync' }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  UPSTREAM_REPOSITORY: Wei-Shaw/sub2api
+  UPSTREAM_GIT_URL: https://github.com/Wei-Shaw/sub2api.git
 
 jobs:
   validate:
+    permissions:
+      checks: read
+      contents: read
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve validation inputs
+        id: resolve
+        env:
+          INVOCATION_MODE: ${{ inputs.invocation_mode }}
+          INPUT_PATCHSET_SHA: ${{ inputs.patchset_sha }}
+          INPUT_UPSTREAM_SOURCE_SHA: ${{ inputs.upstream_source_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$INVOCATION_MODE" = sync ]; then
+            patchset_sha="$INPUT_PATCHSET_SHA"
+            upstream_source_sha="$INPUT_UPSTREAM_SOURCE_SHA"
+          else
+            patchset_sha="${{ github.event_name == 'push' && github.event.after || github.sha }}"
+            upstream_source_sha=""
+          fi
+          echo "patchset_sha=$patchset_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_source_sha=$upstream_source_sha" >> "$GITHUB_OUTPUT"
+
       - name: Checkout patchset
         uses: actions/checkout@v7.0.0
         with:
-          ref: patchset
+          ref: ${{ steps.resolve.outputs.patchset_sha }}
           path: sub2api-patch
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Checkout mirror candidate
-        uses: actions/checkout@v7.0.0
-        with:
-          ref: ${{ github.sha }}
-          path: worktree
-          fetch-depth: 0
+      - name: Fetch read-only upstream
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_UPSTREAM_SHA: ${{ steps.resolve.outputs.upstream_source_sha }}
+        run: |
+          set -euo pipefail
+          [ "$UPSTREAM_REPOSITORY" = Wei-Shaw/sub2api ]
+          git init worktree
+          git -C worktree remote add upstream "$UPSTREAM_GIT_URL"
+          git -C worktree fetch --no-tags upstream "+refs/heads/main:refs/remotes/upstream/main"
+          upstream_head="$(git -C worktree rev-parse refs/remotes/upstream/main^{commit})"
+          if [ -n "$REQUESTED_UPSTREAM_SHA" ]; then
+            ready_sha="$(sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$REQUESTED_UPSTREAM_SHA")"
+            [ "$ready_sha" = "$REQUESTED_UPSTREAM_SHA" ]
+          else
+            ready_sha="$(sub2api-patch/scripts/upstream-ci-ready.sh "$UPSTREAM_REPOSITORY" "$upstream_head")"
+          fi
+          git -C worktree checkout --detach "$ready_sha"
+          echo "upstream_source_sha=$ready_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Patchset tests
+        run: |
+          set -euo pipefail
+          python3 sub2api-patch/scripts/tests/workflow-policy-test.py
+          sub2api-patch/scripts/tests/upstream-ci-ready-test.sh
+          sub2api-patch/scripts/tests/compute-next-version-test.sh
+          sub2api-patch/scripts/tests/canonical-series-test.sh
+          sub2api-patch/scripts/tests/refresh-patches-test.sh
+          sub2api-patch/scripts/tests/sanitize-patches-test.sh
 
       - name: Setup Go
         uses: actions/setup-go@v6.5.0
@@ -47,70 +116,45 @@ jobs:
           cache: pnpm
           cache-dependency-path: worktree/frontend/pnpm-lock.yaml
 
-      - name: Record upstream candidate
-        run: |
-          set -euo pipefail
-          candidate_head="$(git -C worktree rev-parse HEAD)"
-          upstream_commit="$candidate_head"
-          case "$(git -C worktree show -s --format=%s HEAD)" in
-            "Prepare validated upstream promotion")
-              upstream_commit="$(git -C worktree rev-parse HEAD^2^)"
-              ;;
-            "Remove upstream workflows from mirror branch"|"Install downstream validation workflow on mirror branch")
-              upstream_commit="$(git -C worktree rev-parse HEAD^)"
-              ;;
-          esac
-          echo "VALIDATED_CANDIDATE=$candidate_head" >> "$GITHUB_ENV"
-          echo "UPSTREAM_COMMIT=$upstream_commit" >> "$GITHUB_ENV"
-
       - name: Apply patches
+        env:
+          EXPECTED_BASE_SHA: ${{ steps.upstream.outputs.upstream_source_sha }}
         run: sub2api-patch/scripts/apply-patches.sh worktree
 
       - name: Sanitize patch references
+        env:
+          PATCH_BASE_REPO: ${{ github.workspace }}/worktree
+          EXPECTED_BASE_SHA: ${{ steps.upstream.outputs.upstream_source_sha }}
         run: sub2api-patch/scripts/check-no-pr-issue-refs.sh sub2api-patch
 
       - name: Backend tests
         run: go test ./...
         working-directory: worktree/backend
 
+      - name: Backend lint and format checks
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+          args: --timeout=30m
+          working-directory: worktree/backend
+
       - name: Frontend checks
-        working-directory: worktree
         run: |
           set -euo pipefail
           pnpm --dir frontend install --frozen-lockfile
           pnpm --dir frontend run typecheck
           pnpm --dir frontend run lint:check
+        working-directory: worktree
 
-      - name: Write validation metadata
-        if: always()
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts
-          git -C worktree rev-parse HEAD > artifacts/patched-head.txt || true
-          git -C worktree status --short > artifacts/git-status.txt || true
-          git -C worktree diff --name-only --diff-filter=U > artifacts/conflict-files.txt || true
-          if git -C worktree rev-parse HEAD >/dev/null 2>&1; then
-            cat > artifacts/summary.txt <<EOF
-          upstream_commit=${UPSTREAM_COMMIT:-}
-          validated_candidate=${VALIDATED_CANDIDATE:-}
-          upstream_version=$(tr -d '[:space:]' < worktree/backend/cmd/server/VERSION 2>/dev/null || true)
-          patchset_commit=$(git -C sub2api-patch rev-parse HEAD)
-          EOF
-          fi
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.2.0
 
-      - name: Upload validation artifacts
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
+      - name: Preflight patched image build
+        uses: docker/build-push-action@v7.3.0
         with:
-          name: patch-validation-artifacts
-          path: artifacts
-
-      - name: Dispatch auto release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run auto-release.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref patchset \
-            -f upstream_ref="$UPSTREAM_COMMIT" \
-            -f validated_mirror_sha="$VALIDATED_CANDIDATE"
+          context: worktree
+          file: worktree/Dockerfile
+          push: false
+          load: false
+          cache-from: type=gha,scope=sub2api-patch-release
+          cache-to: type=gha,mode=max,scope=sub2api-patch-release
