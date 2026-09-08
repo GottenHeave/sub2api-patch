@@ -184,6 +184,20 @@ grep -q "^ unchanged issue #$context_ref" "$safe_patch"
 grep -q "^-deleted pull request #$deleted_content_ref" "$safe_patch"
 assert_accepted safe-content "$safe_root" "$safe_base" "$safe_patch"
 
+# An unrelated upstream insertion changes blob IDs and hunk offsets without
+# changing the patch's applicability or added content.
+git -C "$safe_root" checkout -q --detach "$safe_base"
+sed '1i upstream addition' "$safe_root/file.txt" > "$safe_root/file.txt.new"
+mv "$safe_root/file.txt.new" "$safe_root/file.txt"
+git -C "$safe_root" commit -qam 'upstream insertion'
+shifted_base="$(git -C "$safe_root" rev-parse HEAD)"
+if ! python3 "$sanitizer" --check --repo "$safe_root" \
+  --base-ref "$shifted_base" "$safe_patch" 2> "$tmp/shifted-base.stderr"; then
+  echo 'sanitizer rejected a patch that applies to newer upstream' >&2
+  cat "$tmp/shifted-base.stderr" >&2
+  exit 1
+fi
+
 # A global template can install checkout hooks into every cloned repository.
 # Replay validation must suppress them before checking out the explicit base.
 template_hook_marker="$tmp/template-post-checkout-ran"
