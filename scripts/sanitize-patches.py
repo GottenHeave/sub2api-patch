@@ -165,7 +165,9 @@ def generate_canonical_series(
     return sorted(output.glob("*.patch"))
 
 
-def verify_series(repo: Path, base_ref: str, patches: list[Path]) -> None:
+def verify_series(
+    repo: Path, base_ref: str, patches: list[Path], check_canonical: bool
+) -> None:
     base_sha = git(repo, "rev-parse", f"{base_ref}^{{commit}}").decode().strip()
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -203,6 +205,10 @@ def verify_series(repo: Path, base_ref: str, patches: list[Path]) -> None:
             additions = added_content(replay, parent, commit)
             check_text(patch, "\n".join([metadata, additions, *paths]))
 
+        # Canonical bytes describe the authoring base, not later upstream trees.
+        if not check_canonical:
+            return
+
         canonical = root / "canonical"
         canonical.mkdir()
         generated = generate_canonical_series(replay, base_sha, canonical)
@@ -215,6 +221,7 @@ def verify_series(repo: Path, base_ref: str, patches: list[Path]) -> None:
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--check", action="store_true")
+parser.add_argument("--canonical", action="store_true")
 parser.add_argument("--repo", required=True, type=Path)
 parser.add_argument("--base-ref", required=True)
 parser.add_argument("patches", nargs="+", type=Path)
@@ -228,4 +235,6 @@ for patch_path in arguments.patches:
     if not arguments.check:
         patch_path.write_text(sanitized, encoding="utf-8")
 
-verify_series(arguments.repo.resolve(), arguments.base_ref, arguments.patches)
+verify_series(
+    arguments.repo.resolve(), arguments.base_ref, arguments.patches, arguments.canonical
+)

@@ -19,6 +19,7 @@ for patch in "${patches[@]}"; do
 done
 python3 "$repo_root/scripts/sanitize-patches.py" \
   --check \
+  --canonical \
   --repo "$repo_root" \
   --base-ref "$base_sha" \
   "${patches[@]}"

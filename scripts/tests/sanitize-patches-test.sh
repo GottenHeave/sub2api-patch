@@ -54,7 +54,7 @@ assert_accepted() {
   local root="$2"
   local base="$3"
   shift 3
-  if ! python3 "$sanitizer" --check --repo "$root" --base-ref "$base" "$@" \
+  if ! python3 "$sanitizer" --check --canonical --repo "$root" --base-ref "$base" "$@" \
     2> "$tmp/$name.stderr"; then
     echo "sanitizer rejected valid fixture: $name" >&2
     cat "$tmp/$name.stderr" >&2
@@ -68,7 +68,7 @@ assert_rejected() {
   local root="$3"
   local base="$4"
   shift 4
-  if python3 "$sanitizer" --check --repo "$root" --base-ref "$base" "$@" \
+  if python3 "$sanitizer" --check --canonical --repo "$root" --base-ref "$base" "$@" \
     2> "$tmp/$name.stderr"; then
     echo "sanitizer accepted invalid fixture: $name" >&2
     exit 1
@@ -87,6 +87,7 @@ assert_hooks_suppressed() {
   rm -f "$marker"
   if ! GIT_CONFIG_GLOBAL="$config" python3 "$sanitizer" \
     --check \
+    --canonical \
     --repo "$safe_root" \
     --base-ref "$safe_base" \
     "$safe_patch" 2> "$tmp/$name.stderr"; then
