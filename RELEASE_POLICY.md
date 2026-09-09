@@ -24,9 +24,10 @@ The reusable validation workflow checks out the selected patchset, fetches the
 selected upstream commit, and runs these checks:
 
 1. Workflow wiring smoke tests and interrupted-release recovery scenarios.
-2. Upstream selection, version computation, canonical series, refresh, and
+2. Upstream selection, version computation, refresh, and
    sanitizer script tests.
-3. Canonical patch replay from the selected upstream commit.
+3. Patch replay from the dynamically selected upstream commit, without a
+   fixed historical tree or byte-for-byte regenerated patch requirement.
 4. Patch and release-text reference sanitization.
 5. Upstream backend `make test-unit` and `make test-integration`, including
    tagged tests and Docker testcontainers.

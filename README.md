@@ -45,7 +45,6 @@ The validation gates are:
 - interrupted-release recovery tests;
 - upstream selection tests;
 - version computation tests;
-- canonical patch-series tests;
 - patch refresh tests;
 - patch reference sanitizer tests;
 - patch replay on the selected upstream commit;
@@ -75,6 +74,9 @@ patch hunks to maintain when syncing upstream.
   workflow files.
 
 `main`, `mirror/upstream-main`, and `patched` are automation-managed.
+Patchset documentation is not copied into these generated branches. See
+[PATCHES.md](PATCHES.md) for the manually maintained patch purpose, scope, and
+diff-size inventory. Its review version is a dated snapshot, not a release pin.
 
 ## Local quick check
 
