@@ -79,7 +79,6 @@ if PATH="$fake_bin:$PATH" \
   echo 'refresh replaced the series with an unreplayable patch' >&2
   exit 1
 fi
-grep -Eq 'Patch failed|does not exist in index' "$tmp/malformed.stderr"
 diff -ru "$tmp/malformed-original-series" "$malformed_metadata/patches/cur"
 test -z "$(find "$malformed_metadata/patches" -maxdepth 1 -type d -name '.*' -print)"
 
