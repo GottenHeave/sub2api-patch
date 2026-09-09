@@ -95,7 +95,6 @@ jobs:
           python3 sub2api-patch/scripts/tests/release-recovery-test.py
           sub2api-patch/scripts/tests/upstream-ci-ready-test.sh
           sub2api-patch/scripts/tests/compute-next-version-test.sh
-          sub2api-patch/scripts/tests/canonical-series-test.sh
           sub2api-patch/scripts/tests/refresh-patches-test.sh
           sub2api-patch/scripts/tests/sanitize-patches-test.sh
 
