@@ -199,6 +199,21 @@ if ! python3 "$sanitizer" --check --repo "$safe_root" \
   exit 1
 fi
 
+# Forward replay may need Git's three-way merge when upstream changes context.
+forward_root="$tmp/forward-context"
+new_repo "$forward_root"
+seq 1 10 > "$forward_root/file.txt"
+git -C "$forward_root" commit -qam 'upstream lines'
+forward_base="$(git -C "$forward_root" rev-parse HEAD)"
+sed -i '8s/.*/downstream/' "$forward_root/file.txt"
+git -C "$forward_root" commit -qam 'downstream line'
+git -C "$forward_root" format-patch --stdout --unified=5 -1 > "$tmp/forward.patch"
+git -C "$forward_root" checkout -q --detach "$forward_base"
+sed -i '4s/.*/upstream/' "$forward_root/file.txt"
+git -C "$forward_root" commit -qam 'upstream context'
+python3 "$sanitizer" --check --repo "$forward_root" \
+  --base-ref HEAD "$tmp/forward.patch"
+
 # A global template can install checkout hooks into every cloned repository.
 # Replay validation must suppress them before checking out the explicit base.
 template_hook_marker="$tmp/template-post-checkout-ran"
