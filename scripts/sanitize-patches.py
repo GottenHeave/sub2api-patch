@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import re
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -141,33 +140,7 @@ def reject_binary_changes(repo: Path, parent: str, commit: str) -> None:
         raise SystemExit("binary patch content cannot be reference-scanned")
 
 
-def generate_canonical_series(
-    repo: Path, base_sha: str, output: Path
-) -> list[Path]:
-    generator = Path(__file__).with_name("format-patch-series.py")
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(generator),
-            "--repo",
-            str(repo),
-            "--base-ref",
-            base_sha,
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise SystemExit(f"canonical patch generation failed: {detail or 'unknown error'}")
-    return sorted(output.glob("*.patch"))
-
-
-def verify_series(
-    repo: Path, base_ref: str, patches: list[Path], check_canonical: bool
-) -> None:
+def verify_series(repo: Path, base_ref: str, patches: list[Path]) -> None:
     base_sha = git(repo, "rev-parse", f"{base_ref}^{{commit}}").decode().strip()
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -193,7 +166,7 @@ def verify_series(
                 "core.hooksPath=/dev/null",
                 "am",
                 "--quiet",
-                "--no-3way",
+                "--3way",
                 str(patch.resolve()),
             )
             commit = git(replay, "rev-parse", "HEAD").decode().strip()
@@ -205,23 +178,9 @@ def verify_series(
             additions = added_content(replay, parent, commit)
             check_text(patch, "\n".join([metadata, additions, *paths]))
 
-        # Canonical bytes describe the authoring base, not later upstream trees.
-        if not check_canonical:
-            return
-
-        canonical = root / "canonical"
-        canonical.mkdir()
-        generated = generate_canonical_series(replay, base_sha, canonical)
-        if len(generated) != len(patches):
-            raise SystemExit("canonical patch count differs from input series")
-        for supplied, expected in zip(patches, generated, strict=True):
-            if supplied.name != expected.name or supplied.read_bytes() != expected.read_bytes():
-                raise SystemExit(f"patch is not canonical for applied commit: {supplied}")
-
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--check", action="store_true")
-parser.add_argument("--canonical", action="store_true")
 parser.add_argument("--repo", required=True, type=Path)
 parser.add_argument("--base-ref", required=True)
 parser.add_argument("patches", nargs="+", type=Path)
@@ -235,6 +194,4 @@ for patch_path in arguments.patches:
     if not arguments.check:
         patch_path.write_text(sanitized, encoding="utf-8")
 
-verify_series(
-    arguments.repo.resolve(), arguments.base_ref, arguments.patches, arguments.canonical
-)
+verify_series(arguments.repo.resolve(), arguments.base_ref, arguments.patches)

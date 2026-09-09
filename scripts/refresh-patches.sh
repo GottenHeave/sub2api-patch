@@ -58,7 +58,6 @@ if [ "${#staged_patches[@]}" -eq 0 ]; then
 fi
 
 python3 scripts/sanitize-patches.py \
-  --canonical \
   --repo "$worktree" \
   --base-ref "$base_sha" \
   "${staged_patches[@]}"

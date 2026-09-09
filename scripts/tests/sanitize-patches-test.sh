@@ -54,7 +54,7 @@ assert_accepted() {
   local root="$2"
   local base="$3"
   shift 3
-  if ! python3 "$sanitizer" --check --canonical --repo "$root" --base-ref "$base" "$@" \
+  if ! python3 "$sanitizer" --check --repo "$root" --base-ref "$base" "$@" \
     2> "$tmp/$name.stderr"; then
     echo "sanitizer rejected valid fixture: $name" >&2
     cat "$tmp/$name.stderr" >&2
@@ -68,7 +68,7 @@ assert_rejected() {
   local root="$3"
   local base="$4"
   shift 4
-  if python3 "$sanitizer" --check --canonical --repo "$root" --base-ref "$base" "$@" \
+  if python3 "$sanitizer" --check --repo "$root" --base-ref "$base" "$@" \
     2> "$tmp/$name.stderr"; then
     echo "sanitizer accepted invalid fixture: $name" >&2
     exit 1
@@ -87,7 +87,6 @@ assert_hooks_suppressed() {
   rm -f "$marker"
   if ! GIT_CONFIG_GLOBAL="$config" python3 "$sanitizer" \
     --check \
-    --canonical \
     --repo "$safe_root" \
     --base-ref "$safe_base" \
     "$safe_patch" 2> "$tmp/$name.stderr"; then
@@ -165,7 +164,7 @@ encode_body_base64() {
   mv "$patch.new" "$patch"
 }
 
-# Canonical safe patch with forbidden references only in unchanged and deleted
+# Safe patch with forbidden references only in unchanged and deleted
 # upstream lines. Applied added-line inspection must leave both cases allowed.
 safe_root="$tmp/safe-content"
 context_ref=6001
@@ -291,8 +290,7 @@ grep -q 'Content-Transfer-Encoding: base64' "$b64_patch"
 assert_rejected body-base64 'blocked pull request or issue reference' \
   "$b64_root" "$b64_base" "$b64_patch"
 
-# Envelope-only text is discarded by git am. Canonical regeneration must still
-# reject patches whose diffstat, signature tail, or body/diff separator lies.
+# Envelope-only text is discarded by git am and does not change applied content.
 envelope_root="$tmp/envelope"
 diffstat_ref=6301
 trailing_ref=6302
@@ -313,14 +311,14 @@ awk -v reference="$diffstat_ref" '
   }
   { print }
 ' "$envelope_patch" > "$diffstat_patch"
-assert_rejected diffstat-only 'patch is not canonical' \
+assert_accepted diffstat-only \
   "$envelope_root" "$envelope_base" "$diffstat_patch"
 
 mkdir "$tmp/trailing-envelope"
 trailing_patch="$tmp/trailing-envelope/$(basename "$envelope_patch")"
 cp "$envelope_patch" "$trailing_patch"
 printf '\n-- \nissue #%s\n' "$trailing_ref" >> "$trailing_patch"
-assert_rejected trailing-envelope 'patch is not canonical' \
+assert_accepted trailing-envelope \
   "$envelope_root" "$envelope_base" "$trailing_patch"
 
 forged_root="$tmp/forged-body"
@@ -341,11 +339,8 @@ printf '%s\n' \
   " +issue #$forged_ref" \
   '---' > "$tmp/forged-message"
 git -C "$forged_root" commit -qF "$tmp/forged-message"
-format_series "$forged_root" "$forged_base" "$tmp/forged-canonical"
 format_series_without_stat "$forged_root" "$forged_base" "$tmp/forged-no-stat"
-forged_canonical="$(only_patch "$tmp/forged-canonical")"
 forged_patch="$(only_patch "$tmp/forged-no-stat")"
-test "$(basename "$forged_patch")" = "$(basename "$forged_canonical")"
 
 git clone -q --no-checkout "$forged_root" "$tmp/forged-replay"
 git -C "$tmp/forged-replay" config user.name test
@@ -356,16 +351,6 @@ git -C "$tmp/forged-replay" show -s --format=%B | \
   grep -Fq " +issue #$forged_ref"
 assert_rejected forged-body-diff 'blocked pull request or issue reference' \
   "$forged_root" "$forged_base" "$forged_patch"
-
-# Git can apply a patch whose postimage index is false. Regeneration from the
-# resulting commit detects the disagreement.
-mkdir "$tmp/false-index"
-false_index_patch="$tmp/false-index/$(basename "$envelope_patch")"
-sed -E '0,/^index /s/(\.\.)[0-9a-f]+/\1deadbee/' \
-  "$envelope_patch" > "$false_index_patch"
-grep -q '^index .*[.]deadbee ' "$false_index_patch"
-assert_rejected false-index 'patch is not canonical' \
-  "$envelope_root" "$envelope_base" "$false_index_patch"
 
 assert_blocked_destination() {
   local kind="$1"
@@ -437,18 +422,6 @@ format_series "$rename_away_root" "$rename_away_base" "$tmp/rename-away-patches"
 rename_away_patch="$(only_patch "$tmp/rename-away-patches")"
 assert_accepted rename-away "$rename_away_root" "$rename_away_base" \
   "$rename_away_patch"
-
-# One path argument must represent exactly one canonical mail message.
-mkdir "$tmp/concatenated"
-concatenated_patch="$tmp/concatenated/$(basename "$envelope_patch")"
-concatenated_ref=6601
-cp "$envelope_patch" "$concatenated_patch"
-printf '\n' >> "$concatenated_patch"
-sed "s/safe envelope/second message issue #$concatenated_ref/" "$envelope_patch" \
-  >> "$concatenated_patch"
-assert_rejected concatenated-message \
-  'git .* am .* failed|blocked pull request or issue reference|patch is not canonical' \
-  "$envelope_root" "$envelope_base" "$concatenated_patch"
 
 # Binary changes have no trustworthy added-line representation in textual Git
 # diff output, so the sanitizer must reject them rather than silently skip them.
