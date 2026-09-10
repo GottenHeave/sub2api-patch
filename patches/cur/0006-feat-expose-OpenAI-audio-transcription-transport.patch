@@ -178,6 +178,12 @@ index 0000000000000000000000000000000000000000..c1abce7d9c43281896a601e0511971d0
 +			}
 +		}
 +
++		if parsed.IsVoiceInkProbe() {
++			accountReleaseFunc()
++			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid probe audio")
++			return
++		}
++
 +		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 +		forwardStart := time.Now()
 +		result, err := h.gatewayService.ForwardAudioTranscriptions(routingCtx, c, account, parsed, channelMapping.MappedModel)

@@ -168,6 +168,11 @@ index 0000000000000000000000000000000000000000..f1ec9fc7eacbdc141235698905f08c60
 +	return r != nil && r.Endpoint == openAITranscribeAliasEndpoint
 +}
 +
++// IsVoiceInkProbe identifies the invalid connection-test payload emitted by VoiceInk.
++func (r *OpenAIAudioTranscriptionsRequest) IsVoiceInkProbe() bool {
++	return r != nil && strings.EqualFold(strings.TrimSpace(r.FileName), "probe.wav") && r.FileSizeBytes == 1024
++}
++
 +func (r *OpenAIAudioTranscriptionsRequest) StickySessionSeed() string {
 +	if r == nil {
 +		return ""
