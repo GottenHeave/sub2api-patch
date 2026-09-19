@@ -6,10 +6,10 @@ Subject: [PATCH 05/11] feat: schedule resilient OpenAI audio transcriptions
 ---
  backend/internal/service/model_rate_limit.go  |   63 +-
  .../service/openai_account_scheduler.go       |    2 +-
- .../service/openai_audio_transcriptions.go    |  644 +++++++++++
+ .../service/openai_audio_transcriptions.go    |  649 +++++++++++
  .../openai_audio_transcriptions_test.go       | 1015 +++++++++++++++++
  .../internal/service/openai_gateway_usage.go  |   54 +
- 5 files changed, 1773 insertions(+), 5 deletions(-)
+ 5 files changed, 1778 insertions(+), 5 deletions(-)
 
 diff --git a/backend/internal/service/model_rate_limit.go b/backend/internal/service/model_rate_limit.go
 index d76bc423fe366655923edb86e52864808dfa92fc..2fdf1976695f2c1a4dc283aee8da3c944e0b6853 100644
@@ -102,10 +102,10 @@ index 05ba69fa43bfd800789e1fb7bd75f48fe4abf08f..039ca0cb514f7db873e21562edf213a7
  	selection, decision, err := s.selectAccountWithScheduler(
 diff --git a/backend/internal/service/openai_audio_transcriptions.go b/backend/internal/service/openai_audio_transcriptions.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..f1ec9fc7eacbdc141235698905f08c6057625e0c
+index 0000000000000000000000000000000000000000..daa9cca0402c766217ad16ffdff67b71a8aec381
 --- /dev/null
 +++ b/backend/internal/service/openai_audio_transcriptions.go
-@@ -0,0 +1,644 @@
+@@ -0,0 +1,649 @@
 +package service
 +
 +import (

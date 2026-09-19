@@ -4,18 +4,18 @@ Date: Wed, 2 Sep 2026 14:03:17 +0000
 Subject: [PATCH 06/11] feat: expose OpenAI audio transcription transport
 
 ---
- .../handler/openai_audio_transcriptions.go    | 298 ++++++++
+ .../handler/openai_audio_transcriptions.go    | 304 ++++++++
  .../openai_audio_transcriptions_test.go       | 698 ++++++++++++++++++
  backend/internal/server/routes/gateway.go     |  16 +
  .../prompt_audit_route_coverage_test.go       |   9 +-
- 4 files changed, 1017 insertions(+), 4 deletions(-)
+ 4 files changed, 1023 insertions(+), 4 deletions(-)
 
 diff --git a/backend/internal/handler/openai_audio_transcriptions.go b/backend/internal/handler/openai_audio_transcriptions.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..c1abce7d9c43281896a601e0511971d04d02e96d
+index 0000000000000000000000000000000000000000..2f7a34a521ad47d2abe7946e7db0e7602257fc33
 --- /dev/null
 +++ b/backend/internal/handler/openai_audio_transcriptions.go
-@@ -0,0 +1,298 @@
+@@ -0,0 +1,304 @@
 +package handler
 +
 +import (
