@@ -227,7 +227,7 @@ func TestOpenAIGatewayService_OAuthMessagesBridgeDoesNotInjectDefaultInstruction
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	originalBody := []byte(`{"model":"gpt-5.5","stream":true,"prompt_cache_key":"anthropic-metadata-session-1","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"<sub2api-claude-code-todo-guard>"}]},{"type":"message","role":"user","content":"hello"}]}`)
+	originalBody := []byte(`{"model":"gpt-5.5","stream":true,"prompt_cache_key":"anthropic-metadata-session-1","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"` + openAICompatClaudeCodeTodoGuardText + `"}]},{"type":"message","role":"user","content":"hello"}]}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(originalBody))
 	c.Request.Header.Set("Content-Type", "application/json")
 
@@ -2300,7 +2300,7 @@ func TestOpenAIGatewayService_CodexFingerprintMessagesBridgeDoesNotInjectBodyPro
 	c.Request.Header.Set("originator", "codex_cli_rs")
 	c.Request.Header.Set("session-id", "header-session")
 
-	body := []byte(`{"model":"gpt-5.5","stream":true,"prompt_cache_key":"anthropic-metadata-session-1","client_metadata":{"session_id":"anthropic-metadata-session-1"},"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"` + openAICompatClaudeCodeTodoGuardMarker + `"}]},{"type":"message","role":"user","content":"hello"}]}`)
+	body := []byte(`{"model":"gpt-5.5","stream":true,"prompt_cache_key":"anthropic-metadata-session-1","client_metadata":{"session_id":"anthropic-metadata-session-1"},"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"` + openAICompatClaudeCodeTodoGuardText + `"}]},{"type":"message","role":"user","content":"hello"}]}`)
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
