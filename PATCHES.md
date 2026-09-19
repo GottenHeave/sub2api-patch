@@ -31,7 +31,7 @@ Rows 5, 6, 12, 13, and 14 were updated on 2026-09-19.
 | 10: REST moderation hook | Use the shared Realtime moderation protocol in the REST handler | `handler/openai_realtime_calls.go` | 1 | +1 / -1 |
 | 11: Caller prompts | Preserve non-empty system or developer prompts in transformed, raw passthrough and Responses-shaped requests | `service/openai_codex_transform.go`, gateway forward/passthrough/request-body helpers and prompt tests | 5 | +313 / -14 |
 | 12: Outbound instruction text | Remove product tags, deduplicate by instruction text, and use `namespace__pi` for the reserved Python tool alias | Codex transforms, tool names, Messages bridge/todo guidance, and tests | 13 | +140 / -52 |
-| 13: Turn-state ownership | Scope cached state to resolved credentials and strip known foreign echoes using actual delivered headers | Turn-state helpers, HTTP passthrough, WS forwarding/cache, and tests | 13 | +423 / -58 |
+| 13: Turn-state ownership | Scope cached state to resolved credentials and strip known foreign echoes using actual delivered headers | Turn-state helpers, HTTP passthrough, WS forwarding/cache, and tests | 15 | +431 / -66 |
 | 14: Email-scoped sessions | Derive Compact and Claude session identities from account email and workspace instead of local rows | Shared email helper, Compact probe, Claude rewrite/synthesis, and tests | 10 | +345 / -56 |
 
 ## Behavior boundaries
