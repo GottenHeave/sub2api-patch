@@ -396,7 +396,7 @@ func TestOpenAIGatewayServiceForward_CodexBridgePreservesImageGenFunction(t *tes
 			require.True(t, hasCodexImageGenerationFunctionTool(forwarded))
 			require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
 			require.False(t, gjson.GetBytes(upstream.lastBody, "tool_choice").Exists())
-			require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexImageGenerationBridgeMarker)
+			require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexImageGenerationBridgeText)
 		})
 	}
 }
@@ -487,7 +487,7 @@ func TestOpenAIGatewayServiceForward_CodexBridgeSkipsNativeCNResponsesAccounts(t
 				require.NotNil(t, upstream.lastReq)
 				require.Falsef(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists(), "image_generation tool injected into %s upstream body", platform)
 				require.Falsef(t, gjson.GetBytes(upstream.lastBody, "tool_choice").Exists(), "tool_choice injected into %s upstream body", platform)
-				require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexImageGenerationBridgeMarker)
+				require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexImageGenerationBridgeText)
 				require.Equal(t, "shell", gjson.GetBytes(upstream.lastBody, "tools.0.name").String())
 			})
 		}
