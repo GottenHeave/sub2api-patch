@@ -38,7 +38,8 @@ func TestIdentityService_RewriteUserID_PreservesTopLevelFieldOrder(t *testing.T)
 	)
 	body := []byte(`{"alpha":1,"messages":[],"metadata":{"user_id":` + strconvQuote(originalUserID) + `},"max_tokens":64000,"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},"stream":true}`)
 
-	result, err := svc.RewriteUserID(body, 123, "acc-uuid", "client-xyz", "claude-cli/2.1.78 (external, cli)")
+	account := &Account{ID: 123, Platform: PlatformAnthropic, Extra: map[string]any{"email_address": "test@example.com", "account_uuid": "acc-uuid"}}
+	result, err := svc.RewriteUserID(body, account, "acc-uuid", "client-xyz", "claude-cli/2.1.78 (external, cli)")
 	require.NoError(t, err)
 	resultStr := string(result)
 
@@ -64,6 +65,7 @@ func TestIdentityService_RewriteUserIDWithMasking_PreservesTopLevelFieldOrder(t 
 		Platform: PlatformAnthropic,
 		Type:     AccountTypeOAuth,
 		Extra: map[string]any{
+			"email_address":              "test@example.com",
 			"session_id_masking_enabled": true,
 		},
 	}
