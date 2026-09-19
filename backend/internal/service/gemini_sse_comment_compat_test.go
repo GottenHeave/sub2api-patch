@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -63,6 +64,15 @@ func TestDownstreamRejectsSSECommentsReadsBothHeaders(t *testing.T) {
 // 返回写给下游的全部字节。用来观察空闲期间网关是否发了 ":\n\n" 心跳。
 func runAntigravityGeminiStreamWithIdle(t *testing.T, userAgent string, idle time.Duration) string {
 	t.Helper()
+	var out string
+	synctest.Test(t, func(t *testing.T) {
+		out = runAntigravityGeminiStreamWithIdleInBubble(t, userAgent, idle)
+	})
+	return out
+}
+
+func runAntigravityGeminiStreamWithIdleInBubble(t *testing.T, userAgent string, idle time.Duration) string {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	svc := newAntigravityCompatService(
 		config.GatewayConfig{MaxLineSize: defaultMaxLineSize, StreamKeepaliveInterval: 1},
@@ -79,11 +89,15 @@ func runAntigravityGeminiStreamWithIdle(t *testing.T, userAgent string, idle tim
 		_, err := svc.handleGeminiStreamingResponse(c, resp, time.Now())
 		done <- err
 	}()
+	synctest.Wait()
+	// Offset data from the ticker so the first tick is not yet an idle interval.
+	time.Sleep(100 * time.Millisecond)
 	_, err := io.WriteString(
 		writer,
 		`data: {"response":{"responseId":"resp_1","candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":1}}}`+"\n\n",
 	)
 	require.NoError(t, err)
+	synctest.Wait()
 	time.Sleep(idle)
 	require.NoError(t, writer.Close())
 	require.NoError(t, <-done)
