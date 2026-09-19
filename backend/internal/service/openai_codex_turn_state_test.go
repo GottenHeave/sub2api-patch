@@ -58,7 +58,7 @@ func TestRelayOpenAICodexTurnState_SetsHeaderAndRecordsProvenance(t *testing.T) 
 	require.True(t, ok)
 	origin, ok := raw.(openAICodexTurnStateOrigin)
 	require.True(t, ok)
-	require.Equal(t, int64(42), origin.accountID)
+	require.Equal(t, "local-owner:42", origin.credentialKey)
 	require.True(t, origin.expiresAt.After(time.Now()))
 }
 
@@ -95,7 +95,7 @@ func TestStageOpenAICodexTurnState_StagedHeaders(t *testing.T) {
 	require.True(t, ok)
 	origin, ok := raw.(openAICodexTurnStateOrigin)
 	require.True(t, ok)
-	require.Equal(t, int64(44), origin.accountID)
+	require.Equal(t, "local-owner:44", origin.credentialKey)
 
 	// 上游无值 → 清除已暂存的值；nil 集合保持 nil
 	stageOpenAICodexTurnState(&staged, http.Header{})
@@ -130,7 +130,7 @@ func TestStagedTurnState_AbandonedAttemptDoesNotPoisonProvenance(t *testing.T) {
 	require.True(t, ok)
 	origin, ok := raw.(openAICodexTurnStateOrigin)
 	require.True(t, ok)
-	require.Equal(t, int64(52), origin.accountID)
+	require.Equal(t, "local-owner:52", origin.credentialKey)
 }
 
 func TestNoteStagedOpenAICodexTurnStateCommitted_NoopWithoutState(t *testing.T) {
@@ -190,8 +190,8 @@ func TestGuardOpenAICodexTurnStateEcho(t *testing.T) {
 		svc := &OpenAIGatewayService{}
 		c, _ := newTurnStateTestContext(t, 7, "sess-g4")
 		svc.openaiCodexTurnStateOrigins.Store("7\x00sess-g4", openAICodexTurnStateOrigin{
-			accountID: 42,
-			expiresAt: time.Now().Add(-time.Minute),
+			credentialKey: "local-owner:42",
+			expiresAt:     time.Now().Add(-time.Minute),
 		})
 		h := newOutbound("blob-A")
 		svc.guardOpenAICodexTurnStateEcho(c, &Account{ID: 43}, h)
@@ -220,12 +220,12 @@ func TestGuardOpenAICodexTurnStateEcho(t *testing.T) {
 func TestSweepOpenAICodexTurnStateOrigins_PrunesExpiredEntries(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	svc.openaiCodexTurnStateOrigins.Store("expired", openAICodexTurnStateOrigin{
-		accountID: 1,
-		expiresAt: time.Now().Add(-time.Minute),
+		credentialKey: "local-owner:1",
+		expiresAt:     time.Now().Add(-time.Minute),
 	})
 	svc.openaiCodexTurnStateOrigins.Store("alive", openAICodexTurnStateOrigin{
-		accountID: 2,
-		expiresAt: time.Now().Add(time.Hour),
+		credentialKey: "local-owner:2",
+		expiresAt:     time.Now().Add(time.Hour),
 	})
 
 	// 计数器推进到触发清扫的边界
