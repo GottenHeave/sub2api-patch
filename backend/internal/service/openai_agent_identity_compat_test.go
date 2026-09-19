@@ -29,6 +29,7 @@ func TestAccountTestServiceOpenAICompactAgentIdentityUsesFreshAssertion(t *testi
 		Schedulable: true,
 		Concurrency: 1,
 		Credentials: map[string]any{
+			"email":                      "test@example.com",
 			"auth_mode":                  OpenAIAuthModeAgentIdentity,
 			"agent_runtime_id":           key.runtimeID,
 			"agent_private_key":          privateKey,
@@ -68,6 +69,7 @@ func TestAccountTestServiceOpenAICompactAgentIdentityRecoversInvalidTaskOnce(t *
 		Schedulable: true,
 		Concurrency: 1,
 		Credentials: map[string]any{
+			"email":              "test@example.com",
 			"auth_mode":          OpenAIAuthModeAgentIdentity,
 			"agent_runtime_id":   key.runtimeID,
 			"agent_private_key":  privateKey,
