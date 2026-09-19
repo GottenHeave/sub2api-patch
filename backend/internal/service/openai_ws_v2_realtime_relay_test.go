@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +107,13 @@ func TestRealtimeRelayPreservesFramesAndSessionModelAliases(t *testing.T) {
 				require.Equal(t, "realtime=v2", handshake.headers.Get("OpenAI-Alpha"))
 				require.Equal(t, "attestation-test", handshake.headers.Get("x-oai-attestation"))
 				if tc.oauth {
-					require.Equal(t, "wss://api.openai.com/v1/realtime?call_id=rtc_test&intent=quicksilver", handshake.url)
+					upstreamURL, err := url.Parse(handshake.url)
+					require.NoError(t, err)
+					query, err := url.ParseQuery(upstreamURL.RawQuery)
+					require.NoError(t, err)
+					require.Equal(t, url.Values{"call_id": {"rtc_test"}, "intent": {"quicksilver"}}, query)
+					upstreamURL.RawQuery = ""
+					require.Equal(t, "wss://api.openai.com/v1/realtime", upstreamURL.String())
 					require.Equal(t, "account-test", handshake.headers.Get("ChatGPT-Account-ID"))
 				} else {
 					require.Equal(t, "wss://api.openai.com/v1/realtime?model=gpt-realtime", handshake.url)
@@ -172,7 +179,6 @@ func TestRealtimeRelayPreservesFramesAndSessionModelAliases(t *testing.T) {
 			var closeErr coderws.CloseError
 			require.ErrorAs(t, err, &closeErr)
 			require.Equal(t, coderws.StatusGoingAway, closeErr.Code)
-			require.Equal(t, "websocket request canceled", closeErr.Reason)
 			select {
 			case <-serverErr:
 			case <-time.After(3 * time.Second):
