@@ -149,7 +149,7 @@ func TestForwardAsChatCompletions_OAuthAccountKeepsSynthesizedMetadataUserID(t *
 				UserAgent: "claude-cli/2.9.0 (external, cli)", ClientID: "test-client", UpdatedAt: time.Now().Unix(),
 			}}),
 		}
-		account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "tok"}}
+		account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "tok", "email": "owner@example.com"}}
 		_, err := svc.ForwardAsChatCompletions(context.Background(), chatMetaContext(body), account, body, nil)
 		require.NoError(t, err)
 		require.NotEmpty(t, upstream.lastBody)
