@@ -14,7 +14,7 @@ func isOpenAICompatMessagesBridgeBody(body []byte) bool {
 	if len(body) == 0 {
 		return false
 	}
-	if bytes.Contains(body, []byte(openAICompatClaudeCodeTodoGuardMarker)) {
+	if bytes.Contains(body, []byte(openAICompatClaudeCodeTodoGuardText)) {
 		return true
 	}
 	return isOpenAICompatMessagesBridgePromptCacheKey(gjson.GetBytes(body, "prompt_cache_key").String())
@@ -24,7 +24,7 @@ func isOpenAICompatMessagesBridgeRequestBody(reqBody map[string]any) bool {
 	if reqBody == nil {
 		return false
 	}
-	if input, ok := reqBody["input"].([]any); ok && inputContainsText(input, openAICompatClaudeCodeTodoGuardMarker) {
+	if input, ok := reqBody["input"].([]any); ok && inputContainsText(input, openAICompatClaudeCodeTodoGuardText) {
 		return true
 	}
 	return isOpenAICompatMessagesBridgePromptCacheKey(firstNonEmptyString(reqBody["prompt_cache_key"]))
