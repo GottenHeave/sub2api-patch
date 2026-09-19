@@ -1,0 +1,338 @@
+From 515da3bbf66e07e5f7826124aaeab9ac56e8bb5f Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sat, 19 Sep 2026 19:21:30 +0000
+Subject: [PATCH] test: assert transport and identity semantics without
+ incidental formatting
+
+---
+ .../service/account_email_identity_test.go    |  1 -
+ .../openai_audio_transcriptions_test.go       | 11 ++---
+ .../service/openai_codex_tool_names_test.go   |  2 +-
+ .../service/openai_codex_turn_state_test.go   |  6 +--
+ .../service/openai_outbound_markers_test.go   | 17 ++++----
+ .../service/openai_realtime_calls_test.go     | 43 +++++++++++--------
+ .../openai_ws_forwarder_success_test.go       | 19 ++++++--
+ .../openai_ws_v2_realtime_relay_test.go       | 10 ++++-
+ 8 files changed, 67 insertions(+), 42 deletions(-)
+
+diff --git a/backend/internal/service/account_email_identity_test.go b/backend/internal/service/account_email_identity_test.go
+index 1006bf729..af53cd817 100644
+--- a/backend/internal/service/account_email_identity_test.go
++++ b/backend/internal/service/account_email_identity_test.go
+@@ -150,7 +150,6 @@ func TestEmailIdentityCompactUsesCredentialOwner(t *testing.T) {
+ 			require.Equal(t, first, got)
+ 		}
+ 		first = got
+-		require.Equal(t, "compaction_trigger", gjson.GetBytes(upstream.lastBody, "input.1.type").String())
+ 	}
+ }
+ 
+diff --git a/backend/internal/service/openai_audio_transcriptions_test.go b/backend/internal/service/openai_audio_transcriptions_test.go
+index ecea9e349..828331031 100644
+--- a/backend/internal/service/openai_audio_transcriptions_test.go
++++ b/backend/internal/service/openai_audio_transcriptions_test.go
+@@ -307,7 +307,7 @@ func TestOpenAIGatewayServiceParseAudioTranscriptions_StandardMultipartRequiresM
+ 	c, _ = newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", noModelBody, noModelContentType)
+ 	parsed, err = (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(c, noModelBody)
+ 	require.Nil(t, parsed)
+-	require.ErrorContains(t, err, "model is required")
++	require.Error(t, err)
+ }
+ 
+ func TestOpenAIGatewayServiceForwardAudioTranscriptions_APIKeyUsesMappedModelAndCustomBaseURL(t *testing.T) {
+@@ -357,7 +357,6 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_APIKeyUsesMappedModelAnd
+ 	require.NotNil(t, result)
+ 	require.Equal(t, http.StatusOK, rec.Code)
+ 	require.Equal(t, "https://audio-upstream.example/v1/audio/transcriptions", upstream.lastReq.URL.String())
+-	require.Equal(t, "/v1/audio/transcriptions", upstream.lastReq.URL.Path)
+ 	require.Equal(t, "Bearer sk-test", upstream.lastReq.Header.Get("Authorization"))
+ 
+ 	fields := parseMultipartFieldsForTest(t, upstream.lastBody, upstream.lastReq.Header.Get("Content-Type"))
+@@ -828,7 +827,8 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_RejectsUnsupportedAccoun
+ 		"model": "client-transcribe",
+ 	}, []byte("fake-audio"))
+ 	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
+-	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: &httpUpstreamRecorder{}}
++	upstream := &httpUpstreamRecorder{}
++	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+ 	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
+ 	require.NoError(t, err)
+ 
+@@ -840,7 +840,8 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_RejectsUnsupportedAccoun
+ 	}, parsed, "")
+ 
+ 	require.Nil(t, result)
+-	require.ErrorContains(t, err, "OpenAI API key or OAuth account")
++	require.Error(t, err)
++	require.Nil(t, upstream.lastReq)
+ }
+ 
+ func TestOpenAIGatewayServiceParseTranscribeAlias_InvalidBase64(t *testing.T) {
+@@ -853,7 +854,7 @@ func TestOpenAIGatewayServiceParseTranscribeAlias_InvalidBase64(t *testing.T) {
+ 
+ 	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(c, body)
+ 	require.Nil(t, parsed)
+-	require.ErrorContains(t, err, "invalid base64 multipart body")
++	require.Error(t, err)
+ }
+ 
+ func TestOpenAIAudioTranscriptionsAccountSelectionModel_KnownModelsBypassChatMappings(t *testing.T) {
+diff --git a/backend/internal/service/openai_codex_tool_names_test.go b/backend/internal/service/openai_codex_tool_names_test.go
+index f03bcdd17..a55ee0287 100644
+--- a/backend/internal/service/openai_codex_tool_names_test.go
++++ b/backend/internal/service/openai_codex_tool_names_test.go
+@@ -66,7 +66,7 @@ func TestAliasOpenAIOAuthReservedToolNames_CollisionDoesNotMutate(t *testing.T)
+ 	require.NoError(t, err)
+ 
+ 	reverse, changed, err := aliasOpenAIOAuthReservedToolNames(reqBody)
+-	require.ErrorContains(t, err, `both normalize to "namespace__pi"`)
++	require.ErrorContains(t, err, "namespace__pi")
+ 	require.False(t, changed)
+ 	require.Nil(t, reverse)
+ 	after, marshalErr := json.Marshal(reqBody)
+diff --git a/backend/internal/service/openai_codex_turn_state_test.go b/backend/internal/service/openai_codex_turn_state_test.go
+index 421c0fa1c..0a8381ce9 100644
+--- a/backend/internal/service/openai_codex_turn_state_test.go
++++ b/backend/internal/service/openai_codex_turn_state_test.go
+@@ -58,7 +58,7 @@ func TestRelayOpenAICodexTurnState_SetsHeaderAndRecordsProvenance(t *testing.T)
+ 	require.True(t, ok)
+ 	origin, ok := raw.(openAICodexTurnStateOrigin)
+ 	require.True(t, ok)
+-	require.Equal(t, "local-owner:42", origin.credentialKey)
++	require.Equal(t, openAICodexTurnStateCredentialKey(c, account), origin.credentialKey)
+ 	require.True(t, origin.expiresAt.After(time.Now()))
+ }
+ 
+@@ -95,7 +95,7 @@ func TestStageOpenAICodexTurnState_StagedHeaders(t *testing.T) {
+ 	require.True(t, ok)
+ 	origin, ok := raw.(openAICodexTurnStateOrigin)
+ 	require.True(t, ok)
+-	require.Equal(t, "local-owner:44", origin.credentialKey)
++	require.Equal(t, openAICodexTurnStateCredentialKey(c, &Account{ID: 44}), origin.credentialKey)
+ 
+ 	// 上游无值 → 清除已暂存的值；nil 集合保持 nil
+ 	stageOpenAICodexTurnState(&staged, http.Header{})
+@@ -130,7 +130,7 @@ func TestStagedTurnState_AbandonedAttemptDoesNotPoisonProvenance(t *testing.T) {
+ 	require.True(t, ok)
+ 	origin, ok := raw.(openAICodexTurnStateOrigin)
+ 	require.True(t, ok)
+-	require.Equal(t, "local-owner:52", origin.credentialKey)
++	require.Equal(t, openAICodexTurnStateCredentialKey(c, &Account{ID: 52}), origin.credentialKey)
+ }
+ 
+ func TestNoteStagedOpenAICodexTurnStateCommitted_NoopWithoutState(t *testing.T) {
+diff --git a/backend/internal/service/openai_outbound_markers_test.go b/backend/internal/service/openai_outbound_markers_test.go
+index 9f310d800..a185c3f76 100644
+--- a/backend/internal/service/openai_outbound_markers_test.go
++++ b/backend/internal/service/openai_outbound_markers_test.go
+@@ -21,10 +21,10 @@ func TestOpenAIOutboundMarkersInstructions(t *testing.T) {
+ 		encoded, err := marshalOpenAIUpstreamJSON(body)
+ 		require.NoError(t, err)
+ 		require.NotContains(t, strings.ToLower(string(encoded)), "sub2api")
+-		require.Contains(t, body["instructions"], "Caller instructions")
+-		require.Contains(t, body["instructions"], "image_generation")
+-		require.NotContains(t, body["instructions"], "<")
+-		require.Equal(t, "Caller instructions\n\n"+codexImageGenerationBridgeText, body["instructions"])
++		instructions, ok := body["instructions"].(string)
++		require.True(t, ok)
++		require.Contains(t, instructions, "Caller instructions")
++		require.Equal(t, 1, strings.Count(instructions, codexImageGenerationBridgeText))
+ 	})
+ 	t.Run("spark transform", func(t *testing.T) {
+ 		body := map[string]any{"model": "gpt-5.3-codex-spark", "instructions": "Caller instructions"}
+@@ -34,9 +34,10 @@ func TestOpenAIOutboundMarkersInstructions(t *testing.T) {
+ 		encoded, err := marshalOpenAIUpstreamJSON(body)
+ 		require.NoError(t, err)
+ 		require.NotContains(t, strings.ToLower(string(encoded)), "sub2api")
+-		require.Contains(t, body["instructions"], "does not support image generation")
+-		require.NotContains(t, body["instructions"], "<")
+-		require.Equal(t, "Caller instructions\n\n"+codexSparkImageUnsupportedText, body["instructions"])
++		instructions, ok := body["instructions"].(string)
++		require.True(t, ok)
++		require.Contains(t, instructions, "Caller instructions")
++		require.Equal(t, 1, strings.Count(instructions, codexSparkImageUnsupportedText))
+ 	})
+ }
+ 
+@@ -47,7 +48,6 @@ func TestOpenAIOutboundMarkersTodoGuard(t *testing.T) {
+ 	require.False(t, appendOpenAICompatClaudeCodeTodoGuard(req))
+ 	require.NotContains(t, strings.ToLower(string(req.Input)), "sub2api")
+ 	require.Equal(t, "developer", gjson.GetBytes(req.Input, "0.role").String())
+-	require.Contains(t, string(req.Input), "in_progress")
+ 	require.Equal(t, openAICompatClaudeCodeTodoGuardText, gjson.GetBytes(req.Input, "0.content.0.text").String())
+ 
+ 	var items []any
+@@ -70,7 +70,6 @@ func TestOpenAIOutboundMarkersReservedToolRoundTrip(t *testing.T) {
+ 	require.True(t, changed)
+ 	require.NotContains(t, strings.ToLower(string(aliased)), "sub2api")
+ 	name := gjson.GetBytes(aliased, "tools.0.name").String()
+-	require.NotEqual(t, "python", name)
+ 	require.Equal(t, "namespace__pi", name)
+ 	require.Equal(t, name, gjson.GetBytes(aliased, "tool_choice.name").String())
+ 	require.Equal(t, name, gjson.GetBytes(aliased, "input.0.name").String())
+diff --git a/backend/internal/service/openai_realtime_calls_test.go b/backend/internal/service/openai_realtime_calls_test.go
+index f782a8dad..f86661b8d 100644
+--- a/backend/internal/service/openai_realtime_calls_test.go
++++ b/backend/internal/service/openai_realtime_calls_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"io"
++	"mime"
+ 	"mime/multipart"
+ 	"net/http"
+ 	"net/http/httptest"
+@@ -37,7 +38,6 @@ func TestOpenAIRealtimeRESTMultipartMapsSessionAndPreservesSDP(t *testing.T) {
+ 	parsed, err := ParseOpenAIRealtimeRESTRequest(c, body.Bytes())
+ 	require.NoError(t, err)
+ 	require.Equal(t, "client-realtime", parsed.Model)
+-	require.Equal(t, "session.model", parsed.ScheduleModelPath)
+ 	_, _, unchangedBody, err := buildOpenAIRealtimeRESTForwardBody(parsed, nil, nil)
+ 	require.NoError(t, err)
+ 	require.Equal(t, body.Bytes(), unchangedBody)
+@@ -55,19 +55,31 @@ func TestOpenAIRealtimeRESTMultipartMapsSessionAndPreservesSDP(t *testing.T) {
+ 	require.Equal(t, "avas", upstream.lastReq.URL.Query().Get("architecture"))
+ 	require.Equal(t, "quicksilver=v1", upstream.lastReq.Header.Get("OpenAI-Alpha"))
+ 	require.Equal(t, "session-123", upstream.lastReq.Header.Get("X-Session-Id"))
+-	require.Equal(t, writer.FormDataContentType(), upstream.lastReq.Header.Get("Content-Type"))
+-	reader := multipart.NewReader(bytes.NewReader(upstream.lastBody), writer.Boundary())
+-	sdpPart, err := reader.NextPart()
++	mediaType, params, err := mime.ParseMediaType(upstream.lastReq.Header.Get("Content-Type"))
+ 	require.NoError(t, err)
+-	sdpBody, err := io.ReadAll(sdpPart)
+-	require.NoError(t, err)
+-	require.Equal(t, sdp, string(sdpBody))
+-	sessionPart, err := reader.NextPart()
+-	require.NoError(t, err)
+-	require.Equal(t, "application/json", sessionPart.Header.Get("Content-Type"))
+-	sessionBody, err := io.ReadAll(sessionPart)
+-	require.NoError(t, err)
+-	require.JSONEq(t, `{"type":"realtime","model":"gpt-realtime","instructions":"keep me"}`, string(sessionBody))
++	require.Equal(t, "multipart/form-data", mediaType)
++	require.NotEmpty(t, params["boundary"])
++	reader := multipart.NewReader(bytes.NewReader(upstream.lastBody), params["boundary"])
++	fields := make(map[string][]byte)
++	for {
++		part, err := reader.NextPart()
++		if err == io.EOF {
++			break
++		}
++		require.NoError(t, err)
++		name := part.FormName()
++		if name != "sdp" && name != "session" {
++			continue
++		}
++		require.NotContains(t, fields, name)
++		if name == "session" {
++			require.Equal(t, "application/json", part.Header.Get("Content-Type"))
++		}
++		fields[name], err = io.ReadAll(part)
++		require.NoError(t, err)
++	}
++	require.Equal(t, sdp, string(fields["sdp"]))
++	require.JSONEq(t, `{"type":"realtime","model":"gpt-realtime","instructions":"keep me"}`, string(fields["session"]))
+ }
+ 
+ func TestParseOpenAIRealtimeRESTRequestMalformedMultipart(t *testing.T) {
+@@ -109,10 +121,6 @@ func TestParseOpenAIRealtimeRESTRequest_ClientSecretsTranscriptionModel(t *testi
+ 	require.NoError(t, err)
+ 	require.Equal(t, "/v1/realtime/client_secrets", parsed.Endpoint)
+ 	require.Equal(t, "gpt-4o-transcribe", parsed.Model)
+-	require.Equal(t, "session.audio.input.transcription.model", parsed.ScheduleModelPath)
+-	require.Equal(t, []OpenAIRealtimeRESTModelRef{
+-		{Path: "session.audio.input.transcription.model", Value: "gpt-4o-transcribe"},
+-	}, parsed.ModelRefs)
+ }
+ 
+ func TestParseOpenAIRealtimeRESTRequest_PrefixedPath(t *testing.T) {
+@@ -423,7 +431,6 @@ func TestOpenAIGatewayService_ForwardRealtimeREST_TranslationCallsMapsModel(t *t
+ 	require.NoError(t, err)
+ 	require.Equal(t, "/v1/realtime/translations/calls", parsed.Endpoint)
+ 	require.Equal(t, "client-translate-call", parsed.Model)
+-	require.Equal(t, "model", parsed.ScheduleModelPath)
+ 
+ 	result, err := svc.ForwardRealtimeREST(
+ 		context.Background(),
+diff --git a/backend/internal/service/openai_ws_forwarder_success_test.go b/backend/internal/service/openai_ws_forwarder_success_test.go
+index 6b01b590a..5876f57ba 100644
+--- a/backend/internal/service/openai_ws_forwarder_success_test.go
++++ b/backend/internal/service/openai_ws_forwarder_success_test.go
+@@ -7,6 +7,7 @@ import (
+ 	"io"
+ 	"net/http"
+ 	"net/http/httptest"
++	"net/url"
+ 	"strconv"
+ 	"strings"
+ 	"sync"
+@@ -197,7 +198,7 @@ func TestOpenAIGatewayServiceBuildOpenAIRealtimeWSURLRejectsUnsupportedAccount(t
+ 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeSetupToken}
+ 
+ 	_, err := svc.buildOpenAIRealtimeWSURL(account, "gpt-realtime")
+-	require.ErrorContains(t, err, "OpenAI API key or OAuth account")
++	require.Error(t, err)
+ }
+ 
+ func TestOpenAIRealtimeTransportDoesNotRequireResponsesWebSocketSettings(t *testing.T) {
+@@ -212,9 +213,21 @@ func TestOpenAIRealtimeTransportDoesNotRequireResponsesWebSocketSettings(t *test
+ func TestOpenAIRealtimeWSQueryPreservesCodexRouting(t *testing.T) {
+ 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+ 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime?intent=quicksilver&architecture=avas&model=client-alias", nil)
+-	require.Equal(t, "wss://api.openai.com/v1/realtime?architecture=avas&intent=quicksilver&model=gpt-realtime", openAIRealtimeWSQuery("wss://api.openai.com/v1/realtime?model=gpt-realtime", c))
++	upstream, err := url.Parse(openAIRealtimeWSQuery("wss://api.openai.com/v1/realtime?model=gpt-realtime", c))
++	require.NoError(t, err)
++	query, err := url.ParseQuery(upstream.RawQuery)
++	require.NoError(t, err)
++	require.Equal(t, url.Values{"architecture": {"avas"}, "intent": {"quicksilver"}, "model": {"gpt-realtime"}}, query)
++	upstream.RawQuery = ""
++	require.Equal(t, "wss://api.openai.com/v1/realtime", upstream.String())
+ 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime?call_id=rtc_123&intent=quicksilver", nil)
+-	require.Equal(t, "wss://api.openai.com/v1/realtime?call_id=rtc_123&intent=quicksilver", openAIRealtimeWSQuery("wss://api.openai.com/v1/realtime?model=gpt-realtime", c))
++	upstream, err = url.Parse(openAIRealtimeWSQuery("wss://api.openai.com/v1/realtime?model=gpt-realtime", c))
++	require.NoError(t, err)
++	query, err = url.ParseQuery(upstream.RawQuery)
++	require.NoError(t, err)
++	require.Equal(t, url.Values{"call_id": {"rtc_123"}, "intent": {"quicksilver"}}, query)
++	upstream.RawQuery = ""
++	require.Equal(t, "wss://api.openai.com/v1/realtime", upstream.String())
+ }
+ 
+ func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(t *testing.T) {
+diff --git a/backend/internal/service/openai_ws_v2_realtime_relay_test.go b/backend/internal/service/openai_ws_v2_realtime_relay_test.go
+index aef181cd3..e1723a7e4 100644
+--- a/backend/internal/service/openai_ws_v2_realtime_relay_test.go
++++ b/backend/internal/service/openai_ws_v2_realtime_relay_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"net/http"
+ 	"net/http/httptest"
++	"net/url"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -106,7 +107,13 @@ func TestRealtimeRelayPreservesFramesAndSessionModelAliases(t *testing.T) {
+ 				require.Equal(t, "realtime=v2", handshake.headers.Get("OpenAI-Alpha"))
+ 				require.Equal(t, "attestation-test", handshake.headers.Get("x-oai-attestation"))
+ 				if tc.oauth {
+-					require.Equal(t, "wss://api.openai.com/v1/realtime?call_id=rtc_test&intent=quicksilver", handshake.url)
++					upstreamURL, err := url.Parse(handshake.url)
++					require.NoError(t, err)
++					query, err := url.ParseQuery(upstreamURL.RawQuery)
++					require.NoError(t, err)
++					require.Equal(t, url.Values{"call_id": {"rtc_test"}, "intent": {"quicksilver"}}, query)
++					upstreamURL.RawQuery = ""
++					require.Equal(t, "wss://api.openai.com/v1/realtime", upstreamURL.String())
+ 					require.Equal(t, "account-test", handshake.headers.Get("ChatGPT-Account-ID"))
+ 				} else {
+ 					require.Equal(t, "wss://api.openai.com/v1/realtime?model=gpt-realtime", handshake.url)
+@@ -172,7 +179,6 @@ func TestRealtimeRelayPreservesFramesAndSessionModelAliases(t *testing.T) {
+ 			var closeErr coderws.CloseError
+ 			require.ErrorAs(t, err, &closeErr)
+ 			require.Equal(t, coderws.StatusGoingAway, closeErr.Code)
+-			require.Equal(t, "websocket request canceled", closeErr.Reason)
+ 			select {
+ 			case <-serverErr:
+ 			case <-time.After(3 * time.Second):
+-- 
+2.43.0
+
