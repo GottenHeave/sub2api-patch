@@ -837,7 +837,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CodexImageBridge
 	require.True(t, gjson.Get(functionPayload, `tools.#(name=="image_gen.imagegen")`).Exists())
 	require.False(t, gjson.Get(functionPayload, `tools.#(type=="image_generation")`).Exists())
 	require.False(t, gjson.Get(functionPayload, "tool_choice").Exists())
-	require.NotContains(t, gjson.Get(functionPayload, "instructions").String(), codexImageGenerationBridgeMarker)
+	require.NotContains(t, gjson.Get(functionPayload, "instructions").String(), codexImageGenerationBridgeText)
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_DedicatedModeDoesNotReuseConnAcrossSessions(t *testing.T) {
