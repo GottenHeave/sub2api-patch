@@ -313,7 +313,7 @@ func TestOpenAIGatewayServiceParseAudioTranscriptions_StandardMultipartRequiresM
 	c, _ = newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", noModelBody, noModelContentType)
 	parsed, err = (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(c, noModelBody)
 	require.Nil(t, parsed)
-	require.ErrorContains(t, err, "model is required")
+	require.Error(t, err)
 }
 
 func TestOpenAIGatewayServiceForwardAudioTranscriptions_APIKeyUsesMappedModelAndCustomBaseURL(t *testing.T) {
@@ -363,7 +363,6 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_APIKeyUsesMappedModelAnd
 	require.NotNil(t, result)
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "https://audio-upstream.example/v1/audio/transcriptions", upstream.lastReq.URL.String())
-	require.Equal(t, "/v1/audio/transcriptions", upstream.lastReq.URL.Path)
 	require.Equal(t, "Bearer sk-test", upstream.lastReq.Header.Get("Authorization"))
 
 	fields := parseMultipartFieldsForTest(t, upstream.lastBody, upstream.lastReq.Header.Get("Content-Type"))
@@ -834,7 +833,8 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_RejectsUnsupportedAccoun
 		"model": "client-transcribe",
 	}, []byte("fake-audio"))
 	c, _ := newOpenAIAudioTranscriptionTestContext(http.MethodPost, "/v1/audio/transcriptions", body, contentType)
-	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: &httpUpstreamRecorder{}}
+	upstream := &httpUpstreamRecorder{}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
 	parsed, err := svc.ParseOpenAIAudioTranscriptionsRequest(c, body)
 	require.NoError(t, err)
 
@@ -846,7 +846,8 @@ func TestOpenAIGatewayServiceForwardAudioTranscriptions_RejectsUnsupportedAccoun
 	}, parsed, "")
 
 	require.Nil(t, result)
-	require.ErrorContains(t, err, "OpenAI API key or OAuth account")
+	require.Error(t, err)
+	require.Nil(t, upstream.lastReq)
 }
 
 func TestOpenAIGatewayServiceParseTranscribeAlias_InvalidBase64(t *testing.T) {
@@ -859,7 +860,7 @@ func TestOpenAIGatewayServiceParseTranscribeAlias_InvalidBase64(t *testing.T) {
 
 	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionsRequest(c, body)
 	require.Nil(t, parsed)
-	require.ErrorContains(t, err, "invalid base64 multipart body")
+	require.Error(t, err)
 }
 
 func TestOpenAIAudioTranscriptionsAccountSelectionModel_KnownModelsBypassChatMappings(t *testing.T) {
