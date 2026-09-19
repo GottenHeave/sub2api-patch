@@ -1,0 +1,394 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sat, 19 Sep 2026 06:17:10 +0000
+Subject: [PATCH 12/12] fix: deduplicate plain guidance and use neutral tool
+ alias
+
+---
+ .../service/openai_codex_tool_names.go        |  2 +-
+ .../service/openai_codex_tool_names_test.go   | 36 +++----
+ .../service/openai_codex_transform.go         | 10 +-
+ .../service/openai_codex_transform_test.go    | 12 +--
+ .../service/openai_compat_model_test.go       | 14 +--
+ .../service/openai_gateway_service_test.go    |  2 +-
+ .../openai_image_generation_controls_test.go  |  2 +-
+ .../service/openai_messages_bridge.go         |  4 +-
+ .../service/openai_messages_todo_guard.go     |  9 +-
+ .../service/openai_oauth_passthrough_test.go  |  4 +-
+ .../service/openai_outbound_markers_test.go   | 93 +++++++++++++++++++
+ .../service/openai_setup_token_compat_test.go |  2 +-
+ ...penai_ws_forwarder_ingress_session_test.go |  2 +-
+ 13 files changed, 140 insertions(+), 52 deletions(-)
+ create mode 100644 backend/internal/service/openai_outbound_markers_test.go
+
+diff --git a/backend/internal/service/openai_codex_tool_names.go b/backend/internal/service/openai_codex_tool_names.go
+index 849a45e417ab13786bd3c3d2aae20f92c48b61ac..bf86dfb1b4936ed9b8c9aace165bd07bf874ef66 100644
+--- a/backend/internal/service/openai_codex_tool_names.go
++++ b/backend/internal/service/openai_codex_tool_names.go
+@@ -14,3 +14,3 @@ const (
+ 	codexReservedPythonToolName = "python"
+-	codexPythonToolAlias        = "python__sub2api"
++	codexPythonToolAlias        = "namespace__pi"
+ 	codexToolNameReverseKey     = "openai_codex_tool_name_reverse"
+diff --git a/backend/internal/service/openai_codex_tool_names_test.go b/backend/internal/service/openai_codex_tool_names_test.go
+index 73b7164deb107d1bf868d905aaccfac919c75107..f03bcdd173e8b63be4b872b148abb6b2af39be78 100644
+--- a/backend/internal/service/openai_codex_tool_names_test.go
++++ b/backend/internal/service/openai_codex_tool_names_test.go
+@@ -68,3 +68,3 @@ func TestAliasOpenAIOAuthReservedToolNames_CollisionDoesNotMutate(t *testing.T)
+ 	reverse, changed, err := aliasOpenAIOAuthReservedToolNames(reqBody)
+-	require.ErrorContains(t, err, `both normalize to "python__sub2api"`)
++	require.ErrorContains(t, err, `both normalize to "namespace__pi"`)
+ 	require.False(t, changed)
+@@ -104,9 +104,9 @@ func TestRestoreCodexToolNamesFromContext_HTTPAndWSPayloadShapes(t *testing.T) {
+ 	streamEvent := restoreCodexToolNamesFromContext(c, []byte(
+-		`{"type":"response.output_item.done","item":{"type":"function_call","name":"python__sub2api"},"note":"python__sub2api"}`,
++		`{"type":"response.output_item.done","item":{"type":"function_call","name":"namespace__pi"},"note":"namespace__pi"}`,
+ 	))
+ 	require.Equal(t, "python", gjson.GetBytes(streamEvent, "item.name").String())
+-	require.Equal(t, "python__sub2api", gjson.GetBytes(streamEvent, "note").String())
++	require.Equal(t, "namespace__pi", gjson.GetBytes(streamEvent, "note").String())
+ 
+ 	nonStreaming := restoreCodexToolNamesFromContext(c, []byte(
+-		`{"id":"resp_1","output":[{"type":"function_call","name":"python__sub2api"}]}`,
++		`{"id":"resp_1","output":[{"type":"function_call","name":"namespace__pi"}]}`,
+ 	))
+@@ -116,4 +116,4 @@ func TestRestoreCodexToolNamesFromContext_HTTPAndWSPayloadShapes(t *testing.T) {
+ 	require.JSONEq(t,
+-		`{"type":"response.output_item.added","item":{"name":"python__sub2api"}}`,
+-		string(restoreCodexToolNamesFromContext(c, []byte(`{"type":"response.output_item.added","item":{"name":"python__sub2api"}}`))),
++		`{"type":"response.output_item.added","item":{"name":"namespace__pi"}}`,
++		string(restoreCodexToolNamesFromContext(c, []byte(`{"type":"response.output_item.added","item":{"name":"namespace__pi"}}`))),
+ 	)
+@@ -138,3 +138,3 @@ func TestRestoreCodexToolNamesInJSON_OnlyTouchesResponseToolCallNodesAndPreserve
+ 	reverse := map[string]string{codexPythonToolAlias: "python"}
+-	body := []byte(`{"type":"response.completed","response":{"output":[{"type":"function_call","name":"python__sub2api"},{"type":"message","name":"python__sub2api","content":[]}]},"metadata":{"name":"python__sub2api"},"sequence":900719925474099312345}`)
++	body := []byte(`{"type":"response.completed","response":{"output":[{"type":"function_call","name":"namespace__pi"},{"type":"message","name":"namespace__pi","content":[]}]},"metadata":{"name":"namespace__pi"},"sequence":900719925474099312345}`)
+ 
+@@ -156,3 +156,3 @@ func TestRestoreCodexToolNamesInJSON_ExplicitHTTPAndSSEToolCallProtocols(t *test
+ 			name: "chat http",
+-			body: `{"choices":[{"message":{"tool_calls":[{"type":"function","function":{"name":"python__sub2api"}}]}}],"metadata":{"name":"python__sub2api"}}`,
++			body: `{"choices":[{"message":{"tool_calls":[{"type":"function","function":{"name":"namespace__pi"}}]}}],"metadata":{"name":"namespace__pi"}}`,
+ 			path: "choices.0.message.tool_calls.0.function.name",
+@@ -161,3 +161,3 @@ func TestRestoreCodexToolNamesInJSON_ExplicitHTTPAndSSEToolCallProtocols(t *test
+ 			name: "chat sse",
+-			body: `{"choices":[{"delta":{"tool_calls":[{"type":"function","function":{"name":"python__sub2api"}}]}}],"metadata":{"name":"python__sub2api"}}`,
++			body: `{"choices":[{"delta":{"tool_calls":[{"type":"function","function":{"name":"namespace__pi"}}]}}],"metadata":{"name":"namespace__pi"}}`,
+ 			path: "choices.0.delta.tool_calls.0.function.name",
+@@ -166,3 +166,3 @@ func TestRestoreCodexToolNamesInJSON_ExplicitHTTPAndSSEToolCallProtocols(t *test
+ 			name: "messages tool use",
+-			body: `{"type":"content_block_start","content":[{"type":"tool_use","name":"python__sub2api"}],"metadata":{"name":"python__sub2api"}}`,
++			body: `{"type":"content_block_start","content":[{"type":"tool_use","name":"namespace__pi"}],"metadata":{"name":"namespace__pi"}}`,
+ 			path: "content.0.name",
+@@ -211,7 +211,7 @@ func TestCodexToolNameReverse_WSSessionReplacementDoesNotChangeActiveTurn(t *tes
+ 
+-	update := []byte(`{"type":"session.update","session":{"tools":[{"type":"function","name":"python__sub2api"}]}}`)
++	update := []byte(`{"type":"session.update","session":{"tools":[{"type":"function","name":"namespace__pi"}]}}`)
+ 	updateCodexToolNameReverseForWSFrame(c, update, nil)
+-	currentOutput := restoreCodexToolNamesFromContext(c, []byte(`{"type":"response.output_item.done","item":{"type":"function_call","name":"python__sub2api"}}`))
++	currentOutput := restoreCodexToolNamesFromContext(c, []byte(`{"type":"response.output_item.done","item":{"type":"function_call","name":"namespace__pi"}}`))
+ 	require.Equal(t, "python", gjson.GetBytes(currentOutput, "item.name").String())
+-	sessionEcho := restoreCodexToolNamesFromContext(c, []byte(`{"type":"session.updated","session":{"tools":[{"type":"function","name":"python__sub2api"}]}}`))
++	sessionEcho := restoreCodexToolNamesFromContext(c, []byte(`{"type":"session.updated","session":{"tools":[{"type":"function","name":"namespace__pi"}]}}`))
+ 	require.Equal(t, codexPythonToolAlias, gjson.GetBytes(sessionEcho, "session.tools.0.name").String())
+@@ -220,3 +220,3 @@ func TestCodexToolNameReverse_WSSessionReplacementDoesNotChangeActiveTurn(t *tes
+ 	updateCodexToolNameReverseForWSFrame(c, next, nil)
+-	nextOutput := restoreCodexToolNamesFromContext(c, []byte(`{"type":"response.output_item.done","item":{"type":"function_call","name":"python__sub2api"}}`))
++	nextOutput := restoreCodexToolNamesFromContext(c, []byte(`{"type":"response.output_item.done","item":{"type":"function_call","name":"namespace__pi"}}`))
+ 	require.Equal(t, codexPythonToolAlias, gjson.GetBytes(nextOutput, "item.name").String())
+@@ -225,8 +225,8 @@ func TestCodexToolNameReverse_WSSessionReplacementDoesNotChangeActiveTurn(t *tes
+ 	updateCodexToolNameReverseForWSFrame(c, sessionPython, map[string]string{codexPythonToolAlias: "python"})
+-	explicitLiteral := []byte(`{"type":"response.create","input":[{"type":"additional_tools","tools":[{"type":"function","name":"python__sub2api"}]}]}`)
++	explicitLiteral := []byte(`{"type":"response.create","input":[{"type":"additional_tools","tools":[{"type":"function","name":"namespace__pi"}]}]}`)
+ 	updateCodexToolNameReverseForWSFrame(c, explicitLiteral, nil)
+-	literalOutput := restoreCodexToolNamesFromContext(c, []byte(`{"type":"response.output_item.done","item":{"type":"function_call","name":"python__sub2api"}}`))
++	literalOutput := restoreCodexToolNamesFromContext(c, []byte(`{"type":"response.output_item.done","item":{"type":"function_call","name":"namespace__pi"}}`))
+ 	require.Equal(t, codexPythonToolAlias, gjson.GetBytes(literalOutput, "item.name").String())
+ 	updateCodexToolNameReverseForWSFrame(c, next, nil)
+-	inheritedOutput := restoreCodexToolNamesFromContext(c, []byte(`{"type":"response.output_item.done","item":{"type":"function_call","name":"python__sub2api"}}`))
++	inheritedOutput := restoreCodexToolNamesFromContext(c, []byte(`{"type":"response.output_item.done","item":{"type":"function_call","name":"namespace__pi"}}`))
+ 	require.Equal(t, "python", gjson.GetBytes(inheritedOutput, "item.name").String())
+@@ -242,3 +242,3 @@ func TestRestoreCodexToolNamesFromSSEContextUsesEventLineTypeWithoutAddingType(t
+ 	setCodexToolNameReverse(c, map[string]string{codexPythonToolAlias: codexReservedPythonToolName})
+-	payload := []byte(`{"item":{"type":"function_call","name":"python__sub2api"},"metadata":{"name":"python__sub2api"}}`)
++	payload := []byte(`{"item":{"type":"function_call","name":"namespace__pi"},"metadata":{"name":"namespace__pi"}}`)
+ 
+diff --git a/backend/internal/service/openai_codex_transform.go b/backend/internal/service/openai_codex_transform.go
+index 9aebb12ee7c2f6cd6029a023212d975c316e801f..4550f856ae0553f5960449cace68c81381328c54 100644
+--- a/backend/internal/service/openai_codex_transform.go
++++ b/backend/internal/service/openai_codex_transform.go
+@@ -137,6 +137,4 @@ const codexImageGenerationFunctionToolName = "image_gen.imagegen"
+ const (
+-	codexImageGenerationBridgeMarker = "<sub2api-codex-image-generation>"
+-	codexImageGenerationBridgeText   = codexImageGenerationBridgeMarker + "\nWhen the user asks for raster image generation or editing, use the OpenAI Responses native `image_generation` tool attached to this request. The local Codex client may not expose an `image_gen` namespace, but that does not mean image generation is unavailable. Do not ask the user to switch to CLI fallback solely because `image_gen` is absent.\n</sub2api-codex-image-generation>"
+-	codexSparkImageUnsupportedMarker = "<sub2api-codex-spark-image-unsupported>"
+-	codexSparkImageUnsupportedText   = codexSparkImageUnsupportedMarker + "\nThe current model is gpt-5.3-codex-spark, which does not support image generation, image editing, image input, the `image_generation` tool, or Codex `image_gen`/`$imagegen` workflows. If the user asks for image generation or image editing, clearly explain this model limitation and ask them to switch to a non-Spark Codex model such as gpt-5.3-codex or gpt-5.4. Do not claim that the local environment merely lacks image_gen tooling, and do not suggest CLI fallback as the primary fix while the model remains Spark.\n</sub2api-codex-spark-image-unsupported>"
++	codexImageGenerationBridgeText = "When the user asks for raster image generation or editing, use the OpenAI Responses native `image_generation` tool attached to this request. The local Codex client may not expose an `image_gen` namespace, but that does not mean image generation is unavailable. Do not ask the user to switch to CLI fallback solely because `image_gen` is absent."
++	codexSparkImageUnsupportedText = "The current model is gpt-5.3-codex-spark, which does not support image generation, image editing, image input, the `image_generation` tool, or Codex `image_gen`/`$imagegen` workflows. If the user asks for image generation or image editing, clearly explain this model limitation and ask them to switch to a non-Spark Codex model such as gpt-5.3-codex or gpt-5.4. Do not claim that the local environment merely lacks image_gen tooling, and do not suggest CLI fallback as the primary fix while the model remains Spark."
+ )
+@@ -1107,3 +1105,3 @@ func applyCodexImageGenerationBridgeInstructions(reqBody map[string]any) bool {
+ 	existing, _ := reqBody["instructions"].(string)
+-	if strings.Contains(existing, codexImageGenerationBridgeMarker) {
++	if strings.Contains(existing, codexImageGenerationBridgeText) {
+ 		return false
+@@ -1126,3 +1124,3 @@ func applyCodexSparkImageUnsupportedInstructions(reqBody map[string]any) bool {
+ 	existing, _ := reqBody["instructions"].(string)
+-	if strings.Contains(existing, codexSparkImageUnsupportedMarker) {
++	if strings.Contains(existing, codexSparkImageUnsupportedText) {
+ 		return false
+diff --git a/backend/internal/service/openai_codex_transform_test.go b/backend/internal/service/openai_codex_transform_test.go
+index 6a682ce73eef27e1554ee38672ae95b37fa06b95..54c044e69a7d865ae6735a6975ce8f30864b2ab3 100644
+--- a/backend/internal/service/openai_codex_transform_test.go
++++ b/backend/internal/service/openai_codex_transform_test.go
+@@ -58,3 +58,3 @@ func TestApplyCodexOAuthTransform_MessagesBridgePromptCacheKeyIsHeaderOnly(t *te
+ 						"type": "input_text",
+-						"text": openAICompatClaudeCodeTodoGuardMarker,
++						"text": openAICompatClaudeCodeTodoGuardText,
+ 					},
+@@ -1044,3 +1044,3 @@ func TestCodexImageGenerationBridge_PreservesClientImageFunctionTools(t *testing
+ 				require.Equal(t, "auto", tt.reqBody["tool_choice"])
+-				require.Contains(t, tt.reqBody["instructions"], codexImageGenerationBridgeMarker)
++				require.Contains(t, tt.reqBody["instructions"], codexImageGenerationBridgeText)
+ 			}
+@@ -1065,3 +1065,3 @@ func TestApplyCodexImageGenerationBridgeInstructions_AppendsBridgeOnce(t *testin
+ 	require.Contains(t, instructions, "existing instructions")
+-	require.Contains(t, instructions, codexImageGenerationBridgeMarker)
++	require.Contains(t, instructions, codexImageGenerationBridgeText)
+ 	require.Contains(t, instructions, "Responses native `image_generation` tool")
+@@ -1165,6 +1165,6 @@ func TestApplyCodexOAuthTransform_AddsSparkImageUnsupportedInstructions(t *testi
+ 	require.Contains(t, instructions, "existing instructions")
+-	require.Contains(t, instructions, codexSparkImageUnsupportedMarker)
++	require.Contains(t, instructions, codexSparkImageUnsupportedText)
+ 	require.Contains(t, instructions, "does not support image generation")
+ 	require.Contains(t, instructions, "switch to a non-Spark Codex model")
+-	require.NotContains(t, instructions, codexImageGenerationBridgeMarker)
++	require.NotContains(t, instructions, codexImageGenerationBridgeText)
+ }
+@@ -1181,3 +1181,3 @@ func TestApplyCodexOAuthTransform_DoesNotAddSparkImageUnsupportedForNonSpark(t *
+ 	require.True(t, ok)
+-	require.NotContains(t, instructions, codexSparkImageUnsupportedMarker)
++	require.NotContains(t, instructions, codexSparkImageUnsupportedText)
+ }
+diff --git a/backend/internal/service/openai_compat_model_test.go b/backend/internal/service/openai_compat_model_test.go
+index 945615bf571767809baa9b4ab8885df18a68f001..02e175439c6020e697f90f10b33bfe7d9f83d6ae 100644
+--- a/backend/internal/service/openai_compat_model_test.go
++++ b/backend/internal/service/openai_compat_model_test.go
+@@ -656,3 +656,3 @@ func TestForwardAsAnthropic_TrimsFullReplayOnlyForCodexCompatModels(t *testing.T
+ 	require.Equal(t, "developer", gjson.GetBytes(codexBody, "input.0.role").String())
+-	require.Contains(t, gjson.GetBytes(codexBody, "input.0.content.0.text").String(), "<sub2api-claude-code-todo-guard>")
++	require.Contains(t, gjson.GetBytes(codexBody, "input.0.content.0.text").String(), openAICompatClaudeCodeTodoGuardText)
+ 	require.Equal(t, "message-03", gjson.GetBytes(codexBody, "input.1.content.0.text").String())
+@@ -702,3 +702,3 @@ func TestForwardAsAnthropic_OAuthCompatKeepsFullReplayForCacheGrowth(t *testing.
+ 	require.Equal(t, "developer", gjson.GetBytes(upstream.lastBody, "input.0.role").String())
+-	require.Contains(t, gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String(), "<sub2api-claude-code-todo-guard>")
++	require.Contains(t, gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String(), openAICompatClaudeCodeTodoGuardText)
+ 	require.Equal(t, "message-00", gjson.GetBytes(upstream.lastBody, "input.1.content.0.text").String())
+@@ -756,3 +756,3 @@ func TestForwardAsAnthropic_AttachesPreviousResponseIDForCompatContinuation(t *t
+ 	require.Equal(t, "developer", gjson.GetBytes(upstream.lastBody, "input.0.role").String())
+-	require.Contains(t, gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String(), "<sub2api-claude-code-todo-guard>")
++	require.Contains(t, gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String(), openAICompatClaudeCodeTodoGuardText)
+ 	require.Equal(t, "second", gjson.GetBytes(upstream.lastBody, "input.1.content.0.text").String())
+@@ -861,3 +861,3 @@ func TestForwardAsAnthropic_ReplaysFullToolHistoryWhenPreviousResponseUnavailabl
+ 	require.Equal(t, "developer", gjson.GetBytes(upstream.bodies[1], "input.0.role").String())
+-	require.Contains(t, gjson.GetBytes(upstream.bodies[1], "input.0.content.0.text").String(), "<sub2api-claude-code-todo-guard>")
++	require.Contains(t, gjson.GetBytes(upstream.bodies[1], "input.0.content.0.text").String(), openAICompatClaudeCodeTodoGuardText)
+ 	require.Equal(t, "first", gjson.GetBytes(upstream.bodies[1], "input.1.content.0.text").String())
+@@ -1028,3 +1028,3 @@ func TestForwardAsAnthropic_APIKeyMetadataSessionSurvivesChangingCacheControlAnc
+ 	require.Equal(t, "developer", gjson.GetBytes(upstream.bodies[1], "input.0.role").String())
+-	require.Contains(t, gjson.GetBytes(upstream.bodies[1], "input.0.content.0.text").String(), "<sub2api-claude-code-todo-guard>")
++	require.Contains(t, gjson.GetBytes(upstream.bodies[1], "input.0.content.0.text").String(), openAICompatClaudeCodeTodoGuardText)
+ 	require.Equal(t, "rewritten context", gjson.GetBytes(upstream.bodies[1], "input.1.content.0.text").String())
+@@ -1417,3 +1417,3 @@ func TestForwardAsAnthropic_OAuthAddsClaudeCodeTodoGuardForCompatModel(t *testin
+ 	require.Equal(t, "developer", gjson.GetBytes(upstream.lastBody, "input.1.role").String())
+-	require.Contains(t, gjson.GetBytes(upstream.lastBody, "input.1.content.0.text").String(), "<sub2api-claude-code-todo-guard>")
++	require.Contains(t, gjson.GetBytes(upstream.lastBody, "input.1.content.0.text").String(), openAICompatClaudeCodeTodoGuardText)
+ 	require.Equal(t, "user", gjson.GetBytes(upstream.lastBody, "input.2.role").String())
+@@ -2304,3 +2304,3 @@ func TestForwardAsAnthropic_AstraContinuationRestoresHistoryAndDisablesUnsupport
+ 				require.Equal(t, int64(4), gjson.GetBytes(sent, "input.#").Int())
+-				require.Contains(t, gjson.GetBytes(sent, "input.0.content.0.text").String(), "<sub2api-claude-code-todo-guard>")
++				require.Contains(t, gjson.GetBytes(sent, "input.0.content.0.text").String(), openAICompatClaudeCodeTodoGuardText)
+ 				require.Equal(t, "first", gjson.GetBytes(sent, "input.1.content.0.text").String())
+diff --git a/backend/internal/service/openai_gateway_service_test.go b/backend/internal/service/openai_gateway_service_test.go
+index 69113a59d9febea715cd327f5e822b597cda6b08..0f495cd8f5bac792f0c3f356c8d81010ec0e5963 100644
+--- a/backend/internal/service/openai_gateway_service_test.go
++++ b/backend/internal/service/openai_gateway_service_test.go
+@@ -3130,3 +3130,3 @@ func TestOpenAIBuildUpstreamRequestOAuthMessagesBridgeUsesSessionOnly(t *testing
+ 	c, _ := gin.CreateTestContext(rec)
+-	body := []byte(`{"model":"gpt-5.5","prompt_cache_key":"anthropic-metadata-session-1","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"<sub2api-claude-code-todo-guard>"}]},{"type":"message","role":"user","content":"hello"}]}`)
++	body := []byte(`{"model":"gpt-5.5","prompt_cache_key":"anthropic-metadata-session-1","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"` + openAICompatClaudeCodeTodoGuardText + `"}]},{"type":"message","role":"user","content":"hello"}]}`)
+ 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+diff --git a/backend/internal/service/openai_image_generation_controls_test.go b/backend/internal/service/openai_image_generation_controls_test.go
+index 300bea37639d1ed70aac84d763e244200fc4068e..6d6c7ccf6e9b8161c5ed323987eacb2b4ec6c1fe 100644
+--- a/backend/internal/service/openai_image_generation_controls_test.go
++++ b/backend/internal/service/openai_image_generation_controls_test.go
+@@ -398,3 +398,3 @@ func TestOpenAIGatewayServiceForward_CodexBridgePreservesImageGenFunction(t *tes
+ 			require.False(t, gjson.GetBytes(upstream.lastBody, "tool_choice").Exists())
+-			require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexImageGenerationBridgeMarker)
++			require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexImageGenerationBridgeText)
+ 		})
+diff --git a/backend/internal/service/openai_messages_bridge.go b/backend/internal/service/openai_messages_bridge.go
+index d67b4b1e9183ebaa64475117686b12bb369c20ec..5c04582fab444a2c789718b7fecf7c8a3d7bb19a 100644
+--- a/backend/internal/service/openai_messages_bridge.go
++++ b/backend/internal/service/openai_messages_bridge.go
+@@ -16,3 +16,3 @@ func isOpenAICompatMessagesBridgeBody(body []byte) bool {
+ 	}
+-	if bytes.Contains(body, []byte(openAICompatClaudeCodeTodoGuardMarker)) {
++	if bytes.Contains(body, []byte(openAICompatClaudeCodeTodoGuardText)) {
+ 		return true
+@@ -26,3 +26,3 @@ func isOpenAICompatMessagesBridgeRequestBody(reqBody map[string]any) bool {
+ 	}
+-	if input, ok := reqBody["input"].([]any); ok && inputContainsText(input, openAICompatClaudeCodeTodoGuardMarker) {
++	if input, ok := reqBody["input"].([]any); ok && inputContainsText(input, openAICompatClaudeCodeTodoGuardText) {
+ 		return true
+diff --git a/backend/internal/service/openai_messages_todo_guard.go b/backend/internal/service/openai_messages_todo_guard.go
+index 96fc90cbe11eea07dc5b986e71fd681ce7fa8315..84e423dec57291135d2742302e3fc54d5309c639 100644
+--- a/backend/internal/service/openai_messages_todo_guard.go
++++ b/backend/internal/service/openai_messages_todo_guard.go
+@@ -9,6 +9,3 @@ import (
+ 
+-const (
+-	openAICompatClaudeCodeTodoGuardMarker = "<sub2api-claude-code-todo-guard>"
+-	openAICompatClaudeCodeTodoGuardText   = openAICompatClaudeCodeTodoGuardMarker + "\nWhen using Claude Code todo or task tracking tools, keep the visible task list consistent. Do not send final or summary text while any item remains in_progress. Before finishing, asking the user to choose, or reporting a blocker, update the todo list so completed work is completed and deferred work is pending/open; leave an item in_progress only when active work will continue in the same turn.\n</sub2api-claude-code-todo-guard>"
+-)
++const openAICompatClaudeCodeTodoGuardText = "When using Claude Code todo or task tracking tools, keep the visible task list consistent. Do not send final or summary text while any item remains in_progress. Before finishing, asking the user to choose, or reporting a blocker, update the todo list so completed work is completed and deferred work is pending/open; leave an item in_progress only when active work will continue in the same turn."
+ 
+@@ -23,3 +20,3 @@ func appendOpenAICompatClaudeCodeTodoGuard(req *apicompat.ResponsesRequest) bool
+ 	}
+-	if len(items) == 0 || responsesInputItemsContainText(items, openAICompatClaudeCodeTodoGuardMarker) {
++	if len(items) == 0 || responsesInputItemsContainText(items, openAICompatClaudeCodeTodoGuardText) {
+ 		return false
+@@ -64,3 +61,3 @@ func appendOpenAICompatClaudeCodeTodoGuardToRequestBody(reqBody map[string]any)
+ 	input, ok := reqBody["input"].([]any)
+-	if !ok || len(input) == 0 || inputContainsText(input, openAICompatClaudeCodeTodoGuardMarker) {
++	if !ok || len(input) == 0 || inputContainsText(input, openAICompatClaudeCodeTodoGuardText) {
+ 		return false
+diff --git a/backend/internal/service/openai_oauth_passthrough_test.go b/backend/internal/service/openai_oauth_passthrough_test.go
+index d871fcd901eb41d409aea2c4fcba9ec30daf02b0..1d7bec151d9587960aa7a361cab4177b5ed37173 100644
+--- a/backend/internal/service/openai_oauth_passthrough_test.go
++++ b/backend/internal/service/openai_oauth_passthrough_test.go
+@@ -229,3 +229,3 @@ func TestOpenAIGatewayService_OAuthMessagesBridgeDoesNotInjectDefaultInstruction
+ 	c, _ := gin.CreateTestContext(rec)
+-	originalBody := []byte(`{"model":"gpt-5.5","stream":true,"prompt_cache_key":"anthropic-metadata-session-1","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"<sub2api-claude-code-todo-guard>"}]},{"type":"message","role":"user","content":"hello"}]}`)
++	originalBody := []byte(`{"model":"gpt-5.5","stream":true,"prompt_cache_key":"anthropic-metadata-session-1","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"` + openAICompatClaudeCodeTodoGuardText + `"}]},{"type":"message","role":"user","content":"hello"}]}`)
+ 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(originalBody))
+@@ -2302,3 +2302,3 @@ func TestOpenAIGatewayService_CodexFingerprintMessagesBridgeDoesNotInjectBodyPro
+ 
+-	body := []byte(`{"model":"gpt-5.5","stream":true,"prompt_cache_key":"anthropic-metadata-session-1","client_metadata":{"session_id":"anthropic-metadata-session-1"},"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"` + openAICompatClaudeCodeTodoGuardMarker + `"}]},{"type":"message","role":"user","content":"hello"}]}`)
++	body := []byte(`{"model":"gpt-5.5","stream":true,"prompt_cache_key":"anthropic-metadata-session-1","client_metadata":{"session_id":"anthropic-metadata-session-1"},"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"` + openAICompatClaudeCodeTodoGuardText + `"}]},{"type":"message","role":"user","content":"hello"}]}`)
+ 	upstream := &httpUpstreamRecorder{resp: &http.Response{
+diff --git a/backend/internal/service/openai_outbound_markers_test.go b/backend/internal/service/openai_outbound_markers_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f310d8009c834b6f233ef299d5a4feacd3e593a
+--- /dev/null
++++ b/backend/internal/service/openai_outbound_markers_test.go
+@@ -0,0 +1,93 @@
++package service
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++func TestOpenAIOutboundMarkersInstructions(t *testing.T) {
++	t.Run("image bridge", func(t *testing.T) {
++		body := map[string]any{
++			"model": "gpt-5.4", "instructions": "Caller instructions",
++			"tools": []any{map[string]any{"type": "image_generation"}},
++		}
++		require.True(t, applyCodexImageGenerationBridgeInstructions(body))
++		require.False(t, applyCodexImageGenerationBridgeInstructions(body))
++		encoded, err := marshalOpenAIUpstreamJSON(body)
++		require.NoError(t, err)
++		require.NotContains(t, strings.ToLower(string(encoded)), "sub2api")
++		require.Contains(t, body["instructions"], "Caller instructions")
++		require.Contains(t, body["instructions"], "image_generation")
++		require.NotContains(t, body["instructions"], "<")
++		require.Equal(t, "Caller instructions\n\n"+codexImageGenerationBridgeText, body["instructions"])
++	})
++	t.Run("spark transform", func(t *testing.T) {
++		body := map[string]any{"model": "gpt-5.3-codex-spark", "instructions": "Caller instructions"}
++		result := applyCodexOAuthTransform(body, true, false)
++		require.NoError(t, result.Error)
++		require.False(t, applyCodexSparkImageUnsupportedInstructions(body))
++		encoded, err := marshalOpenAIUpstreamJSON(body)
++		require.NoError(t, err)
++		require.NotContains(t, strings.ToLower(string(encoded)), "sub2api")
++		require.Contains(t, body["instructions"], "does not support image generation")
++		require.NotContains(t, body["instructions"], "<")
++		require.Equal(t, "Caller instructions\n\n"+codexSparkImageUnsupportedText, body["instructions"])
++	})
++}
++
++func TestOpenAIOutboundMarkersTodoGuard(t *testing.T) {
++	input := json.RawMessage(`[{"type":"message","role":"user","content":"Hello"}]`)
++	req := &apicompat.ResponsesRequest{Input: input}
++	require.True(t, appendOpenAICompatClaudeCodeTodoGuard(req))
++	require.False(t, appendOpenAICompatClaudeCodeTodoGuard(req))
++	require.NotContains(t, strings.ToLower(string(req.Input)), "sub2api")
++	require.Equal(t, "developer", gjson.GetBytes(req.Input, "0.role").String())
++	require.Contains(t, string(req.Input), "in_progress")
++	require.Equal(t, openAICompatClaudeCodeTodoGuardText, gjson.GetBytes(req.Input, "0.content.0.text").String())
++
++	var items []any
++	require.NoError(t, json.Unmarshal(input, &items))
++	body := map[string]any{"input": items}
++	require.True(t, appendOpenAICompatClaudeCodeTodoGuardToRequestBody(body))
++	require.False(t, appendOpenAICompatClaudeCodeTodoGuardToRequestBody(body))
++	encoded, err := marshalOpenAIUpstreamJSON(body)
++	require.NoError(t, err)
++	require.NotContains(t, strings.ToLower(string(encoded)), "sub2api")
++	require.JSONEq(t, string(req.Input), gjson.GetBytes(encoded, "input").Raw)
++	require.True(t, isOpenAICompatMessagesBridgeBody(encoded))
++	require.True(t, isOpenAICompatMessagesBridgeRequestBody(body))
++}
++
++func TestOpenAIOutboundMarkersReservedToolRoundTrip(t *testing.T) {
++	body := []byte(`{"tools":[{"type":"function","name":"python"}],"tool_choice":{"type":"function","name":"python"},"input":[{"type":"function_call","name":"python","call_id":"call_1"}]}`)
++	aliased, reverse, changed, err := aliasOpenAIOAuthReservedToolNamesBody(body)
++	require.NoError(t, err)
++	require.True(t, changed)
++	require.NotContains(t, strings.ToLower(string(aliased)), "sub2api")
++	name := gjson.GetBytes(aliased, "tools.0.name").String()
++	require.NotEqual(t, "python", name)
++	require.Equal(t, "namespace__pi", name)
++	require.Equal(t, name, gjson.GetBytes(aliased, "tool_choice.name").String())
++	require.Equal(t, name, gjson.GetBytes(aliased, "input.0.name").String())
++	response, err := json.Marshal(map[string]any{"output": []any{map[string]any{"type": "function_call", "name": name}}})
++	require.NoError(t, err)
++	restored := restoreCodexToolNamesInJSON(response, reverse)
++	require.Equal(t, "python", gjson.GetBytes(restored, "output.0.name").String())
++}
++
++func TestOpenAIOutboundMarkersPreserveCallerText(t *testing.T) {
++	const callerText = "Discuss sub2api and python__sub2api without changing this text."
++	body := map[string]any{
++		"model": "gpt-5.4", "instructions": callerText,
++		"tools": []any{map[string]any{"type": "image_generation"}},
++	}
++	require.True(t, applyCodexImageGenerationBridgeInstructions(body))
++	encoded, err := marshalOpenAIUpstreamJSON(body)
++	require.NoError(t, err)
++	require.Contains(t, gjson.GetBytes(encoded, "instructions").String(), callerText)
++}
+diff --git a/backend/internal/service/openai_setup_token_compat_test.go b/backend/internal/service/openai_setup_token_compat_test.go
+index 8f2f2bfceed336cc70353539dc0ece725832163c..cef2f9975a03267779003a16459d099a50faccbb 100644
+--- a/backend/internal/service/openai_setup_token_compat_test.go
++++ b/backend/internal/service/openai_setup_token_compat_test.go
+@@ -208,3 +208,3 @@ func TestOpenAISetupTokenMessagesUsesCodexBridgeAndTurnState(t *testing.T) {
+ 	require.Equal(t, "developer", gjson.GetBytes(upstream.bodies[0], "input.0.role").String())
+-	require.Contains(t, gjson.GetBytes(upstream.bodies[0], "input.0.content.0.text").String(), openAICompatClaudeCodeTodoGuardMarker)
++	require.Contains(t, gjson.GetBytes(upstream.bodies[0], "input.0.content.0.text").String(), openAICompatClaudeCodeTodoGuardText)
+ 	require.Equal(t, "message-00", gjson.GetBytes(upstream.bodies[0], "input.1.content.0.text").String())
+diff --git a/backend/internal/service/openai_ws_forwarder_ingress_session_test.go b/backend/internal/service/openai_ws_forwarder_ingress_session_test.go
+index 98003200c6bc5f2990b84639617aaae726dbb918..8558948731210138e4f5c1cf71c4973dc4926bfd 100644
+--- a/backend/internal/service/openai_ws_forwarder_ingress_session_test.go
++++ b/backend/internal/service/openai_ws_forwarder_ingress_session_test.go
+@@ -839,3 +839,3 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CodexImageBridge
+ 	require.False(t, gjson.Get(functionPayload, "tool_choice").Exists())
+-	require.NotContains(t, gjson.Get(functionPayload, "instructions").String(), codexImageGenerationBridgeMarker)
++	require.NotContains(t, gjson.Get(functionPayload, "instructions").String(), codexImageGenerationBridgeText)
+ }

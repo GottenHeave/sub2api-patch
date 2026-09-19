@@ -15,6 +15,7 @@ files using `git apply --numstat`. They include tests; `+` and `-` are added
 and deleted lines. Paths are relative to upstream, with backend paths under
 `backend/internal/`. File counts are per patch, so shared files appear in
 more than one row. This table is maintained manually, not enforced by CI.
+Rows 5, 6, and 12 were updated on 2026-09-19.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -22,13 +23,14 @@ more than one row. This table is maintained manually, not enforced by CI.
 | 2: pnpm cache | Mount the pnpm store cache in the frontend build stage | `Dockerfile` | 1 | +1 / -1 |
 | 3: Cached-token compatibility | Accept singular `input_token_details.cached_tokens` alongside the plural field | `service/openai_gateway_response_handling.go` and usage test | 2 | +20 / -0 |
 | 4: Endpoint scheduling | Share model-aware account selection for STT and Realtime REST, accepting API-key and OAuth accounts | `service/openai_account_scheduler.go`, `openai_gateway_scheduling.go` | 2 | +121 / -2 |
-| 5: STT service | Parse and forward transcription requests, map models, retry/fail over, redact diagnostics, and record zero-cost usage | `service/openai_audio_transcriptions*`, scheduler, model rate limits, usage logging | 5 | +1773 / -5 |
-| 6: STT routes | Expose `/v1/audio/transcriptions` and `/transcribe`, with body limits and handler dispatch | `handler/openai_audio_transcriptions*`, `server/routes/gateway.go` and route coverage test | 4 | +1017 / -4 |
+| 5: STT service | Parse and forward transcription requests, map models, retry/fail over, redact diagnostics, and record zero-cost usage | `service/openai_audio_transcriptions*`, scheduler, model rate limits, usage logging | 5 | +1778 / -5 |
+| 6: STT routes | Expose `/v1/audio/transcriptions` and `/transcribe`, with body limits and handler dispatch | `handler/openai_audio_transcriptions*`, `server/routes/gateway.go` and route coverage test | 4 | +1023 / -4 |
 | 7: Realtime WebSocket | Relay sessions and translations, preserve caller model aliases and protocol headers, support OAuth call sideband, retain Grok routing | Gateway handler, routes, scheduler, `service/openai_ws_*`, relay tests | 16 | +923 / -102 |
 | 8: Realtime REST | Forward sessions, client secrets, calls and translations; map models before scheduling, retry/fail over, bind calls to accounts | `handler/endpoint.go`, `handler/openai_realtime_calls*`, `service/openai_realtime_calls*`, routes and tests | 8 | +1742 / -1 |
 | 9: Realtime moderation | Extract Realtime text/images for moderation and security audit, including Live requests | `handler/openai_live*`, `securityaudit/*`, `service/content_moderation*` | 7 | +243 / -1 |
 | 10: REST moderation hook | Use the shared Realtime moderation protocol in the REST handler | `handler/openai_realtime_calls.go` | 1 | +1 / -1 |
 | 11: Caller prompts | Preserve non-empty system or developer prompts in transformed, raw passthrough and Responses-shaped requests | `service/openai_codex_transform.go`, gateway forward/passthrough/request-body helpers and prompt tests | 5 | +313 / -14 |
+| 12: Outbound instruction text | Remove product tags, deduplicate by instruction text, and use `namespace__pi` for the reserved Python tool alias | Codex transforms, tool names, Messages bridge/todo guidance, and tests | 13 | +140 / -52 |
 
 ## Behavior boundaries
 
@@ -41,13 +43,17 @@ more than one row. This table is maintained manually, not enforced by CI.
   `quicksilver=v2` calls retain upstream Live routing, attestation, call storage,
   and duration billing. The root `/realtime` route remains Grok-only.
 - Astra behavior remains upstream-owned; these patches add no Astra override.
+- Injected image, Spark, and todo guidance retains its text and feature gates,
+  without product tags. Deduplication and Messages bridge detection use the
+  guidance text. Python tool aliasing retains response restoration and
+  collision checks; caller-authored text is not scrubbed.
 - Patchset documentation stays on `patchset`. Release generation starts from
   upstream and applies the patches, without copying this page, `README.md`,
   or `RELEASE_POLICY.md` into `main`, `mirror/upstream-main`, or `patched`.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 11 patches.
+Apply patches in numerical order. The complete series contains all 12 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
