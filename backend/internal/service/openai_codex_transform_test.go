@@ -56,7 +56,7 @@ func TestApplyCodexOAuthTransform_MessagesBridgePromptCacheKeyIsHeaderOnly(t *te
 				"content": []any{
 					map[string]any{
 						"type": "input_text",
-						"text": openAICompatClaudeCodeTodoGuardMarker,
+						"text": openAICompatClaudeCodeTodoGuardText,
 					},
 				},
 			},
@@ -1042,7 +1042,7 @@ func TestCodexImageGenerationBridge_PreservesClientImageFunctionTools(t *testing
 				require.Equal(t, "existing instructions", tt.reqBody["instructions"])
 			} else {
 				require.Equal(t, "auto", tt.reqBody["tool_choice"])
-				require.Contains(t, tt.reqBody["instructions"], codexImageGenerationBridgeMarker)
+				require.Contains(t, tt.reqBody["instructions"], codexImageGenerationBridgeText)
 			}
 		})
 	}
@@ -1063,7 +1063,7 @@ func TestApplyCodexImageGenerationBridgeInstructions_AppendsBridgeOnce(t *testin
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
 	require.Contains(t, instructions, "existing instructions")
-	require.Contains(t, instructions, codexImageGenerationBridgeMarker)
+	require.Contains(t, instructions, codexImageGenerationBridgeText)
 	require.Contains(t, instructions, "Responses native `image_generation` tool")
 
 	modified = applyCodexImageGenerationBridgeInstructions(reqBody)
@@ -1163,10 +1163,10 @@ func TestApplyCodexOAuthTransform_AddsSparkImageUnsupportedInstructions(t *testi
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
 	require.Contains(t, instructions, "existing instructions")
-	require.Contains(t, instructions, codexSparkImageUnsupportedMarker)
+	require.Contains(t, instructions, codexSparkImageUnsupportedText)
 	require.Contains(t, instructions, "does not support image generation")
 	require.Contains(t, instructions, "switch to a non-Spark Codex model")
-	require.NotContains(t, instructions, codexImageGenerationBridgeMarker)
+	require.NotContains(t, instructions, codexImageGenerationBridgeText)
 }
 
 func TestApplyCodexOAuthTransform_DoesNotAddSparkImageUnsupportedForNonSpark(t *testing.T) {
@@ -1179,7 +1179,7 @@ func TestApplyCodexOAuthTransform_DoesNotAddSparkImageUnsupportedForNonSpark(t *
 	applyCodexOAuthTransform(reqBody, true, false)
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
-	require.NotContains(t, instructions, codexSparkImageUnsupportedMarker)
+	require.NotContains(t, instructions, codexSparkImageUnsupportedText)
 }
 
 // gpt-5.3-codex-spark rejects the image_generation tool upstream (HTTP 400
