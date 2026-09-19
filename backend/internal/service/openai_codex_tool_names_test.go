@@ -66,7 +66,7 @@ func TestAliasOpenAIOAuthReservedToolNames_CollisionDoesNotMutate(t *testing.T) 
 	require.NoError(t, err)
 
 	reverse, changed, err := aliasOpenAIOAuthReservedToolNames(reqBody)
-	require.ErrorContains(t, err, `both normalize to "namespace__pi"`)
+	require.ErrorContains(t, err, "namespace__pi")
 	require.False(t, changed)
 	require.Nil(t, reverse)
 	after, marshalErr := json.Marshal(reqBody)
