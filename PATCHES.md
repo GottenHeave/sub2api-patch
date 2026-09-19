@@ -15,7 +15,7 @@ files using `git apply --numstat`. They include tests; `+` and `-` are added
 and deleted lines. Paths are relative to upstream, with backend paths under
 `backend/internal/`. File counts are per patch, so shared files appear in
 more than one row. This table is maintained manually, not enforced by CI.
-Rows 5, 6, and 12 were updated on 2026-09-19.
+Rows 5, 6, 12, and 13 were updated on 2026-09-19.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -31,6 +31,7 @@ Rows 5, 6, and 12 were updated on 2026-09-19.
 | 10: REST moderation hook | Use the shared Realtime moderation protocol in the REST handler | `handler/openai_realtime_calls.go` | 1 | +1 / -1 |
 | 11: Caller prompts | Preserve non-empty system or developer prompts in transformed, raw passthrough and Responses-shaped requests | `service/openai_codex_transform.go`, gateway forward/passthrough/request-body helpers and prompt tests | 5 | +313 / -14 |
 | 12: Outbound instruction text | Remove product tags, deduplicate by instruction text, and use `namespace__pi` for the reserved Python tool alias | Codex transforms, tool names, Messages bridge/todo guidance, and tests | 13 | +140 / -52 |
+| 13: Turn-state ownership | Scope cached state to resolved credentials and strip known foreign echoes using actual delivered headers | Turn-state helpers, HTTP passthrough, WS forwarding/cache, and tests | 13 | +423 / -58 |
 
 ## Behavior boundaries
 
@@ -50,10 +51,13 @@ Rows 5, 6, and 12 were updated on 2026-09-19.
 - Patchset documentation stays on `patchset`. Release generation starts from
   upstream and applies the patches, without copying this page, `README.md`,
   or `RELEASE_POLICY.md` into `main`, `mirror/upstream-main`, or `patched`.
+- Turn-state ownership preserves unknown client blobs and shared parent/shadow
+  credentials. Provenance tracks the latest delivered state per session;
+  native direct-WS fingerprint behavior is unchanged.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 12 patches.
+Apply patches in numerical order. The complete series contains all 13 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
