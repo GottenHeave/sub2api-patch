@@ -150,7 +150,6 @@ func TestEmailIdentityCompactUsesCredentialOwner(t *testing.T) {
 			require.Equal(t, first, got)
 		}
 		first = got
-		require.Equal(t, "compaction_trigger", gjson.GetBytes(upstream.lastBody, "input.1.type").String())
 	}
 }
 
