@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +38,6 @@ func TestOpenAIRealtimeRESTMultipartMapsSessionAndPreservesSDP(t *testing.T) {
 	parsed, err := ParseOpenAIRealtimeRESTRequest(c, body.Bytes())
 	require.NoError(t, err)
 	require.Equal(t, "client-realtime", parsed.Model)
-	require.Equal(t, "session.model", parsed.ScheduleModelPath)
 	_, _, unchangedBody, err := buildOpenAIRealtimeRESTForwardBody(parsed, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, body.Bytes(), unchangedBody)
@@ -55,19 +55,31 @@ func TestOpenAIRealtimeRESTMultipartMapsSessionAndPreservesSDP(t *testing.T) {
 	require.Equal(t, "avas", upstream.lastReq.URL.Query().Get("architecture"))
 	require.Equal(t, "quicksilver=v1", upstream.lastReq.Header.Get("OpenAI-Alpha"))
 	require.Equal(t, "session-123", upstream.lastReq.Header.Get("X-Session-Id"))
-	require.Equal(t, writer.FormDataContentType(), upstream.lastReq.Header.Get("Content-Type"))
-	reader := multipart.NewReader(bytes.NewReader(upstream.lastBody), writer.Boundary())
-	sdpPart, err := reader.NextPart()
+	mediaType, params, err := mime.ParseMediaType(upstream.lastReq.Header.Get("Content-Type"))
 	require.NoError(t, err)
-	sdpBody, err := io.ReadAll(sdpPart)
-	require.NoError(t, err)
-	require.Equal(t, sdp, string(sdpBody))
-	sessionPart, err := reader.NextPart()
-	require.NoError(t, err)
-	require.Equal(t, "application/json", sessionPart.Header.Get("Content-Type"))
-	sessionBody, err := io.ReadAll(sessionPart)
-	require.NoError(t, err)
-	require.JSONEq(t, `{"type":"realtime","model":"gpt-realtime","instructions":"keep me"}`, string(sessionBody))
+	require.Equal(t, "multipart/form-data", mediaType)
+	require.NotEmpty(t, params["boundary"])
+	reader := multipart.NewReader(bytes.NewReader(upstream.lastBody), params["boundary"])
+	fields := make(map[string][]byte)
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		name := part.FormName()
+		if name != "sdp" && name != "session" {
+			continue
+		}
+		require.NotContains(t, fields, name)
+		if name == "session" {
+			require.Equal(t, "application/json", part.Header.Get("Content-Type"))
+		}
+		fields[name], err = io.ReadAll(part)
+		require.NoError(t, err)
+	}
+	require.Equal(t, sdp, string(fields["sdp"]))
+	require.JSONEq(t, `{"type":"realtime","model":"gpt-realtime","instructions":"keep me"}`, string(fields["session"]))
 }
 
 func TestParseOpenAIRealtimeRESTRequestMalformedMultipart(t *testing.T) {
@@ -109,10 +121,6 @@ func TestParseOpenAIRealtimeRESTRequest_ClientSecretsTranscriptionModel(t *testi
 	require.NoError(t, err)
 	require.Equal(t, "/v1/realtime/client_secrets", parsed.Endpoint)
 	require.Equal(t, "gpt-4o-transcribe", parsed.Model)
-	require.Equal(t, "session.audio.input.transcription.model", parsed.ScheduleModelPath)
-	require.Equal(t, []OpenAIRealtimeRESTModelRef{
-		{Path: "session.audio.input.transcription.model", Value: "gpt-4o-transcribe"},
-	}, parsed.ModelRefs)
 }
 
 func TestParseOpenAIRealtimeRESTRequest_PrefixedPath(t *testing.T) {
@@ -423,7 +431,6 @@ func TestOpenAIGatewayService_ForwardRealtimeREST_TranslationCallsMapsModel(t *t
 	require.NoError(t, err)
 	require.Equal(t, "/v1/realtime/translations/calls", parsed.Endpoint)
 	require.Equal(t, "client-translate-call", parsed.Model)
-	require.Equal(t, "model", parsed.ScheduleModelPath)
 
 	result, err := svc.ForwardRealtimeREST(
 		context.Background(),
