@@ -15,7 +15,7 @@ files using `git apply --numstat`. They include tests; `+` and `-` are added
 and deleted lines. Paths are relative to upstream, with backend paths under
 `backend/internal/`. File counts are per patch, so shared files appear in
 more than one row. This table is maintained manually, not enforced by CI.
-Rows 5, 6, 12, and 13 were updated on 2026-09-19.
+Rows 5, 6, 12, 13, and 14 were updated on 2026-09-19.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -32,6 +32,7 @@ Rows 5, 6, 12, and 13 were updated on 2026-09-19.
 | 11: Caller prompts | Preserve non-empty system or developer prompts in transformed, raw passthrough and Responses-shaped requests | `service/openai_codex_transform.go`, gateway forward/passthrough/request-body helpers and prompt tests | 5 | +313 / -14 |
 | 12: Outbound instruction text | Remove product tags, deduplicate by instruction text, and use `namespace__pi` for the reserved Python tool alias | Codex transforms, tool names, Messages bridge/todo guidance, and tests | 13 | +140 / -52 |
 | 13: Turn-state ownership | Scope cached state to resolved credentials and strip known foreign echoes using actual delivered headers | Turn-state helpers, HTTP passthrough, WS forwarding/cache, and tests | 13 | +423 / -58 |
+| 14: Email-scoped sessions | Derive Compact and Claude session identities from account email and workspace instead of local rows | Shared email helper, Compact probe, Claude rewrite/synthesis, and tests | 10 | +345 / -56 |
 
 ## Behavior boundaries
 
@@ -54,10 +55,14 @@ Rows 5, 6, 12, and 13 were updated on 2026-09-19.
 - Turn-state ownership preserves unknown client blobs and shared parent/shadow
   credentials. Provenance tracks the latest delivered state per session;
   native direct-WS fingerprint behavior is unchanged.
+- Email-derived identities preserve mailbox local-part case and normalize only
+  domain case and outer whitespace. Missing/invalid email stops Compact before
+  forwarding; Claude preserves caller metadata and skips optional synthesis.
+  Credit-redemption IDs and internal row-owned keys are unchanged.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 13 patches.
+Apply patches in numerical order. The complete series contains all 14 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.

@@ -1,0 +1,645 @@
+From 7015f253bacfc28fde7b112f7b404b965af8b8c5 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sat, 19 Sep 2026 07:41:22 +0000
+Subject: [PATCH] Scope outbound session identities by email and workspace
+
+---
+ .../service/account_email_identity.go         |  58 +++++
+ .../service/account_email_identity_test.go    | 220 ++++++++++++++++++
+ .../internal/service/account_test_service.go  |   5 +-
+ ...ccount_test_service_openai_compact_test.go |  20 +-
+ .../service/gateway_claude_oauth_body.go      |  50 ++--
+ .../service/gateway_oauth_metadata_test.go    |  15 +-
+ backend/internal/service/identity_service.go  |  13 +-
+ .../service/identity_service_order_test.go    |   4 +-
+ .../openai_agent_identity_compat_test.go      |   2 +
+ .../internal/service/openai_compact_probe.go  |  14 +-
+ 10 files changed, 345 insertions(+), 56 deletions(-)
+ create mode 100644 backend/internal/service/account_email_identity.go
+ create mode 100644 backend/internal/service/account_email_identity_test.go
+
+diff --git a/backend/internal/service/account_email_identity.go b/backend/internal/service/account_email_identity.go
+new file mode 100644
+index 000000000..0e689d4bf
+--- /dev/null
++++ b/backend/internal/service/account_email_identity.go
+@@ -0,0 +1,58 @@
++package service
++
++import (
++	"encoding/json"
++	"errors"
++	"net/mail"
++	"strings"
++)
++
++var errAccountEmailIdentityUnavailable = errors.New("a valid account email is required for session identity")
++
++func canonicalAccountEmail(raw string) (string, error) {
++	email := strings.TrimSpace(raw)
++	address, err := mail.ParseAddress(email)
++	if err != nil || address.Name != "" || address.Address != email {
++		return "", errAccountEmailIdentityUnavailable
++	}
++	at := strings.LastIndexByte(email, '@')
++	if at <= 0 || at == len(email)-1 {
++		return "", errAccountEmailIdentityUnavailable
++	}
++	return email[:at+1] + strings.ToLower(email[at+1:]), nil
++}
++
++// The caller supplies the credential owner. Local row and cache keys are not
++// identity inputs, and tuple encoding keeps purpose and session boundaries intact.
++func accountEmailIdentitySeed(account *Account, purpose string, components ...string) (string, error) {
++	if account == nil {
++		return "", errAccountEmailIdentityUnavailable
++	}
++	email := account.GetCredential("email")
++	workspace := ""
++	organization := ""
++	if account.Platform == PlatformAnthropic {
++		email = firstStringValue(account.Extra, "email_address", "email")
++		if email == "" {
++			email = account.GetCredential("email")
++		}
++		workspace = strings.TrimSpace(account.GetExtraString("account_uuid"))
++		organization = strings.TrimSpace(account.GetExtraString("org_uuid"))
++	} else {
++		if strings.TrimSpace(email) == "" {
++			email = firstStringValue(account.Extra, "email", "email_address")
++		}
++		workspace = strings.TrimSpace(account.GetChatGPTAccountID())
++	}
++	email, err := canonicalAccountEmail(email)
++	if err != nil {
++		return "", err
++	}
++	parts := []string{"account-email-identity-v1", account.Platform, purpose, email, workspace, organization}
++	parts = append(parts, components...)
++	encoded, err := json.Marshal(parts)
++	if err != nil {
++		return "", err
++	}
++	return string(encoded), nil
++}
+diff --git a/backend/internal/service/account_email_identity_test.go b/backend/internal/service/account_email_identity_test.go
+new file mode 100644
+index 000000000..1006bf729
+--- /dev/null
++++ b/backend/internal/service/account_email_identity_test.go
+@@ -0,0 +1,220 @@
++package service
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/google/uuid"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++	"github.com/tidwall/sjson"
++)
++
++func TestEmailIdentityClaudeUsesEmailInsteadOfRow(t *testing.T) {
++	account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Extra: map[string]any{"email_address": "User@example.com", "account_uuid": "workspace"}}
++	other := *account
++	other.ID = 2
++	body := []byte(`{"messages":[{"role":"user","content":"hello"}],"metadata":{"user_id":"{\"device_id\":\"client\",\"account_uuid\":\"workspace\",\"session_id\":\"7578cf37-aaca-46e4-a45c-71285d9dbb83\"}"}}`)
++	identity := NewIdentityService(&identityCacheStub{})
++	first, err := identity.RewriteUserIDWithMasking(context.Background(), body, account, "workspace", "client", "claude-cli/2.1.78")
++	require.NoError(t, err)
++	second, err := identity.RewriteUserIDWithMasking(context.Background(), body, &other, "workspace", "client", "claude-cli/2.1.78")
++	require.NoError(t, err)
++	require.Equal(t, string(first), string(second))
++}
++
++func TestEmailIdentityClaudeMissingEmailPreservesMetadata(t *testing.T) {
++	account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Extra: map[string]any{"session_id_masking_enabled": true}}
++	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client\",\"account_uuid\":\"workspace\",\"session_id\":\"7578cf37-aaca-46e4-a45c-71285d9dbb83\"}"}}`)
++	identity := NewIdentityService(&identityCacheStub{})
++	got, err := identity.RewriteUserIDWithMasking(context.Background(), body, account, "workspace", "client", "claude-cli/2.1.78")
++	require.NoError(t, err)
++	require.Equal(t, string(body), string(got))
++	gateway := &GatewayService{}
++	require.Empty(t, gateway.buildOAuthMetadataUserID(&ParsedRequest{}, account, &Fingerprint{ClientID: "client"}))
++	require.Empty(t, gateway.buildOAuthMetadataUserIDFromBody(context.Background(), account, &Fingerprint{ClientID: "client"}, []byte(`{"messages":[]}`)))
++}
++
++func TestEmailIdentityCompactMissingEmailStopsBeforeUpstream(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "synthetic-token", "chatgpt_account_id": "workspace"}}
++	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(compactProbeSSESuccessBody))}}
++	svc := &AccountTestService{httpUpstream: upstream}
++	recorder := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(recorder)
++	c.Request = httptest.NewRequest(http.MethodPost, "/test", nil)
++	err := svc.testOpenAICompactConnection(c, account, "gpt-5")
++	require.Error(t, err)
++	require.Nil(t, upstream.lastReq)
++	require.Contains(t, recorder.Body.String(), "email")
++}
++
++func TestEmailIdentityNormalizationAndScope(t *testing.T) {
++	for _, tc := range []struct {
++		input string
++		want  string
++	}{
++		{"  User.Name+tag@EXAMPLE.COM\t", "User.Name+tag@example.com"},
++		{"user@example.com", "user@example.com"},
++		{"User@example.com", "User@example.com"},
++	} {
++		got, err := canonicalAccountEmail(tc.input)
++		require.NoError(t, err)
++		require.Equal(t, tc.want, got)
++	}
++	for _, raw := range []string{"", " ", "invalid", "@example.com", "user@", "Name <user@example.com>", "a@example.com,b@example.com", "a\r\nb@example.com"} {
++		t.Run(raw, func(t *testing.T) {
++			account := &Account{Platform: PlatformOpenAI, Credentials: map[string]any{"email": raw}}
++			got, err := compactProbeSessionID(account)
++			require.ErrorIs(t, err, errAccountEmailIdentityUnavailable)
++			require.Empty(t, got)
++		})
++	}
++	got, err := compactProbeSessionID(nil)
++	require.Error(t, err)
++	require.Empty(t, got)
++	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"email": "User.Name+tag@EXAMPLE.COM", "chatgpt_account_id": "workspace"}}
++	seed := func(purpose string, parts ...string) string {
++		value, seedErr := accountEmailIdentitySeed(account, purpose, parts...)
++		require.NoError(t, seedErr)
++		return value
++	}
++	first := seed("purpose", "client", "message")
++	account.ID = 999
++	account.Credentials["email"] = " User.Name+tag@example.com "
++	require.Equal(t, first, seed("purpose", "client", "message"))
++	for _, email := range []string{"user.Name+tag@example.com", "UserName+tag@example.com", "User.Name@example.com"} {
++		account.Credentials["email"] = email
++		require.NotEqual(t, first, seed("purpose", "client", "message"))
++	}
++	account.Credentials["email"] = "User.Name+tag@example.com"
++	account.Credentials["chatgpt_account_id"] = "other-workspace"
++	require.NotEqual(t, first, seed("purpose", "client", "message"))
++	account.Credentials["chatgpt_account_id"] = "workspace"
++	require.NotEqual(t, first, seed("other-purpose", "client", "message"))
++	require.NotEqual(t, seed("purpose", "a::b", "c"), seed("purpose", "a", "b::c"))
++	require.NotEqual(t, seed("purpose", "a", ""), seed("purpose", "a"))
++}
++
++func TestEmailIdentityClaudeSynthesisPaths(t *testing.T) {
++	account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Extra: map[string]any{"email_address": "User@example.com", "account_uuid": "workspace", "org_uuid": "org"}}
++	fp := &Fingerprint{ClientID: "client", UserAgent: "claude-cli/2.1.161"}
++	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`)
++	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
++	require.NoError(t, err)
++	svc := &GatewayService{}
++	firstParsed := svc.buildOAuthMetadataUserID(parsed, account, fp)
++	firstRaw := svc.buildOAuthMetadataUserIDFromBody(context.Background(), account, fp, body)
++	require.NotEmpty(t, firstParsed)
++	require.NotEmpty(t, firstRaw)
++	account.ID = 99
++	require.Equal(t, firstParsed, svc.buildOAuthMetadataUserID(parsed, account, fp))
++	require.Equal(t, firstRaw, svc.buildOAuthMetadataUserIDFromBody(context.Background(), account, fp, body))
++	account.Extra["org_uuid"] = "other-org"
++	require.NotEqual(t, firstRaw, svc.buildOAuthMetadataUserIDFromBody(context.Background(), account, fp, body))
++	account.Extra["org_uuid"] = "org"
++	for _, email := range []string{"", "not-an-email"} {
++		account.Extra["email_address"] = email
++		require.Empty(t, svc.buildOAuthMetadataUserID(parsed, account, fp))
++		require.Empty(t, svc.buildOAuthMetadataUserIDFromBody(context.Background(), account, fp, body))
++	}
++	account.Extra = map[string]any{"email": "User@example.com", "account_uuid": "workspace", "org_uuid": "org"}
++	require.Equal(t, firstRaw, svc.buildOAuthMetadataUserIDFromBody(context.Background(), account, fp, body))
++	parsed.MetadataUserID = "client-original"
++	require.Empty(t, svc.buildOAuthMetadataUserID(parsed, account, fp))
++	require.Empty(t, svc.buildOAuthMetadataUserIDFromBody(context.Background(), account, fp, []byte(`{"metadata":{"user_id":"client-original"}}`)))
++}
++
++func TestEmailIdentityCompactUsesCredentialOwner(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	owner := Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "synthetic-token", "chatgpt_account_id": "workspace"}, Extra: map[string]any{"email": "User@example.com"}}
++	shadow := Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &owner.ID, Credentials: map[string]any{"email": "wrong@example.com"}, Extra: map[string]any{"email": "also-wrong@example.com", "email_address": "wrong-again@example.com"}}
++	repo := &snapshotUpdateAccountRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{owner}}}
++	var first string
++	for _, account := range []*Account{&owner, &shadow, &owner} {
++		upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(compactProbeSSESuccessBody))}}
++		svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
++		c, _ := gin.CreateTestContext(httptest.NewRecorder())
++		c.Request = httptest.NewRequest(http.MethodPost, "/test", nil)
++		require.NoError(t, svc.testOpenAICompactConnection(c, account, "gpt-5"))
++		got := upstream.lastReq.Header.Get("conversation_id")
++		_, err := uuid.Parse(got)
++		require.NoError(t, err)
++		require.Equal(t, got, upstream.lastReq.Header.Get("session_id"))
++		if first != "" {
++			require.Equal(t, first, got)
++		}
++		first = got
++		require.Equal(t, "compaction_trigger", gjson.GetBytes(upstream.lastBody, "input.1.type").String())
++	}
++}
++
++func TestEmailIdentityStoredEmailSources(t *testing.T) {
++	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"email": "User@example.com", "chatgpt_account_id": "workspace"}}
++	want, err := compactProbeSessionID(account)
++	require.NoError(t, err)
++	for _, tc := range []struct {
++		name       string
++		credential string
++		extra      map[string]any
++	}{
++		{"credential wins", "User@example.com", map[string]any{"email": "other@example.com", "email_address": "third@example.com"}},
++		{"CRS extra only", "", map[string]any{"email": "User@EXAMPLE.COM"}},
++		{"extra email wins", "", map[string]any{"email": "User@example.com", "email_address": "other@example.com"}},
++		{"extra address only", " ", map[string]any{"email_address": "User@example.com"}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			account.Credentials["email"] = tc.credential
++			account.Extra = tc.extra
++			got, identityErr := compactProbeSessionID(account)
++			require.NoError(t, identityErr)
++			require.Equal(t, want, got)
++		})
++	}
++	account.Credentials["email"] = "invalid"
++	account.Extra = map[string]any{"email": "User@example.com"}
++	got, err := compactProbeSessionID(account)
++	require.ErrorIs(t, err, errAccountEmailIdentityUnavailable)
++	require.Empty(t, got)
++}
++
++func TestEmailIdentitySynthesisThenRewriteIsRowIndependent(t *testing.T) {
++	account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Extra: map[string]any{
++		"email_address": "User@example.com", "account_uuid": "workspace", "org_uuid": "org",
++	}}
++	body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`)
++	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
++	require.NoError(t, err)
++	gateway := &GatewayService{}
++	identity := NewIdentityService(&identityCacheStub{})
++	fp := &Fingerprint{ClientID: "synthetic-client", UserAgent: "claude-cli/2.1.161"}
++	for _, mode := range []string{"parsed", "raw"} {
++		t.Run(mode, func(t *testing.T) {
++			var first string
++			for _, row := range []int64{1, 999} {
++				account.ID = row
++				metadata := gateway.buildOAuthMetadataUserID(parsed, account, fp)
++				if mode == "raw" {
++					metadata = gateway.buildOAuthMetadataUserIDFromBody(context.Background(), account, fp, body)
++				}
++				require.NotEmpty(t, metadata)
++				request, setErr := sjson.SetBytes(body, "metadata.user_id", metadata)
++				require.NoError(t, setErr)
++				out, rewriteErr := identity.RewriteUserIDWithMasking(context.Background(), request, account, "workspace", fp.ClientID, fp.UserAgent)
++				require.NoError(t, rewriteErr)
++				user := ParseMetadataUserID(gjson.GetBytes(out, "metadata.user_id").String())
++				require.NotNil(t, user)
++				require.NotEmpty(t, user.SessionID)
++				if first != "" {
++					require.Equal(t, first, user.SessionID)
++				}
++				first = user.SessionID
++			}
++		})
++	}
++}
+diff --git a/backend/internal/service/account_test_service.go b/backend/internal/service/account_test_service.go
+index ffae4ce8b..033151d2a 100644
+--- a/backend/internal/service/account_test_service.go
++++ b/backend/internal/service/account_test_service.go
+@@ -2062,6 +2062,10 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
+ 		}
+ 		credentialAccount = resolved
+ 	}
++	probeSessionID, identityErr := compactProbeSessionID(credentialAccount)
++	if identityErr != nil {
++		return s.sendErrorAndEnd(c, "Compact probe requires a valid account email")
++	}
+ 
+ 	authToken := ""
+ 	apiURL := ""
+@@ -2137,7 +2141,6 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
+ 	if isOAuth {
+ 		enforceCodexIdentityHeadersWithUA(req.Header, credentialAccount.GetOpenAIUserAgent())
+ 	}
+-	probeSessionID := compactProbeSessionID(account.ID)
+ 	req.Header.Set("Session_ID", probeSessionID)
+ 	req.Header.Set("Conversation_ID", probeSessionID)
+ 
+diff --git a/backend/internal/service/account_test_service_openai_compact_test.go b/backend/internal/service/account_test_service_openai_compact_test.go
+index aa2b5f70b..0f4ee5a7e 100644
+--- a/backend/internal/service/account_test_service_openai_compact_test.go
++++ b/backend/internal/service/account_test_service_openai_compact_test.go
+@@ -34,6 +34,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersi
+ 		Concurrency: 1,
+ 		Credentials: map[string]any{
+ 			"access_token":               "oauth-token",
++			"email":                      "test@example.com",
+ 			"chatgpt_account_id":         "chatgpt-acc",
+ 			"chatgpt_account_is_fedramp": true,
+ 		},
+@@ -96,6 +97,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuth404MarksUnsu
+ 		Concurrency: 1,
+ 		Credentials: map[string]any{
+ 			"access_token":       "oauth-token",
++			"email":              "test@example.com",
+ 			"chatgpt_account_id": "chatgpt-acc",
+ 		},
+ 	}
+@@ -140,6 +142,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactAPIKeyUsesNativeR
+ 		Concurrency: 1,
+ 		Credentials: map[string]any{
+ 			"api_key":  "sk-test",
++			"email":    "test@example.com",
+ 			"base_url": "https://example.com/v1",
+ 			// post-#5641：compact_model_mapping 仅作用于 legacy /responses/compact，
+ 			// 原生 v2 探测不应用它。
+@@ -191,6 +194,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactAPIKeyDefaultBase
+ 		Concurrency: 1,
+ 		Credentials: map[string]any{
+ 			"api_key": "sk-test",
++			"email":   "test@example.com",
+ 		},
+ 	}
+ 	repo := &snapshotUpdateAccountRepo{
+@@ -232,6 +236,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompact2xxWithoutItemMar
+ 		Concurrency: 1,
+ 		Credentials: map[string]any{
+ 			"access_token":       "oauth-token",
++			"email":              "test@example.com",
+ 			"chatgpt_account_id": "chatgpt-acc",
+ 		},
+ 	}
+@@ -281,6 +286,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactProbeIdentityMatc
+ 		Concurrency: 1,
+ 		Credentials: map[string]any{
+ 			"access_token":       "oauth-token",
++			"email":              "test@example.com",
+ 			"chatgpt_account_id": "chatgpt-acc",
+ 		},
+ 		// 收敛是显式 opt-in（#5610），这里显式开启以验证探测身份与真实流量同构。
+@@ -320,11 +326,17 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactProbeIdentityMatc
+ }
+ 
+ func TestCompactProbeSessionID_IsUUIDShaped(t *testing.T) {
++	account := &Account{Platform: PlatformOpenAI, Credentials: map[string]any{"email": "test@example.com"}}
++	var first string
+ 	for _, id := range []int64{0, 1, 987654} {
+-		got := compactProbeSessionID(id)
+-		_, err := uuid.Parse(got)
++		account.ID = id
++		got, err := compactProbeSessionID(account)
++		require.NoError(t, err)
++		_, err = uuid.Parse(got)
+ 		require.NoError(t, err, "探测会话标识必须是 UUID 形态: %s", got)
++		if first != "" {
++			require.Equal(t, first, got)
++		}
++		first = got
+ 	}
+-	require.Equal(t, compactProbeSessionID(7), compactProbeSessionID(7), "同账号应稳定复用同一会话")
+-	require.NotEqual(t, compactProbeSessionID(7), compactProbeSessionID(8))
+ }
+diff --git a/backend/internal/service/gateway_claude_oauth_body.go b/backend/internal/service/gateway_claude_oauth_body.go
+index e98b967e2..1d2692fdd 100644
+--- a/backend/internal/service/gateway_claude_oauth_body.go
++++ b/backend/internal/service/gateway_claude_oauth_body.go
+@@ -327,6 +327,14 @@ func (s *GatewayService) buildOAuthMetadataUserID(parsed *ParsedRequest, account
+ 	if parsed.MetadataUserID != "" {
+ 		return ""
+ 	}
++	var firstUserText string
++	if parsed.Body != nil {
++		firstUserText = extractFirstUserText(parsed.Body.Bytes())
++	}
++	seed, err := buildStableSessionSeed(account, sessionContextDiscriminator(parsed.SessionContext), firstUserText)
++	if err != nil {
++		return ""
++	}
+ 
+ 	userID := strings.TrimSpace(account.GetClaudeUserID())
+ 	if userID == "" && fp != nil {
+@@ -338,14 +346,6 @@ func (s *GatewayService) buildOAuthMetadataUserID(parsed *ParsedRequest, account
+ 		userID = generateClientID()
+ 	}
+ 
+-	// session_id 用"会话级稳定种子"派生（账号 + 客户端区分因子 + 首条 user 文本）：
+-	// 随对话在尾部追加 messages 时保持不变，贴近真实 CC 进程级稳定的 session_id。
+-	// 不复用 GenerateSessionHash —— 后者是粘性路由键、按设计逐轮变化（见其测试）。
+-	var firstUserText string
+-	if parsed.Body != nil {
+-		firstUserText = extractFirstUserText(parsed.Body.Bytes())
+-	}
+-	seed := buildStableSessionSeed(account.ID, sessionContextDiscriminator(parsed.SessionContext), firstUserText)
+ 	sessionID := generateSessionUUID(seed)
+ 
+ 	// 根据指纹 UA 版本选择输出格式
+@@ -454,6 +454,14 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
+ 	if existing := gjson.GetBytes(body, "metadata.user_id").String(); existing != "" {
+ 		return ""
+ 	}
++	var clientDiscriminator string
++	if fp != nil {
++		clientDiscriminator = fp.ClientID
++	}
++	seed, err := buildStableSessionSeed(account, clientDiscriminator, extractFirstUserText(body))
++	if err != nil {
++		return ""
++	}
+ 
+ 	userID := strings.TrimSpace(account.GetClaudeUserID())
+ 	if userID == "" && fp != nil {
+@@ -463,13 +471,6 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
+ 		userID = generateClientID()
+ 	}
+ 
+-	// 与 buildOAuthMetadataUserID 一致：用会话级稳定种子，避免整 body 哈希导致
+-	// 每轮（甚至每个 token 变化）都重算出不同的 session_id。
+-	var clientDiscriminator string
+-	if fp != nil {
+-		clientDiscriminator = fp.ClientID
+-	}
+-	seed := buildStableSessionSeed(account.ID, clientDiscriminator, extractFirstUserText(body))
+ 	sessionID := generateSessionUUID(seed)
+ 
+ 	var uaVersion string
+@@ -480,22 +481,9 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
+ 	return FormatMetadataUserID(userID, accountUUID, sessionID, uaVersion)
+ }
+ 
+-// buildStableSessionSeed 为伪装路径合成的 metadata.user_id session_id 生成"会话级稳定"种子。
+-//
+-// 真实 Claude Code 的 session_id 是进程级随机 UUID，在一段会话内跨请求保持不变。无状态代理
+-// 无法恢复该值，这里用"会话内不变的锚点"近似：账号 ID + 客户端区分因子 + 首条 user 消息文本。
+-// 对话在尾部追加 messages 时这三者都不变，因此 generateSessionUUID(seed) 跨轮稳定。
+-//
+-// 注意：粘性路由键 GenerateSessionHash 按设计逐轮变化（见其测试），本函数与之独立、互不影响。
+-// accountID 恒存在，故 seed 永不为空 —— 输出始终是确定性 UUID，而非随机值。
+-func buildStableSessionSeed(accountID int64, clientDiscriminator, firstUserText string) string {
+-	var b strings.Builder
+-	_, _ = b.WriteString(strconv.FormatInt(accountID, 10))
+-	_, _ = b.WriteString("::")
+-	_, _ = b.WriteString(clientDiscriminator)
+-	_, _ = b.WriteString("::")
+-	_, _ = b.WriteString(firstUserText)
+-	return b.String()
++// Appending conversation turns does not change the identity or first user text.
++func buildStableSessionSeed(account *Account, clientDiscriminator, firstUserText string) (string, error) {
++	return accountEmailIdentitySeed(account, "claude-session-synthesis", clientDiscriminator, firstUserText)
+ }
+ 
+ // sessionContextDiscriminator 把请求上下文（客户端 IP / 归一化 UA / API Key ID）拼成
+diff --git a/backend/internal/service/gateway_oauth_metadata_test.go b/backend/internal/service/gateway_oauth_metadata_test.go
+index 09c4b9c03..86776e2df 100644
+--- a/backend/internal/service/gateway_oauth_metadata_test.go
++++ b/backend/internal/service/gateway_oauth_metadata_test.go
+@@ -17,9 +17,10 @@ func TestBuildOAuthMetadataUserID_FallbackWithoutAccountUUID(t *testing.T) {
+ 	}
+ 
+ 	account := &Account{
+-		ID:    123,
+-		Type:  AccountTypeOAuth,
+-		Extra: map[string]any{}, // intentionally missing account_uuid / claude_user_id
++		ID:       123,
++		Platform: PlatformAnthropic,
++		Type:     AccountTypeOAuth,
++		Extra:    map[string]any{"email_address": "test@example.com"},
+ 	}
+ 
+ 	fp := &Fingerprint{ClientID: "deadbeef"} // should be used as user id in legacy format
+@@ -42,9 +43,11 @@ func TestBuildOAuthMetadataUserID_UsesAccountUUIDWhenPresent(t *testing.T) {
+ 	}
+ 
+ 	account := &Account{
+-		ID:   123,
+-		Type: AccountTypeOAuth,
++		ID:       123,
++		Platform: PlatformAnthropic,
++		Type:     AccountTypeOAuth,
+ 		Extra: map[string]any{
++			"email_address":     "test@example.com",
+ 			"account_uuid":      "acc-uuid",
+ 			"claude_user_id":    "clientid123",
+ 			"anthropic_user_id": "",
+@@ -65,7 +68,7 @@ func TestBuildOAuthMetadataUserID_UsesAccountUUIDWhenPresent(t *testing.T) {
+ // 因此直接比较完整 user_id 字符串即可判定 session_id 是否稳定。
+ func TestBuildOAuthMetadataUserID_SessionIDStableAcrossTurns(t *testing.T) {
+ 	svc := &GatewayService{}
+-	account := &Account{ID: 777, Type: AccountTypeOAuth, Extra: map[string]any{"account_uuid": "acc-uuid"}}
++	account := &Account{ID: 777, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Extra: map[string]any{"email_address": "test@example.com", "account_uuid": "acc-uuid"}}
+ 	fp := &Fingerprint{ClientID: "clientid777", UserAgent: "claude-cli/2.1.161 (external, cli)"}
+ 
+ 	mustParse := func(body string) *ParsedRequest {
+diff --git a/backend/internal/service/identity_service.go b/backend/internal/service/identity_service.go
+index d117f720c..fb6e39b5b 100644
+--- a/backend/internal/service/identity_service.go
++++ b/backend/internal/service/identity_service.go
+@@ -351,7 +351,7 @@ func (s *IdentityService) ApplyFingerprint(req *http.Request, fp *Fingerprint) {
+ //
+ // 重要：此函数使用 json.RawMessage 保留其他字段的原始字节，
+ // 避免重新序列化导致 thinking 块等内容被修改。
+-func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
++func (s *IdentityService) RewriteUserID(body []byte, account *Account, accountUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
+ 	if len(body) == 0 || accountUUID == "" || cachedClientID == "" {
+ 		return body, nil
+ 	}
+@@ -381,8 +381,10 @@ func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUI
+ 
+ 	sessionTail := parsed.SessionID // 原始session UUID
+ 
+-	// 生成新的session hash: SHA256(accountID::sessionTail) -> UUID格式
+-	seed := fmt.Sprintf("%d::%s", accountID, sessionTail)
++	seed, err := accountEmailIdentitySeed(account, "claude-session-rewrite", sessionTail)
++	if err != nil {
++		return body, nil
++	}
+ 	newSessionHash := generateUUIDFromSeed(seed)
+ 
+ 	// 根据客户端版本选择输出格式
+@@ -406,8 +408,11 @@ func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUI
+ // 重要：此函数使用 json.RawMessage 保留其他字段的原始字节，
+ // 避免重新序列化导致 thinking 块等内容被修改。
+ func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []byte, account *Account, accountUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
++	if _, err := accountEmailIdentitySeed(account, "claude-session-rewrite"); err != nil {
++		return body, nil
++	}
+ 	// 先执行常规的 RewriteUserID 逻辑
+-	newBody, err := s.RewriteUserID(body, account.ID, accountUUID, cachedClientID, fingerprintUA)
++	newBody, err := s.RewriteUserID(body, account, accountUUID, cachedClientID, fingerprintUA)
+ 	if err != nil {
+ 		return newBody, err
+ 	}
+diff --git a/backend/internal/service/identity_service_order_test.go b/backend/internal/service/identity_service_order_test.go
+index d1e122741..f20550302 100644
+--- a/backend/internal/service/identity_service_order_test.go
++++ b/backend/internal/service/identity_service_order_test.go
+@@ -38,7 +38,8 @@ func TestIdentityService_RewriteUserID_PreservesTopLevelFieldOrder(t *testing.T)
+ 	)
+ 	body := []byte(`{"alpha":1,"messages":[],"metadata":{"user_id":` + strconvQuote(originalUserID) + `},"max_tokens":64000,"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},"stream":true}`)
+ 
+-	result, err := svc.RewriteUserID(body, 123, "acc-uuid", "client-xyz", "claude-cli/2.1.78 (external, cli)")
++	account := &Account{ID: 123, Platform: PlatformAnthropic, Extra: map[string]any{"email_address": "test@example.com", "account_uuid": "acc-uuid"}}
++	result, err := svc.RewriteUserID(body, account, "acc-uuid", "client-xyz", "claude-cli/2.1.78 (external, cli)")
+ 	require.NoError(t, err)
+ 	resultStr := string(result)
+ 
+@@ -64,6 +65,7 @@ func TestIdentityService_RewriteUserIDWithMasking_PreservesTopLevelFieldOrder(t
+ 		Platform: PlatformAnthropic,
+ 		Type:     AccountTypeOAuth,
+ 		Extra: map[string]any{
++			"email_address":              "test@example.com",
+ 			"session_id_masking_enabled": true,
+ 		},
+ 	}
+diff --git a/backend/internal/service/openai_agent_identity_compat_test.go b/backend/internal/service/openai_agent_identity_compat_test.go
+index c576a4c40..f55bcc968 100644
+--- a/backend/internal/service/openai_agent_identity_compat_test.go
++++ b/backend/internal/service/openai_agent_identity_compat_test.go
+@@ -29,6 +29,7 @@ func TestAccountTestServiceOpenAICompactAgentIdentityUsesFreshAssertion(t *testi
+ 		Schedulable: true,
+ 		Concurrency: 1,
+ 		Credentials: map[string]any{
++			"email":                      "test@example.com",
+ 			"auth_mode":                  OpenAIAuthModeAgentIdentity,
+ 			"agent_runtime_id":           key.runtimeID,
+ 			"agent_private_key":          privateKey,
+@@ -68,6 +69,7 @@ func TestAccountTestServiceOpenAICompactAgentIdentityRecoversInvalidTaskOnce(t *
+ 		Schedulable: true,
+ 		Concurrency: 1,
+ 		Credentials: map[string]any{
++			"email":              "test@example.com",
+ 			"auth_mode":          OpenAIAuthModeAgentIdentity,
+ 			"agent_runtime_id":   key.runtimeID,
+ 			"agent_private_key":  privateKey,
+diff --git a/backend/internal/service/openai_compact_probe.go b/backend/internal/service/openai_compact_probe.go
+index 9d5e8ccad..fe8674771 100644
+--- a/backend/internal/service/openai_compact_probe.go
++++ b/backend/internal/service/openai_compact_probe.go
+@@ -153,14 +153,10 @@ func mergeExtraUpdates(base map[string]any, more map[string]any) map[string]any
+ 	return out
+ }
+ 
+-// compactProbeSessionID 返回探测请求使用的会话标识。真实 Codex 的
+-// session-id / thread-id 恒为 UUID（codex-protocol ThreadId 是 UUIDv7），
+-// 探测既然与真实流量走同一个 /responses 端点，标识形态就必须同构——
+-// 否则上游能凭 "probe_compact_5" 这类字面量一眼区分出探测流量。
+-// 账号级稳定派生：重复探测复用同一会话，而不是每次新开一个。
+-func compactProbeSessionID(accountID int64) string {
+-	if accountID <= 0 {
+-		return deriveStableUUIDv4("sub2api:codex-compact-probe:v1:anonymous")
++func compactProbeSessionID(account *Account) (string, error) {
++	seed, err := accountEmailIdentitySeed(account, "compact-probe")
++	if err != nil {
++		return "", err
+ 	}
+-	return deriveStableUUIDv4("sub2api:codex-compact-probe:v1:" + strconv.FormatInt(accountID, 10))
++	return deriveStableUUIDv4(seed), nil
+ }
+-- 
+2.43.0
+
