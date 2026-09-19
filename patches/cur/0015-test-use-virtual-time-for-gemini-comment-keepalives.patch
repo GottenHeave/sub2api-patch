@@ -1,0 +1,68 @@
+From 57407028203efe9aa24218ccc91493493ea002b0 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Sat, 19 Sep 2026 19:04:25 +0000
+Subject: [PATCH] test: use virtual time for Gemini comment keepalives
+
+---
+ .../service/gemini_sse_comment_compat_test.go | 25 +++++++++++++------
+ 1 file changed, 17 insertions(+), 8 deletions(-)
+
+diff --git a/backend/internal/service/gemini_sse_comment_compat_test.go b/backend/internal/service/gemini_sse_comment_compat_test.go
+index 360f51ad3..ab0745efa 100644
+--- a/backend/internal/service/gemini_sse_comment_compat_test.go
++++ b/backend/internal/service/gemini_sse_comment_compat_test.go
+@@ -5,6 +5,7 @@ import (
+ 	"net/http"
+ 	"strings"
+ 	"testing"
++	"testing/synctest"
+ 	"time"
+ 
+ 	"github.com/Wei-Shaw/sub2api/internal/config"
+@@ -68,11 +69,15 @@ func runAntigravityGeminiStreamWithIdle(t *testing.T, userAgent string, idle tim
+ 		_, err := svc.handleGeminiStreamingResponse(c, resp, time.Now())
+ 		done <- err
+ 	}()
++	synctest.Wait()
++	// Offset data from the ticker so the first tick is not yet an idle interval.
++	time.Sleep(100 * time.Millisecond)
+ 	_, err := io.WriteString(
+ 		writer,
+ 		`data: {"response":{"responseId":"resp_1","candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":1}}}`+"\n\n",
+ 	)
+ 	require.NoError(t, err)
++	synctest.Wait()
+ 	time.Sleep(idle)
+ 	require.NoError(t, writer.Close())
+ 	require.NoError(t, <-done)
+@@ -81,15 +86,19 @@ func runAntigravityGeminiStreamWithIdle(t *testing.T, userAgent string, idle tim
+ }
+ 
+ func TestAntigravityGeminiStreamKeepsCommentKeepaliveForOrdinaryClients(t *testing.T) {
+-	out := runAntigravityGeminiStreamWithIdle(t, "curl/8.7.1", 1200*time.Millisecond)
+-	require.Contains(t, out, ":\n\n", "ordinary clients should still get the idle keepalive")
+-	require.Contains(t, out, `"text":"partial"`)
++	synctest.Test(t, func(t *testing.T) {
++		out := runAntigravityGeminiStreamWithIdle(t, "curl/8.7.1", 2*time.Second)
++		require.Contains(t, out, ":\n\n", "ordinary clients should still get the idle keepalive")
++		require.Contains(t, out, `"text":"partial"`)
++	})
+ }
+ 
+ func TestAntigravityGeminiStreamSkipsCommentKeepaliveForGoGenai(t *testing.T) {
+-	out := runAntigravityGeminiStreamWithIdle(t, "google-genai-sdk/1.71.0 gl-go/go1.28-20260721-RC03", 1200*time.Millisecond)
+-	require.Contains(t, out, `"text":"partial"`)
+-	for _, event := range strings.Split(out, "\n\n") {
+-		require.False(t, strings.HasPrefix(event, ":"), "go-genai must never receive an SSE comment event, got %q", event)
+-	}
++	synctest.Test(t, func(t *testing.T) {
++		out := runAntigravityGeminiStreamWithIdle(t, "google-genai-sdk/1.71.0 gl-go/go1.28-20260721-RC03", 2*time.Second)
++		require.Contains(t, out, `"text":"partial"`)
++		for _, event := range strings.Split(out, "\n\n") {
++			require.False(t, strings.HasPrefix(event, ":"), "go-genai must never receive an SSE comment event, got %q", event)
++		}
++	})
+ }
+-- 
+2.43.0
+

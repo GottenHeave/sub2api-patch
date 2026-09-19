@@ -15,7 +15,7 @@ files using `git apply --numstat`. They include tests; `+` and `-` are added
 and deleted lines. Paths are relative to upstream, with backend paths under
 `backend/internal/`. File counts are per patch, so shared files appear in
 more than one row. This table is maintained manually, not enforced by CI.
-Rows 5, 6, 12, 13, and 14 were updated on 2026-09-19.
+Rows 5, 6, 12, 13, 14, and 15 were updated on 2026-09-19.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -33,6 +33,7 @@ Rows 5, 6, 12, 13, and 14 were updated on 2026-09-19.
 | 12: Outbound instruction text | Remove product tags, deduplicate by instruction text, and use `namespace__pi` for the reserved Python tool alias | Codex transforms, tool names, Messages bridge/todo guidance, and tests | 13 | +140 / -52 |
 | 13: Turn-state ownership | Scope cached state to resolved credentials and strip known foreign echoes using actual delivered headers | Turn-state helpers, HTTP passthrough, WS forwarding/cache, and tests | 15 | +431 / -66 |
 | 14: Email-scoped sessions | Derive Compact and Claude session identities from account email and workspace instead of local rows | Shared email helper, Compact probe, Claude rewrite/synthesis, and tests | 10 | +345 / -56 |
+| 15: Heartbeat test timing | Use virtual time to exercise idle SSE comments without wall-clock scheduling assumptions | `service/gemini_sse_comment_compat_test.go` only | 1 | +17 / -8 |
 
 ## Behavior boundaries
 
@@ -62,7 +63,7 @@ Rows 5, 6, 12, 13, and 14 were updated on 2026-09-19.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 14 patches.
+Apply patches in numerical order. The complete series contains all 15 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
