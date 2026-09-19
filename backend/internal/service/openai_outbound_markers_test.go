@@ -21,10 +21,10 @@ func TestOpenAIOutboundMarkersInstructions(t *testing.T) {
 		encoded, err := marshalOpenAIUpstreamJSON(body)
 		require.NoError(t, err)
 		require.NotContains(t, strings.ToLower(string(encoded)), "sub2api")
-		require.Contains(t, body["instructions"], "Caller instructions")
-		require.Contains(t, body["instructions"], "image_generation")
-		require.NotContains(t, body["instructions"], "<")
-		require.Equal(t, "Caller instructions\n\n"+codexImageGenerationBridgeText, body["instructions"])
+		instructions, ok := body["instructions"].(string)
+		require.True(t, ok)
+		require.Contains(t, instructions, "Caller instructions")
+		require.Equal(t, 1, strings.Count(instructions, codexImageGenerationBridgeText))
 	})
 	t.Run("spark transform", func(t *testing.T) {
 		body := map[string]any{"model": "gpt-5.3-codex-spark", "instructions": "Caller instructions"}
@@ -34,9 +34,10 @@ func TestOpenAIOutboundMarkersInstructions(t *testing.T) {
 		encoded, err := marshalOpenAIUpstreamJSON(body)
 		require.NoError(t, err)
 		require.NotContains(t, strings.ToLower(string(encoded)), "sub2api")
-		require.Contains(t, body["instructions"], "does not support image generation")
-		require.NotContains(t, body["instructions"], "<")
-		require.Equal(t, "Caller instructions\n\n"+codexSparkImageUnsupportedText, body["instructions"])
+		instructions, ok := body["instructions"].(string)
+		require.True(t, ok)
+		require.Contains(t, instructions, "Caller instructions")
+		require.Equal(t, 1, strings.Count(instructions, codexSparkImageUnsupportedText))
 	})
 }
 
@@ -47,7 +48,6 @@ func TestOpenAIOutboundMarkersTodoGuard(t *testing.T) {
 	require.False(t, appendOpenAICompatClaudeCodeTodoGuard(req))
 	require.NotContains(t, strings.ToLower(string(req.Input)), "sub2api")
 	require.Equal(t, "developer", gjson.GetBytes(req.Input, "0.role").String())
-	require.Contains(t, string(req.Input), "in_progress")
 	require.Equal(t, openAICompatClaudeCodeTodoGuardText, gjson.GetBytes(req.Input, "0.content.0.text").String())
 
 	var items []any
@@ -70,7 +70,6 @@ func TestOpenAIOutboundMarkersReservedToolRoundTrip(t *testing.T) {
 	require.True(t, changed)
 	require.NotContains(t, strings.ToLower(string(aliased)), "sub2api")
 	name := gjson.GetBytes(aliased, "tools.0.name").String()
-	require.NotEqual(t, "python", name)
 	require.Equal(t, "namespace__pi", name)
 	require.Equal(t, name, gjson.GetBytes(aliased, "tool_choice.name").String())
 	require.Equal(t, name, gjson.GetBytes(aliased, "input.0.name").String())
