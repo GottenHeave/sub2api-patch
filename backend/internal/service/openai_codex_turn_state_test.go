@@ -58,7 +58,7 @@ func TestRelayOpenAICodexTurnState_SetsHeaderAndRecordsProvenance(t *testing.T) 
 	require.True(t, ok)
 	origin, ok := raw.(openAICodexTurnStateOrigin)
 	require.True(t, ok)
-	require.Equal(t, "local-owner:42", origin.credentialKey)
+	require.Equal(t, openAICodexTurnStateCredentialKey(c, account), origin.credentialKey)
 	require.True(t, origin.expiresAt.After(time.Now()))
 }
 
@@ -95,7 +95,7 @@ func TestStageOpenAICodexTurnState_StagedHeaders(t *testing.T) {
 	require.True(t, ok)
 	origin, ok := raw.(openAICodexTurnStateOrigin)
 	require.True(t, ok)
-	require.Equal(t, "local-owner:44", origin.credentialKey)
+	require.Equal(t, openAICodexTurnStateCredentialKey(c, &Account{ID: 44}), origin.credentialKey)
 
 	// 上游无值 → 清除已暂存的值；nil 集合保持 nil
 	stageOpenAICodexTurnState(&staged, http.Header{})
@@ -130,7 +130,7 @@ func TestStagedTurnState_AbandonedAttemptDoesNotPoisonProvenance(t *testing.T) {
 	require.True(t, ok)
 	origin, ok := raw.(openAICodexTurnStateOrigin)
 	require.True(t, ok)
-	require.Equal(t, "local-owner:52", origin.credentialKey)
+	require.Equal(t, openAICodexTurnStateCredentialKey(c, &Account{ID: 52}), origin.credentialKey)
 }
 
 func TestNoteStagedOpenAICodexTurnStateCommitted_NoopWithoutState(t *testing.T) {
