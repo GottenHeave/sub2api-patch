@@ -38,6 +38,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if s == nil || account == nil {
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
+	defer s.observeOpenAICodexTurnStateCommit(c, account)()
 	responseModelObserver := &upstreamResponseModelObserver{}
 
 	wsURL, err := s.buildOpenAIResponsesWSURL(account)
@@ -132,7 +133,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		sessionHash = executionScope
 	}
 	if turnState == "" && stateStore != nil && sessionHash != "" {
-		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
+		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash, openAICodexTurnStateCredentialKey(c, account)); ok {
 			turnState = savedTurnState
 		}
 	}
@@ -321,10 +322,16 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	)
 	if handshakeTurnState != "" {
 		if stateStore != nil && sessionHash != "" {
-			stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
+			stateStore.BindSessionTurnState(groupID, sessionHash, openAICodexTurnStateCredentialKey(c, account), handshakeTurnState, s.openAIWSSessionStickyTTL())
 		}
-		if c != nil {
-			c.Header(http.CanonicalHeaderKey(openAIWSTurnStateHeader), handshakeTurnState)
+	}
+	commitTurnState := func() {
+		if c != nil && c.Writer != nil && !c.Writer.Written() {
+			if handshakeTurnState == "" {
+				c.Writer.Header().Del(openAIWSTurnStateHeader)
+			} else {
+				c.Writer.Header().Set(openAIWSTurnStateHeader, handshakeTurnState)
+			}
 		}
 	}
 
@@ -480,6 +487,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		frame = append(frame, "data: "...)
 		frame = append(frame, message...)
 		frame = append(frame, '\n', '\n')
+		commitTurnState()
 		_, wErr := c.Writer.Write(frame)
 		if wErr == nil {
 			wroteDownstream = true
@@ -729,6 +737,7 @@ readLoop:
 				emitStreamMessage(message, true)
 			}
 			if !reqStream {
+				commitTurnState()
 				c.JSON(statusCode, gin.H{
 					"error": gin.H{
 						"type":    "upstream_error",
@@ -814,6 +823,7 @@ readLoop:
 			responseID = strings.TrimSpace(gjson.GetBytes(finalResponse, "id").String())
 		}
 
+		commitTurnState()
 		c.Data(http.StatusOK, "application/json", finalResponse)
 	} else {
 		flushStreamWriter(true)

@@ -1452,7 +1452,7 @@ func TestOpenAIGatewayService_Forward_WSv2_TurnStateAndMetadataReplayOnReconnect
 	sessionHash, _ := resolveOpenAIWSExecutionScope(c1, reqBody, getAPIKeyIDFromContext(c1))
 	require.NotEmpty(t, sessionHash)
 	store := svc.getOpenAIWSStateStore()
-	turnState, ok := store.GetSessionTurnState(0, sessionHash)
+	turnState, ok := store.GetSessionTurnState(0, sessionHash, openAICodexTurnStateCredentialKey(c1, account))
 	require.True(t, ok)
 	require.Equal(t, "turn_state_first", turnState)
 
