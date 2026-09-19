@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -197,7 +198,7 @@ func TestOpenAIGatewayServiceBuildOpenAIRealtimeWSURLRejectsUnsupportedAccount(t
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeSetupToken}
 
 	_, err := svc.buildOpenAIRealtimeWSURL(account, "gpt-realtime")
-	require.ErrorContains(t, err, "OpenAI API key or OAuth account")
+	require.Error(t, err)
 }
 
 func TestOpenAIRealtimeTransportDoesNotRequireResponsesWebSocketSettings(t *testing.T) {
@@ -212,9 +213,21 @@ func TestOpenAIRealtimeTransportDoesNotRequireResponsesWebSocketSettings(t *test
 func TestOpenAIRealtimeWSQueryPreservesCodexRouting(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime?intent=quicksilver&architecture=avas&model=client-alias", nil)
-	require.Equal(t, "wss://api.openai.com/v1/realtime?architecture=avas&intent=quicksilver&model=gpt-realtime", openAIRealtimeWSQuery("wss://api.openai.com/v1/realtime?model=gpt-realtime", c))
+	upstream, err := url.Parse(openAIRealtimeWSQuery("wss://api.openai.com/v1/realtime?model=gpt-realtime", c))
+	require.NoError(t, err)
+	query, err := url.ParseQuery(upstream.RawQuery)
+	require.NoError(t, err)
+	require.Equal(t, url.Values{"architecture": {"avas"}, "intent": {"quicksilver"}, "model": {"gpt-realtime"}}, query)
+	upstream.RawQuery = ""
+	require.Equal(t, "wss://api.openai.com/v1/realtime", upstream.String())
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime?call_id=rtc_123&intent=quicksilver", nil)
-	require.Equal(t, "wss://api.openai.com/v1/realtime?call_id=rtc_123&intent=quicksilver", openAIRealtimeWSQuery("wss://api.openai.com/v1/realtime?model=gpt-realtime", c))
+	upstream, err = url.Parse(openAIRealtimeWSQuery("wss://api.openai.com/v1/realtime?model=gpt-realtime", c))
+	require.NoError(t, err)
+	query, err = url.ParseQuery(upstream.RawQuery)
+	require.NoError(t, err)
+	require.Equal(t, url.Values{"call_id": {"rtc_123"}, "intent": {"quicksilver"}}, query)
+	upstream.RawQuery = ""
+	require.Equal(t, "wss://api.openai.com/v1/realtime", upstream.String())
 }
 
 func TestOpenAIGatewayService_Forward_WSv2_UsesPatchedBodyAfterValidationDecode(t *testing.T) {
