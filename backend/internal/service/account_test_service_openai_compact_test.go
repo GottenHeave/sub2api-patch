@@ -34,6 +34,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersi
 		Concurrency: 1,
 		Credentials: map[string]any{
 			"access_token":               "oauth-token",
+			"email":                      "test@example.com",
 			"chatgpt_account_id":         "chatgpt-acc",
 			"chatgpt_account_is_fedramp": true,
 		},
@@ -96,6 +97,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuth404MarksUnsu
 		Concurrency: 1,
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
+			"email":              "test@example.com",
 			"chatgpt_account_id": "chatgpt-acc",
 		},
 	}
@@ -140,6 +142,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactAPIKeyUsesNativeR
 		Concurrency: 1,
 		Credentials: map[string]any{
 			"api_key":  "sk-test",
+			"email":    "test@example.com",
 			"base_url": "https://example.com/v1",
 			// post-#5641：compact_model_mapping 仅作用于 legacy /responses/compact，
 			// 原生 v2 探测不应用它。
@@ -191,6 +194,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactAPIKeyDefaultBase
 		Concurrency: 1,
 		Credentials: map[string]any{
 			"api_key": "sk-test",
+			"email":   "test@example.com",
 		},
 	}
 	repo := &snapshotUpdateAccountRepo{
@@ -232,6 +236,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompact2xxWithoutItemMar
 		Concurrency: 1,
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
+			"email":              "test@example.com",
 			"chatgpt_account_id": "chatgpt-acc",
 		},
 	}
@@ -281,6 +286,7 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactProbeIdentityMatc
 		Concurrency: 1,
 		Credentials: map[string]any{
 			"access_token":       "oauth-token",
+			"email":              "test@example.com",
 			"chatgpt_account_id": "chatgpt-acc",
 		},
 		// 收敛是显式 opt-in（#5610），这里显式开启以验证探测身份与真实流量同构。
@@ -320,11 +326,17 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactProbeIdentityMatc
 }
 
 func TestCompactProbeSessionID_IsUUIDShaped(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Credentials: map[string]any{"email": "test@example.com"}}
+	var first string
 	for _, id := range []int64{0, 1, 987654} {
-		got := compactProbeSessionID(id)
-		_, err := uuid.Parse(got)
+		account.ID = id
+		got, err := compactProbeSessionID(account)
+		require.NoError(t, err)
+		_, err = uuid.Parse(got)
 		require.NoError(t, err, "探测会话标识必须是 UUID 形态: %s", got)
+		if first != "" {
+			require.Equal(t, first, got)
+		}
+		first = got
 	}
-	require.Equal(t, compactProbeSessionID(7), compactProbeSessionID(7), "同账号应稳定复用同一会话")
-	require.NotEqual(t, compactProbeSessionID(7), compactProbeSessionID(8))
 }
