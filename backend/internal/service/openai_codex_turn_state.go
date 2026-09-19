@@ -1,9 +1,11 @@
 package service
 
 import (
+	"crypto/sha256"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,14 +17,30 @@ import (
 // codex-api/src/sse/responses.rs 与 endpoint/compact.rs）。
 const openAICodexTurnStateHeader = "x-codex-turn-state"
 
-// turn-state blob 是上游在"出站身份"（含 #5553 指纹收敛改写后的
-// installation/session/thread 标识）下铸造的，同账号回放自洽；跨账号回放
-// （failover 换号后客户端仍回带旧账号的 blob）是代理链独有、真实 Codex
-// 永远不会产生的矛盾信号。溯源表记录每个下游会话最近一次铸造该 blob 的
-// 账号，出站守卫据此剥离已知异账号的回带值。
+// Track the last delivered state per downstream session without storing the
+// opaque blob. Credential ownership and its digest distinguish a known echo
+// from unknown client state; they do not authenticate the provider's payload.
 type openAICodexTurnStateOrigin struct {
-	accountID int64
-	expiresAt time.Time
+	credentialKey string
+	stateDigest   [sha256.Size]byte
+	expiresAt     time.Time
+}
+
+// The row fallback stays inside ephemeral state ownership; it is never emitted
+// upstream. Credential shadows use their resolved parent, while duplicate rows
+// with the same upstream account and user share the existing credential namespace.
+func openAICodexTurnStateCredentialKey(c *gin.Context, account *Account) string {
+	source := codexAccountIdentitySource(c, account)
+	if source == nil {
+		return ""
+	}
+	if namespace := codexAccountIdentityNamespace(source); namespace != "" {
+		return namespace
+	}
+	if source.ID <= 0 {
+		return ""
+	}
+	return "local-owner:" + strconv.FormatInt(source.ID, 10)
 }
 
 // openAICodexTurnStateSeed 返回溯源表键：API Key + 客户端原始会话标识。
@@ -56,7 +74,7 @@ func (s *OpenAIGatewayService) relayOpenAICodexTurnState(c *gin.Context, account
 		return
 	}
 	c.Writer.Header().Set(canonical, state)
-	s.noteOpenAICodexTurnStateProvenance(c, account)
+	s.noteOpenAICodexTurnStateProvenance(c, account, state)
 }
 
 // stageOpenAICodexTurnState 将上游 turn-state 暂存到延迟提交的响应头集合
@@ -89,7 +107,73 @@ func (s *OpenAIGatewayService) noteStagedOpenAICodexTurnStateCommitted(c *gin.Co
 	if staged == nil || strings.TrimSpace(staged.Get(openAICodexTurnStateHeader)) == "" {
 		return
 	}
-	s.noteOpenAICodexTurnStateProvenance(c, account)
+	s.noteOpenAICodexTurnStateProvenance(c, account, extractOpenAICodexTurnState(staged))
+}
+
+type openAICodexTurnStateResponseWriter struct {
+	gin.ResponseWriter
+	onCommit func(string)
+	once     sync.Once
+}
+
+func (w *openAICodexTurnStateResponseWriter) recordCommit(state string) {
+	if w.Written() {
+		w.once.Do(func() { w.onCommit(state) })
+	}
+}
+
+func (w *openAICodexTurnStateResponseWriter) WriteHeaderNow() {
+	if w.Written() {
+		return
+	}
+	state := extractOpenAICodexTurnState(w.Header())
+	w.ResponseWriter.WriteHeaderNow()
+	w.recordCommit(state)
+}
+
+func (w *openAICodexTurnStateResponseWriter) WriteHeader(code int) {
+	wasWritten := w.Written()
+	state := extractOpenAICodexTurnState(w.Header())
+	w.ResponseWriter.WriteHeader(code)
+	if !wasWritten {
+		w.recordCommit(state)
+	}
+}
+
+func (w *openAICodexTurnStateResponseWriter) Write(data []byte) (int, error) {
+	w.WriteHeaderNow()
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *openAICodexTurnStateResponseWriter) WriteString(data string) (int, error) {
+	w.WriteHeaderNow()
+	return w.ResponseWriter.WriteString(data)
+}
+
+func (w *openAICodexTurnStateResponseWriter) Flush() {
+	w.WriteHeaderNow()
+	w.ResponseWriter.Flush()
+}
+
+// Observe only HTTP response writers whose headers remain uncommitted. The
+// emitted header value and selected credential are captured at that boundary,
+// before body writes can expose the state to another request. Embedded writer
+// methods retain Gin's hijacking, close notification and HTTP push behavior.
+func (s *OpenAIGatewayService) observeOpenAICodexTurnStateCommit(c *gin.Context, account *Account) func() {
+	if s == nil || c == nil || c.Writer == nil || c.Writer.Written() {
+		return func() {}
+	}
+	seed := openAICodexTurnStateSeed(c)
+	credentialKey := openAICodexTurnStateCredentialKey(c, account)
+	if seed == "" || credentialKey == "" {
+		return func() {}
+	}
+	writer := c.Writer
+	c.Writer = &openAICodexTurnStateResponseWriter{
+		ResponseWriter: writer,
+		onCommit:       func(state string) { s.recordOpenAICodexTurnStateProvenance(seed, credentialKey, state) },
+	}
+	return func() { c.Writer = writer }
 }
 
 func extractOpenAICodexTurnState(upstream http.Header) string {
@@ -99,18 +183,25 @@ func extractOpenAICodexTurnState(upstream http.Header) string {
 	return strings.TrimSpace(upstream.Get(openAICodexTurnStateHeader))
 }
 
-// noteOpenAICodexTurnStateProvenance 记录（下游会话 → 铸造账号）。
-func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context, account *Account) {
-	if s == nil || account == nil || account.ID <= 0 {
+// Record only the state selected for downstream delivery, using the same
+// resolved credential owner as the WS cache.
+func (s *OpenAIGatewayService) noteOpenAICodexTurnStateProvenance(c *gin.Context, account *Account, state string) {
+	if s == nil || account == nil || strings.TrimSpace(state) == "" {
 		return
 	}
+	credentialKey := openAICodexTurnStateCredentialKey(c, account)
 	seed := openAICodexTurnStateSeed(c)
-	if seed == "" {
+	s.recordOpenAICodexTurnStateProvenance(seed, credentialKey, state)
+}
+
+func (s *OpenAIGatewayService) recordOpenAICodexTurnStateProvenance(seed, credentialKey, state string) {
+	if s == nil || seed == "" || credentialKey == "" || strings.TrimSpace(state) == "" {
 		return
 	}
 	s.openaiCodexTurnStateOrigins.Store(seed, openAICodexTurnStateOrigin{
-		accountID: account.ID,
-		expiresAt: time.Now().Add(s.openAIWSSessionStickyTTL()),
+		credentialKey: credentialKey,
+		stateDigest:   sha256.Sum256([]byte(strings.TrimSpace(state))),
+		expiresAt:     time.Now().Add(s.openAIWSSessionStickyTTL()),
 	})
 	s.sweepOpenAICodexTurnStateOrigins()
 }
@@ -143,7 +234,13 @@ func (s *OpenAIGatewayService) guardOpenAICodexTurnStateEcho(c *gin.Context, acc
 		s.openaiCodexTurnStateOrigins.Delete(seed)
 		return
 	}
-	if origin.accountID != account.ID {
+	// A session can receive unknown client state independently of the last
+	// response we delivered. Only that exact recorded blob has known ownership.
+	if origin.stateDigest != sha256.Sum256([]byte(strings.TrimSpace(h.Get(openAICodexTurnStateHeader)))) {
+		return
+	}
+	credentialKey := openAICodexTurnStateCredentialKey(c, account)
+	if credentialKey != "" && origin.credentialKey != "" && origin.credentialKey != credentialKey {
 		h.Del(openAICodexTurnStateHeader)
 	}
 }
