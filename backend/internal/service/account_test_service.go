@@ -2150,6 +2150,10 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		}
 		credentialAccount = resolved
 	}
+	probeSessionID, identityErr := compactProbeSessionID(credentialAccount)
+	if identityErr != nil {
+		return s.sendErrorAndEnd(c, "Compact probe requires a valid account email")
+	}
 
 	authToken := ""
 	apiURL := ""
@@ -2225,7 +2229,6 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	if isOAuth {
 		enforceCodexIdentityHeadersWithUA(req.Header, credentialAccount.GetOpenAIUserAgent())
 	}
-	probeSessionID := compactProbeSessionID(account.ID)
 	req.Header.Set("Session_ID", probeSessionID)
 	req.Header.Set("Conversation_ID", probeSessionID)
 
