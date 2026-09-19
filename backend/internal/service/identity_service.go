@@ -362,7 +362,7 @@ func (s *IdentityService) ApplyFingerprint(req *http.Request, fp *Fingerprint) {
 //
 // 重要：此函数使用 json.RawMessage 保留其他字段的原始字节，
 // 避免重新序列化导致 thinking 块等内容被修改。
-func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
+func (s *IdentityService) RewriteUserID(body []byte, account *Account, accountUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
 	if len(body) == 0 || accountUUID == "" || cachedClientID == "" {
 		return body, nil
 	}
@@ -392,8 +392,10 @@ func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUI
 
 	sessionTail := parsed.SessionID // 原始session UUID
 
-	// 生成新的session hash: SHA256(accountID::sessionTail) -> UUID格式
-	seed := fmt.Sprintf("%d::%s", accountID, sessionTail)
+	seed, err := accountEmailIdentitySeed(account, "claude-session-rewrite", sessionTail)
+	if err != nil {
+		return body, nil
+	}
 	newSessionHash := generateUUIDFromSeed(seed)
 
 	// 根据客户端版本选择输出格式
@@ -417,8 +419,11 @@ func (s *IdentityService) RewriteUserID(body []byte, accountID int64, accountUUI
 // 重要：此函数使用 json.RawMessage 保留其他字段的原始字节，
 // 避免重新序列化导致 thinking 块等内容被修改。
 func (s *IdentityService) RewriteUserIDWithMasking(ctx context.Context, body []byte, account *Account, accountUUID, cachedClientID, fingerprintUA string) ([]byte, error) {
+	if _, err := accountEmailIdentitySeed(account, "claude-session-rewrite"); err != nil {
+		return body, nil
+	}
 	// 先执行常规的 RewriteUserID 逻辑
-	newBody, err := s.RewriteUserID(body, account.ID, accountUUID, cachedClientID, fingerprintUA)
+	newBody, err := s.RewriteUserID(body, account, accountUUID, cachedClientID, fingerprintUA)
 	if err != nil {
 		return newBody, err
 	}
