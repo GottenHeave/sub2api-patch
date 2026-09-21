@@ -416,9 +416,15 @@
               <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.responsesApi') }}</span>
             </div>
           </button>
-
+          <button type="button" :aria-pressed="accountCategory === 'codex-api'" @click="accountCategory = 'codex-api'"
+            :class="['flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all', accountCategory === 'codex-api' ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20' : 'border-gray-200 hover:border-primary-300 dark:border-dark-600']">
+            <Icon name="key" size="sm" />
+            <span class="text-sm font-medium text-gray-900 dark:text-white">Codex API</span>
+          </button>
         </div>
       </div>
+
+      <CodexAPICredentialsFields v-if="form.type === 'codex-api'" v-model:base-url="codexAPIBaseUrl" v-model:api-key="codexAPIKey" />
 
       <!-- Account Type Selection (Grok) -->
       <div v-if="form.platform === 'grok'">
@@ -2439,7 +2445,7 @@
       </div>
 
       <!-- Temp Unschedulable Rules -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
+      <div v-if="form.type !== 'codex-api'" class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
         <div class="mb-3 flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.tempUnschedulable.title') }}</label>
@@ -3007,6 +3013,7 @@
       </div>
 
       <UpstreamRequestIdHeaderField
+        v-if="form.type !== 'codex-api'"
         v-model="upstreamRequestIdHeader"
         :platform="form.platform"
         :type="form.type"
@@ -3061,7 +3068,7 @@
 
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
-        v-if="form.platform === 'openai'"
+        v-if="form.platform === 'openai' && form.type !== 'codex-api'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3073,6 +3080,7 @@
           </div>
           <button
             type="button"
+            data-testid="create-openai-passthrough-toggle"
             @click="openaiPassthroughEnabled = !openaiPassthroughEnabled"
             :class="[
               'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -3927,6 +3935,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
+import CodexAPICredentialsFields from '@/components/account/CodexAPICredentialsFields.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
@@ -4147,7 +4156,9 @@ interface TempUnschedRuleForm {
 // State
 const step = ref(1)
 const submitting = ref(false)
-const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
+const accountCategory = ref<'oauth-based' | 'apikey' | 'codex-api' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
+const codexAPIBaseUrl = ref('')
+const codexAPIKey = ref('')
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
@@ -4817,7 +4828,9 @@ watch(
       form.type = 'bedrock' as AccountType
       return
     }
-    if ((form.platform === 'gemini' || form.platform === 'anthropic') && category === 'service_account') {
+    if (form.platform === 'openai' && category === 'codex-api') {
+      form.type = 'codex-api'
+    } else if ((form.platform === 'gemini' || form.platform === 'anthropic') && category === 'service_account') {
       form.type = 'service_account' as AccountType
     } else if (category === 'oauth-based') {
       form.type = form.platform === 'anthropic' ? method as AccountType : 'oauth'
@@ -4832,6 +4845,9 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    if (newPlatform !== 'openai' && accountCategory.value === 'codex-api') {
+      accountCategory.value = 'oauth-based'
+    }
     // Reset base URL based on platform
     if (isCNProviderPlatform(newPlatform) || newPlatform === 'opencode_go') {
       const mode = newPlatform === 'opencode_go' ? openCodeAccountMode.value : accountMode.value
@@ -5248,7 +5264,7 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
       Object.values(modelMapping).some((target) =>
         typeof target === 'string' && target.trim() !== '' && !target.includes('*')
       )
-    if (upstreamModelsPreviewed.value || hasConcreteMappedTarget) {
+    if (payload.type !== 'codex-api' && (upstreamModelsPreviewed.value || hasConcreteMappedTarget)) {
       try {
         const result = await adminAPI.accounts.syncUpstreamModels(account.id)
         const warnings = result.warnings ?? []
@@ -5307,6 +5323,8 @@ const resetForm = () => {
   form.group_ids = []
   form.expires_at = null
   accountCategory.value = 'oauth-based'
+  codexAPIBaseUrl.value = ''
+  codexAPIKey.value = ''
   addMethod.value = 'oauth'
   accountMode.value = 'payg'
   openCodeAccountMode.value = 'zen'
@@ -5619,6 +5637,22 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (form.type === 'codex-api') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!codexAPIBaseUrl.value.trim() || !codexAPIKey.value.trim()) return
+    await doCreateAccount({
+      ...form,
+      platform: 'openai',
+      type: 'codex-api',
+      credentials: { base_url: codexAPIBaseUrl.value.trim(), api_key: codexAPIKey.value.trim() },
+      load_factor: form.load_factor ?? undefined,
+      auto_pause_on_expired: autoPauseOnExpired.value
+    })
+    return
+  }
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!isGrokSSOInputMethod.value && !form.name.trim()) {

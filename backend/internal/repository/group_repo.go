@@ -30,8 +30,8 @@ type groupRepository struct {
 }
 
 // lockLiveGroups makes account-group inserts participate in the same row-lock
-// protocol as guarded group deletion. FOR SHARE conflicts with the deleter's
-// FOR UPDATE lock, and READ COMMITTED rechecks deleted_at after any wait.
+// protocol as guarded group deletion and serializes membership validation.
+// READ COMMITTED rechecks deleted_at after any wait.
 func lockLiveGroups(ctx context.Context, exec sqlExecutor, groupIDs []int64) error {
 	if len(groupIDs) == 0 {
 		return nil
@@ -44,7 +44,7 @@ func lockLiveGroups(ctx context.Context, exec sqlExecutor, groupIDs []int64) err
 		SELECT id FROM groups
 		WHERE id = ANY($1) AND deleted_at IS NULL
 		ORDER BY id
-		FOR SHARE`, pq.Array(groupIDs))
+		FOR UPDATE`, pq.Array(groupIDs))
 	if err != nil {
 		return err
 	}
@@ -218,6 +218,27 @@ func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service
 	if err := createGroupRecord(ctx, txClient, groupIn); err != nil {
 		return err
 	}
+	rows, err := txClient.QueryContext(ctx, `SELECT a.id FROM accounts a JOIN account_groups ag ON ag.account_id = a.id WHERE ag.group_id = $1 AND a.deleted_at IS NULL AND (NOT $2 OR a.type <> $3) ORDER BY a.id FOR NO KEY UPDATE OF a`, sourceGroupID, groupIn.RequireOAuthOnly, service.AccountTypeAPIKey)
+	if err != nil {
+		return err
+	}
+	var copiedIDs []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		copiedIDs = append(copiedIDs, id)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	if err := validateCodexAPIGroup(ctx, txClient, groupIn.ID, nil, copiedIDs, groupIn); err != nil {
+		return err
+	}
 	result, err := txClient.ExecContext(
 		ctx,
 		`INSERT INTO account_groups (account_id, group_id, priority, created_at)
@@ -227,11 +248,13 @@ func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service
 		 WHERE ag.group_id = $1
 		   AND a.deleted_at IS NULL
 		   AND (NOT $3 OR a.type <> $4)
+		   AND a.id = ANY($5)
 		 ON CONFLICT (account_id, group_id) DO NOTHING`,
 		sourceGroupID,
 		groupIn.ID,
 		groupIn.RequireOAuthOnly,
 		service.AccountTypeAPIKey,
+		pq.Array(copiedIDs),
 	)
 	if err != nil {
 		return err
@@ -282,7 +305,22 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 	if err != nil {
 		return fmt.Errorf("marshal group model pricing: %w", err)
 	}
-	builder := r.client.Group.UpdateOneID(groupIn.ID).
+	tx, err := r.client.Tx(ctx)
+	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+		return err
+	}
+	client := r.client
+	if tx != nil {
+		defer func() { _ = tx.Rollback() }()
+		client = tx.Client()
+	}
+	if err := lockLiveGroups(ctx, client, []int64{groupIn.ID}); err != nil {
+		return err
+	}
+	if err := validateCodexAPIGroup(ctx, client, groupIn.ID, nil, nil, groupIn); err != nil {
+		return err
+	}
+	builder := client.Group.UpdateOneID(groupIn.ID).
 		SetName(groupIn.Name).
 		SetDescription(groupIn.Description).
 		SetPlatform(groupIn.Platform).
@@ -436,6 +474,11 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		return translatePersistenceError(err, service.ErrGroupNotFound, service.ErrGroupExists)
 	}
 	groupIn.UpdatedAt = updated.UpdatedAt
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupIn.ID, nil); err != nil {
 		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group update failed: group=%d err=%v", groupIn.ID, err)
 	}
@@ -1087,7 +1130,13 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
 		defer func() { _ = tx.Rollback() }()
 		exec = tx.Client()
 	}
+	if err := lockCodexAPIAccounts(ctx, exec, accountIDs); err != nil {
+		return err
+	}
 	if err := lockLiveGroups(ctx, exec, []int64{groupID}); err != nil {
+		return err
+	}
+	if err := validateCodexAPIGroup(ctx, exec, groupID, nil, accountIDs, nil); err != nil {
 		return err
 	}
 
