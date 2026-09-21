@@ -1,0 +1,3166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 11:12:15 +0000
+Subject: [PATCH 17/17] feat: add dedicated Codex API accounts for native
+ Responses forwarding
+
+---
+ backend/internal/domain/constants.go          |   1 +
+ .../handler/admin/account_codex_api_test.go   |  31 +++
+ .../internal/handler/admin/account_data.go    |   5 +-
+ .../internal/handler/admin/account_handler.go |  17 +-
+ backend/internal/handler/codex_api_gateway.go | 251 ++++++++++++++++++
+ .../handler/codex_api_gateway_test.go         | 148 +++++++++++
+ backend/internal/repository/account_repo.go   |  33 +++
+ .../account_repo_ollama_cloud_usage_test.go   |  11 +-
+ ...repo_upstream_billing_probe_update_test.go |   3 +
+ .../codex_api_credentials_integration_test.go |  50 ++++
+ .../repository/codex_api_credentials_test.go  |  43 +++
+ .../repository/codex_api_group_guard.go       | 122 +++++++++
+ .../codex_api_group_guard_integration_test.go | 161 +++++++++++
+ .../repository/codex_api_transport_test.go    |  93 +++++++
+ backend/internal/repository/group_repo.go     |  57 +++-
+ backend/internal/repository/http_upstream.go  |  20 +-
+ .../internal/repository/usage_billing_repo.go |   2 +-
+ .../usage_billing_repo_integration_test.go    |  13 +-
+ .../server/routes/codex_api_gateway_test.go   | 119 +++++++++
+ backend/internal/server/routes/gateway.go     |  10 +-
+ .../routes/gateway_model_allowlist_test.go    |   6 +-
+ .../internal/server/routes/gateway_test.go    |   2 +-
+ backend/internal/service/account_codex_api.go |  98 +++++++
+ .../service/account_codex_api_test.go         |  88 ++++++
+ backend/internal/service/account_service.go   |  20 +-
+ .../service/account_test_codex_api.go         |  86 ++++++
+ .../service/account_test_codex_api_test.go    |  86 ++++++
+ .../internal/service/account_test_service.go  |   6 +
+ backend/internal/service/admin_account.go     |  20 +-
+ .../service/codex_api_billing_test.go         |  28 ++
+ backend/internal/service/codex_api_group.go   |  44 +++
+ .../internal/service/codex_api_group_test.go  |  58 ++++
+ .../internal/service/codex_api_transport.go   |  87 ++++++
+ .../service/codex_api_transport_test.go       |  70 +++++
+ backend/internal/service/codex_api_usage.go   | 184 +++++++++++++
+ .../internal/service/codex_api_usage_test.go  | 128 +++++++++
+ backend/internal/service/domain_constants.go  |   1 +
+ .../internal/service/gateway_usage_billing.go |   4 +-
+ .../internal/service/http_upstream_profile.go |   3 +-
+ .../service/openai_account_scheduler.go       |   3 +
+ .../service/openai_gateway_scheduling.go      |   3 +
+ .../components/account/AccountTestModal.vue   |  12 +-
+ .../account/CodexAPICredentialsFields.vue     |  21 ++
+ .../components/account/CreateAccountModal.vue |  46 +++-
+ .../components/account/EditAccountModal.vue   |  20 +-
+ .../__tests__/AccountTestModal.spec.ts        |  68 +++++
+ .../__tests__/CreateAccountModal.spec.ts      |  37 +++
+ .../__tests__/EditAccountModal.spec.ts        |  16 ++
+ .../admin/account/AccountActionMenu.vue       |   2 +-
+ .../admin/account/AccountTableFilters.vue     |   2 +-
+ .../admin/account/AccountTestModal.vue        |  12 +-
+ .../__tests__/AccountTestModal.spec.ts        |  34 +++
+ .../components/common/PlatformTypeBadge.vue   |   2 +
+ frontend/src/types/index.ts                   |   2 +-
+ 54 files changed, 2433 insertions(+), 56 deletions(-)
+ create mode 100644 backend/internal/handler/admin/account_codex_api_test.go
+ create mode 100644 backend/internal/handler/codex_api_gateway.go
+ create mode 100644 backend/internal/handler/codex_api_gateway_test.go
+ create mode 100644 backend/internal/repository/codex_api_credentials_integration_test.go
+ create mode 100644 backend/internal/repository/codex_api_credentials_test.go
+ create mode 100644 backend/internal/repository/codex_api_group_guard.go
+ create mode 100644 backend/internal/repository/codex_api_group_guard_integration_test.go
+ create mode 100644 backend/internal/repository/codex_api_transport_test.go
+ create mode 100644 backend/internal/server/routes/codex_api_gateway_test.go
+ create mode 100644 backend/internal/service/account_codex_api.go
+ create mode 100644 backend/internal/service/account_codex_api_test.go
+ create mode 100644 backend/internal/service/account_test_codex_api.go
+ create mode 100644 backend/internal/service/account_test_codex_api_test.go
+ create mode 100644 backend/internal/service/codex_api_billing_test.go
+ create mode 100644 backend/internal/service/codex_api_group.go
+ create mode 100644 backend/internal/service/codex_api_group_test.go
+ create mode 100644 backend/internal/service/codex_api_transport.go
+ create mode 100644 backend/internal/service/codex_api_transport_test.go
+ create mode 100644 backend/internal/service/codex_api_usage.go
+ create mode 100644 backend/internal/service/codex_api_usage_test.go
+ create mode 100644 frontend/src/components/account/CodexAPICredentialsFields.vue
+
+diff --git a/backend/internal/domain/constants.go b/backend/internal/domain/constants.go
+index e82c1df1dc664e7d7374905dcac4300a02a9e5f3..0b10745d2ba89c2bcb85b2fb10607eb22527389a 100644
+--- a/backend/internal/domain/constants.go
++++ b/backend/internal/domain/constants.go
+@@ -63,2 +63,3 @@ const (
+ 	AccountTypeServiceAccount = "service_account" // Google Service Account 类型账号（用于 Vertex AI）
++	AccountTypeCodexAPI       = "codex-api"
+ )
+diff --git a/backend/internal/handler/admin/account_codex_api_test.go b/backend/internal/handler/admin/account_codex_api_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..3aec0ad3de34ca0b699641a8431d22d745b35a89
+--- /dev/null
++++ b/backend/internal/handler/admin/account_codex_api_test.go
+@@ -0,0 +1,31 @@
++package admin
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/stretchr/testify/require"
++)
++
++func TestCodexAPIModelsDoNotFallBackToLocalCatalog(t *testing.T) {
++	svc := &availableModelsAdminService{
++		stubAdminService: newStubAdminService(),
++		account:          service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI},
++	}
++	recorder := httptest.NewRecorder()
++	setupAvailableModelsRouter(svc).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/1/models", nil))
++	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
++}
++
++func TestCodexAPIImportRequiresOpenAIAndCredentials(t *testing.T) {
++	item := DataAccount{Name: "dedicated", Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI,
++		Credentials: map[string]any{"base_url": "https://gateway.example", "api_key": "test-key"}}
++	require.NoError(t, validateDataAccount(item))
++	item.Platform = service.PlatformAnthropic
++	require.Error(t, validateDataAccount(item))
++	item.Platform = service.PlatformOpenAI
++	delete(item.Credentials, "api_key")
++	require.Error(t, validateDataAccount(item))
++}
+diff --git a/backend/internal/handler/admin/account_data.go b/backend/internal/handler/admin/account_data.go
+index ea1cff840e420a2295f48e9790bf29d593ec71a6..5f2d508178c26d27a94527daaa1a44a0c0ce79ae 100644
+--- a/backend/internal/handler/admin/account_data.go
++++ b/backend/internal/handler/admin/account_data.go
+@@ -695,3 +695,3 @@ func validateDataAccount(item DataAccount) error {
+ 	switch item.Type {
+-	case service.AccountTypeOAuth, service.AccountTypeSetupToken, service.AccountTypeAPIKey, service.AccountTypeUpstream:
++	case service.AccountTypeOAuth, service.AccountTypeSetupToken, service.AccountTypeAPIKey, service.AccountTypeCodexAPI, service.AccountTypeUpstream:
+ 	default:
+@@ -702,2 +702,5 @@ func validateDataAccount(item DataAccount) error {
+ 	}
++	if err := service.ValidateCodexAPIAccount(item.Platform, item.Type, item.Credentials); err != nil {
++		return err
++	}
+ 	if item.Concurrency < 0 {
+diff --git a/backend/internal/handler/admin/account_handler.go b/backend/internal/handler/admin/account_handler.go
+index f97dc4886a7c5b7321f4cb95919f6ebd175e561e..8e4e0ed9faa85500f2065865e2377d4438b07cd2 100644
+--- a/backend/internal/handler/admin/account_handler.go
++++ b/backend/internal/handler/admin/account_handler.go
+@@ -119,3 +119,3 @@ type CreateAccountRequest struct {
+ 	Platform                string         `json:"platform" binding:"required"`
+-	Type                    string         `json:"type" binding:"required,oneof=oauth setup-token apikey upstream bedrock service_account"`
++	Type                    string         `json:"type" binding:"required,oneof=oauth setup-token apikey codex-api upstream bedrock service_account"`
+ 	Credentials             map[string]any `json:"credentials" binding:"required"`
+@@ -139,3 +139,3 @@ type UpdateAccountRequest struct {
+ 	Notes                   *string        `json:"notes"`
+-	Type                    string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock service_account"`
++	Type                    string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey codex-api upstream bedrock service_account"`
+ 	Credentials             map[string]any `json:"credentials"`
+@@ -2783,2 +2783,15 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
+ 	if account.IsOpenAI() {
++		if account.IsCodexAPI() {
++			if h.accountTestService == nil {
++				response.Error(c, http.StatusServiceUnavailable, "Model discovery service is unavailable")
++				return
++			}
++			models, err := h.accountTestService.FetchOpenAIAccountModels(c.Request.Context(), account)
++			if err != nil {
++				response.ErrorFrom(c, err)
++				return
++			}
++			response.Success(c, models)
++			return
++		}
+ 		// Prefer the shared, account-keyed upstream catalog. If discovery fails,
+diff --git a/backend/internal/handler/codex_api_gateway.go b/backend/internal/handler/codex_api_gateway.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c3b3ac84cdc2aa31fbb46f0a03fa86112fe2a477
+--- /dev/null
++++ b/backend/internal/handler/codex_api_gateway.go
+@@ -0,0 +1,251 @@
++package handler
++
++import (
++	"bytes"
++	"context"
++	"io"
++	"net/http"
++	"strings"
++	"time"
++
++	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
++	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/gin-gonic/gin"
++	"github.com/tidwall/gjson"
++	"go.uber.org/zap"
++)
++
++func codexAPITarget(r *http.Request) string {
++	path := r.URL.Path
++	if r.Method == http.MethodGet {
++		switch path {
++		case "/backend-api/codex/models":
++			return path
++		case "/models", "/v1/models":
++			if r.URL.Query().Get("client_version") != "" {
++				return "/backend-api/codex/models"
++			}
++			return "/v1/models"
++		}
++	}
++	if r.Method == http.MethodPost {
++		switch path {
++		case "/responses/compact", "/v1/responses/compact", "/backend-api/codex/responses/compact":
++			return "/v1/responses/compact"
++		case "/backend-api/codex/responses":
++			return path
++		case "/responses", "/v1/responses":
++			if openai.IsCodexOfficialClientByHeaders(r.Header.Get("User-Agent"), r.Header.Get("originator")) {
++				return "/backend-api/codex/responses"
++			}
++			return "/v1/responses"
++		}
++	}
++	return ""
++}
++
++// CodexAPIDispatch runs after authentication, before middleware that reads or
++// transforms model payloads. A dedicated group never enters ordinary routing.
++func (h *OpenAIGatewayHandler) CodexAPIDispatch(c *gin.Context) {
++	key, ok := middleware2.GetAPIKeyFromContext(c)
++	if !ok || key.GroupID == nil || key.Group == nil || key.Group.Platform != service.PlatformOpenAI {
++		c.Next()
++		return
++	}
++	accounts, dedicated, err := h.gatewayService.CodexAPIGroupAccounts(c.Request.Context(), *key.GroupID)
++	if err != nil {
++		c.Abort()
++		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Account group unavailable")
++		return
++	}
++	if !dedicated {
++		c.Next()
++		return
++	}
++	c.Abort()
++	target := codexAPITarget(c.Request)
++	if target == "" {
++		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Endpoint not supported by Codex API accounts")
++		return
++	}
++	h.forwardCodexAPI(c, key, accounts, target)
++}
++
++func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIKey, accounts []service.Account, target string) {
++	ctx := c.Request.Context()
++	subject, ok := middleware2.GetAuthSubjectFromContext(c)
++	if !ok {
++		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "User context not found")
++		return
++	}
++	start := time.Now()
++	userRelease, acquired, err := h.concurrencyHelper.TryAcquireUserSlotForAPIKey(ctx, subject.UserID, subject.Concurrency, key.ID)
++	if err != nil || !acquired {
++		h.errorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "User concurrency limit reached")
++		return
++	}
++	defer userRelease()
++	subscription, _ := middleware2.GetSubscriptionFromContext(c)
++	if c.Request.Method == http.MethodPost {
++		if err := h.billingCacheService.CheckBillingEligibility(ctx, key.User, key, key.Group, subscription, service.QuotaPlatform(ctx, key)); err != nil {
++			status, code, message, _ := billingErrorDetails(err)
++			h.errorResponse(c, status, code, message)
++			return
++		}
++	}
++	var body []byte
++	if c.Request.Method == http.MethodPost {
++		raw, err := io.ReadAll(c.Request.Body)
++		if err != nil {
++			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Unable to read request body")
++			return
++		}
++		// Decode only an inspection copy; retain the original wire representation.
++		inspection := c.Request.Clone(ctx)
++		inspection.Body = io.NopCloser(bytes.NewReader(raw))
++		body, err = pkghttputil.ReadRequestBodyWithPrealloc(inspection)
++		encoding := strings.ToLower(strings.TrimSpace(c.Request.Header.Get("Content-Encoding")))
++		// The shared decoder truncates at its expansion ceiling. Refuse to
++		// forward an encoded payload whose security inspection may be incomplete.
++		inspectionTruncated := encoding != "" && encoding != "identity" && len(body) >= 64<<20
++		if err != nil || inspectionTruncated {
++			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Unable to inspect request body")
++			return
++		}
++		c.Request.Body = io.NopCloser(bytes.NewReader(raw))
++		model := gjson.GetBytes(body, "model").String()
++		if h.rejectIfCyberSessionBlocked(c, key, body, model, cyberBlockFormatResponses) {
++			return
++		}
++		if decision := h.checkSecurityAudit(c, requestLogger(c, "handler.codex_api"), key, subject, service.ContentModerationProtocolOpenAIResponses, model, body); decision != nil && !decision.AllowNextStage {
++			h.openAISecurityAuditError(c, decision)
++			return
++		}
++		if service.IsExplicitImageGenerationIntent("/v1/responses", model, body) {
++			if !service.GroupAllowsImageGeneration(key.Group) {
++				h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
++				return
++			}
++			release, acquired := h.acquireImageGenerationSlot(c, false)
++			if !acquired {
++				return
++			}
++			if release != nil {
++				defer release()
++			}
++		}
++	}
++	var account *service.Account
++	for i := range accounts {
++		candidate := &accounts[i]
++		if !candidate.IsSchedulable() || candidate.IsQuotaExceeded() {
++			continue
++		}
++		release, acquired, err := h.concurrencyHelper.TryAcquireAccountSlot(ctx, candidate.ID, candidate.Concurrency)
++		if err != nil {
++			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Account concurrency unavailable")
++			return
++		}
++		if acquired {
++			defer release()
++			account = candidate
++			break
++		}
++	}
++	if account == nil {
++		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available Codex API account")
++		return
++	}
++	response, err := h.gatewayService.RoundTripCodexAPI(ctx, account, c.Request, target)
++	if err != nil {
++		if ctx.Err() != nil {
++			return
++		}
++		h.errorResponse(c, http.StatusBadGateway, "api_error", "Codex API request failed")
++		return
++	}
++	responseBody := response.Body
++	defer func() {
++		if err := responseBody.Close(); err != nil {
++			logger.L().Warn("codex_api.response_body_close_failed", zap.Int64("account_id", account.ID), zap.Error(err))
++		}
++	}()
++	observer := service.NewCodexAPIUsageObserver(response.Header.Get("Content-Type"), response.Header.Get("Content-Encoding"))
++	response.Body = codexAPIObservedBody{Reader: io.TeeReader(response.Body, observer), Closer: response.Body}
++	relayErr := relayCodexAPIResponse(c, response)
++	if c.Request.Method != http.MethodPost || response.StatusCode < 200 || response.StatusCode >= 300 {
++		return
++	}
++	result, observed := observer.Result()
++	if !observed {
++		logger.L().Warn("codex_api.usage_unavailable", zap.Int64("account_id", account.ID))
++		return
++	}
++	result.Model = gjson.GetBytes(body, "model").String()
++	if tier := gjson.GetBytes(body, "service_tier"); tier.Type == gjson.String {
++		value := tier.String()
++		result.ServiceTier = &value
++	}
++	if effort := gjson.GetBytes(body, "reasoning.effort"); effort.Type == gjson.String {
++		value := effort.String()
++		result.ReasoningEffort = &value
++		result.RequestedReasoningEffort = &value
++	}
++	result.Duration = time.Since(start)
++	result.ClientDisconnect = relayErr != nil
++	result.UpstreamEndpoint = target
++	result.UpstreamHeaders = response.Header.Clone()
++	result.Stream = strings.Contains(response.Header.Get("Content-Type"), "text/event-stream")
++	quotaPlatform := service.QuotaPlatform(ctx, key)
++	inbound := GetInboundEndpoint(c)
++	userAgent := c.Request.UserAgent()
++	clientIP := ip.GetClientIP(c)
++	sessionID := service.ExtractClientSessionID(c)
++	payloadHash := service.HashUsageRequestPayload(body)
++	h.submitOpenAIUsageRecordTask(ctx, result, func(recordCtx context.Context) {
++		if err := h.gatewayService.RecordUsage(recordCtx, &service.OpenAIRecordUsageInput{
++			Result: result, APIKey: key, User: key.User, Account: account,
++			Subscription: subscription, InboundEndpoint: inbound, UpstreamEndpoint: target,
++			APIKeyService: h.apiKeyService, QuotaPlatform: quotaPlatform, UserAgent: userAgent,
++			PricingAt: start,
++			IPAddress: clientIP, SessionID: sessionID, RequestPayloadHash: payloadHash,
++		}); err != nil {
++			logger.L().Error("codex_api.record_usage_failed", zap.Int64("account_id", account.ID), zap.Error(err))
++		}
++	})
++}
++
++type codexAPIObservedBody struct {
++	io.Reader
++	io.Closer
++}
++
++func relayCodexAPIResponse(c *gin.Context, response *http.Response) error {
++	headers := response.Header.Clone()
++	service.StripCodexAPIHopHeaders(headers)
++	for name, values := range headers {
++		c.Writer.Header()[name] = values
++	}
++	c.Status(response.StatusCode)
++	c.Writer.WriteHeaderNow()
++	buffer := make([]byte, 32*1024)
++	for {
++		n, err := response.Body.Read(buffer)
++		if n > 0 {
++			if _, writeErr := c.Writer.Write(buffer[:n]); writeErr != nil {
++				return writeErr
++			}
++			c.Writer.Flush()
++		}
++		if err != nil {
++			if err == io.EOF {
++				return nil
++			}
++			return err
++		}
++	}
++}
+diff --git a/backend/internal/handler/codex_api_gateway_test.go b/backend/internal/handler/codex_api_gateway_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c1c9315c4110fdc988292d6ebde7dc7998157f3a
+--- /dev/null
++++ b/backend/internal/handler/codex_api_gateway_test.go
+@@ -0,0 +1,148 @@
++package handler
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/gin-gonic/gin"
++	"github.com/stretchr/testify/require"
++)
++
++type codexAPIHandlerUpstream struct {
++	service.HTTPUpstream
++	do func(*http.Request) (*http.Response, error)
++}
++
++func (r *gatewayModelsAccountRepoStub) ListAllWithFilters(ctx context.Context, _, _, _, _ string, groupID int64, _ string) ([]service.Account, error) {
++	return r.ListByGroup(ctx, groupID)
++}
++
++func (u codexAPIHandlerUpstream) Do(r *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
++	return u.do(r)
++}
++
++func TestCodexAPIModelsUpstreamAndCancellationReleaseSlots(t *testing.T) {
++	for _, cancelRequest := range []bool{false, true} {
++		t.Run(map[bool]string{false: "upstream error", true: "canceled"}[cancelRequest], func(t *testing.T) {
++			groupID := int64(1)
++			account := service.Account{ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"base_url": "https://codex.example", "api_key": "upstream-key"}}
++			repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{groupID: {account}}}
++			ctx, cancel := context.WithCancel(context.Background())
++			defer cancel()
++			calls := 0
++			upstream := codexAPIHandlerUpstream{do: func(r *http.Request) (*http.Response, error) {
++				calls++
++				require.Equal(t, "/backend-api/codex/models", r.URL.Path)
++				require.Equal(t, "Bearer upstream-key", r.Header.Get("Authorization"))
++				if cancelRequest {
++					cancel()
++					return nil, r.Context().Err()
++				}
++				return &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{"Etag": {"native-tag"}}, Body: io.NopCloser(strings.NewReader("upstream catalog denied"))}, nil
++			}}
++			gateway := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
++			cache := &helperConcurrencyCacheStub{userSeq: []bool{true}, accountSeq: []bool{true}}
++			h := &OpenAIGatewayHandler{gatewayService: gateway, concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatComment, 0)}
++			writer := httptest.NewRecorder()
++			c, _ := gin.CreateTestContext(writer)
++			c.Request = httptest.NewRequest(http.MethodGet, "/models?client_version=client", nil).WithContext(ctx)
++			c.Request.Header.Set("Authorization", "Bearer downstream-key")
++			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 1, GroupID: &groupID, Group: &service.Group{Platform: service.PlatformOpenAI}})
++			c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
++			h.CodexAPIDispatch(c)
++			require.Equal(t, 1, calls)
++			require.Equal(t, 1, cache.userReleaseCalls)
++			require.Equal(t, 1, cache.accountReleaseCalls)
++			if !cancelRequest {
++				require.Equal(t, http.StatusForbidden, writer.Code)
++				require.Equal(t, "upstream catalog denied", writer.Body.String())
++				require.Equal(t, "native-tag", writer.Header().Get("ETag"))
++			}
++		})
++	}
++}
++
++func TestCodexAPIDispatchGroupBoundary(t *testing.T) {
++	for _, test := range []struct {
++		name      string
++		members   []service.Account
++		path      string
++		status    int
++		continued bool
++	}{
++		{"ordinary", []service.Account{{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}}, "/v1/chat/completions", http.StatusNoContent, true},
++		{"disabled dedicated unsupported", []service.Account{{Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: "disabled"}}, "/v1/chat/completions", http.StatusNotFound, false},
++		{"disabled dedicated websocket", []service.Account{{Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: "disabled"}}, "/responses", http.StatusNotFound, false},
++		{"mixed", []service.Account{{Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI}, {Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}}, "/models", http.StatusServiceUnavailable, false},
++		{"disabled models", []service.Account{{Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: "disabled"}}, "/models", http.StatusServiceUnavailable, false},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{1: test.members}}
++			gateway := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
++			cache := &helperConcurrencyCacheStub{userSeq: []bool{true}}
++			h := &OpenAIGatewayHandler{gatewayService: gateway, concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatComment, 0)}
++			engine := gin.New()
++			groupID := int64(1)
++			engine.Use(func(c *gin.Context) {
++				c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 1, GroupID: &groupID, Group: &service.Group{Platform: service.PlatformOpenAI}})
++				c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
++			}, h.CodexAPIDispatch)
++			continued := false
++			engine.GET(test.path, func(c *gin.Context) { continued = true; c.Status(http.StatusNoContent) })
++			writer := httptest.NewRecorder()
++			engine.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, test.path, nil))
++			require.Equal(t, test.status, writer.Code)
++			require.Equal(t, test.continued, continued)
++			require.Equal(t, cache.userAcquireCalls, cache.userReleaseCalls)
++		})
++	}
++}
++
++func TestCodexAPITarget(t *testing.T) {
++	for _, test := range []struct{ method, path, originator, target string }{
++		{"POST", "/v1/responses", "", "/v1/responses"},
++		{"POST", "/responses", "codex_cli_rs", "/backend-api/codex/responses"},
++		{"POST", "/backend-api/codex/responses", "", "/backend-api/codex/responses"},
++		{"POST", "/backend-api/codex/responses/compact", "", "/v1/responses/compact"},
++		{"GET", "/v1/models", "", "/v1/models"},
++		{"GET", "/models?client_version=1", "", "/backend-api/codex/models"},
++		{"GET", "/backend-api/codex/models", "", "/backend-api/codex/models"},
++		{"GET", "/responses", "", ""},
++		{"POST", "/v1/chat/completions", "", ""},
++		{"POST", "/responses/unknown", "", ""},
++	} {
++		t.Run(test.method+test.path+test.originator, func(t *testing.T) {
++			r := httptest.NewRequest(test.method, test.path, nil)
++			r.Header.Set("originator", test.originator)
++			require.Equal(t, test.target, codexAPITarget(r))
++		})
++	}
++}
++
++func TestRelayCodexAPIResponsePreservesUpstream(t *testing.T) {
++	for _, test := range []struct {
++		status int
++		body   string
++	}{
++		{http.StatusOK, ": upstream comment\n\nevent: novel\ndata: {\"namespace\":\"original\"}\n\n"},
++		{http.StatusUnprocessableEntity, "{ \"error\": \"upstream decision\", \"extra\": true }"},
++	} {
++		writer := httptest.NewRecorder()
++		c, _ := gin.CreateTestContext(writer)
++		response := &http.Response{StatusCode: test.status, Header: http.Header{
++			"Etag": {"upstream-tag"}, "Connection": {"X-Hop"}, "X-Hop": {"remove"},
++		}, Body: io.NopCloser(strings.NewReader(test.body))}
++		require.NoError(t, relayCodexAPIResponse(c, response))
++		require.Equal(t, test.status, writer.Code)
++		require.Equal(t, test.body, writer.Body.String())
++		require.Equal(t, "upstream-tag", writer.Header().Get("ETag"))
++		require.Empty(t, writer.Header().Get("X-Hop"))
++	}
++}
+diff --git a/backend/internal/repository/account_repo.go b/backend/internal/repository/account_repo.go
+index 8b8c82dd668fff6b17911d5cdc8166dc8352873d..05f7192fb3aeae4a90f555aa691b395c2d4d794d 100644
+--- a/backend/internal/repository/account_repo.go
++++ b/backend/internal/repository/account_repo.go
+@@ -140,2 +140,5 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
+ 	}
++	if err := service.ValidateCodexAPIAccount(account.Platform, account.Type, account.Credentials); err != nil {
++		return err
++	}
+ 
+@@ -236,2 +239,7 @@ func (r *accountRepository) CreateWithAccountGroups(ctx context.Context, account
+ 	}
++	for _, groupID := range groupIDs {
++		if err := validateCodexAPIGroup(ctx, txClient, groupID, nil, []int64{account.ID}, nil); err != nil {
++			return err
++		}
++	}
+ 	if len(groups) > 0 {
+@@ -529,2 +537,5 @@ func (r *accountRepository) updateLockedAccount(
+ 	account.Extra = extra
++	if err := validateCodexAPIAccountUpdate(ctx, client, account); err != nil {
++		return nil, err
++	}
+ 
+@@ -816,2 +827,5 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
+ 	}
++	if err := validateCodexAPICredentialWrite(ctx, client, []int64{id}, credentials, false); err != nil {
++		return err
++	}
+ 	result, err := client.ExecContext(ctx, `
+@@ -1786,2 +1800,5 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
+ 	}
++	if err := lockCodexAPIAccounts(ctx, client, []int64{accountID}); err != nil {
++		return err
++	}
+ 	if err := lockLiveGroups(ctx, client, []int64{groupID}); err != nil {
+@@ -1789,2 +1806,5 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
+ 	}
++	if err := validateCodexAPIGroup(ctx, client, groupID, nil, []int64{accountID}, nil); err != nil {
++		return err
++	}
+ 	_, err = client.AccountGroup.Create().
+@@ -1862,2 +1882,5 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
+ 	}
++	if err := lockCodexAPIAccounts(ctx, txClient, []int64{accountID}); err != nil {
++		return err
++	}
+ 	if err := lockLiveGroups(ctx, txClient, groupIDs); err != nil {
+@@ -1865,2 +1888,7 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
+ 	}
++	for _, groupID := range groupIDs {
++		if err := validateCodexAPIGroup(ctx, txClient, groupID, nil, []int64{accountID}, nil); err != nil {
++			return err
++		}
++	}
+ 
+@@ -3090,2 +3118,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
+ 
++	if len(updates.Credentials) > 0 && updates.ProbeEnabled == nil {
++		if err := validateCodexAPICredentialWrite(ctx, exec, ids, updates.Credentials, true); err != nil {
++			return 0, err
++		}
++	}
+ 	result, err := exec.ExecContext(ctx, query, args...)
+diff --git a/backend/internal/repository/account_repo_ollama_cloud_usage_test.go b/backend/internal/repository/account_repo_ollama_cloud_usage_test.go
+index 6891eb7b80feab248bbbd471c944177f022dffef..3f26180816185ba596cf0665f875b7f080709d94 100644
+--- a/backend/internal/repository/account_repo_ollama_cloud_usage_test.go
++++ b/backend/internal/repository/account_repo_ollama_cloud_usage_test.go
+@@ -241,5 +241,9 @@ func TestBulkUpdateOllamaIdentityCleanupIsValueConditional(t *testing.T) {
+ 	exec := &recordingSQLExecutor{result: rowsAffectedResult(1)}
+-	repo := newAccountRepositoryWithSQL(nil, exec, nil)
++	db, mock, err := sqlmock.New()
++	require.NoError(t, err)
++	t.Cleanup(func() { _ = db.Close() })
++	expectOrdinaryCredentialAccount(mock)
++	repo := newAccountRepositoryWithSQL(nil, credentialRecordingSQL{recordingSQLExecutor: exec, db: db}, nil)
+ 
+-	_, err := repo.BulkUpdate(context.Background(), []int64{17}, service.AccountBulkUpdate{
++	_, err = repo.BulkUpdate(context.Background(), []int64{17}, service.AccountBulkUpdate{
+ 		Credentials: map[string]any{"base_url": "https://www.ollama.com:443/v1"},
+@@ -263,2 +267,3 @@ func TestUpdateCredentialsIdentityChangeClearsAllOllamaManagedExtra(t *testing.T
+ 	mock.ExpectBegin()
++	expectOrdinaryCredentialAccount(mock)
+ 	mock.ExpectExec(`(?s)UPDATE accounts.*credentials -> 'api_key' IS DISTINCT FROM.*ollama_cloud_usage_session.*ollama_cloud_usage_auto_refresh.*ollama_cloud_usage_snapshot`).
+@@ -302,2 +307,3 @@ func TestUpdateCredentialsCleanupBranchRequiresChangedCredentials(t *testing.T)
+ 	mock.ExpectBegin()
++	expectOrdinaryCredentialAccount(mock)
+ 	mock.ExpectExec(`(?s)UPDATE accounts.*CASE.*AND credentials IS DISTINCT FROM \$1::jsonb\s+AND \(\s+credentials -> 'api_key' IS DISTINCT FROM`).
+@@ -359,2 +365,3 @@ func TestUpdateCredentialsPlainCNAPIKeyAccountCleanupStaysSemanticallyEquivalent
+ 	mock.ExpectBegin()
++	expectOrdinaryCredentialAccount(mock)
+ 	mock.ExpectExec(`(?s)UPDATE accounts.*- 'upstream_billing_probe'.*- 'ollama_cloud_usage_session'.*- 'ollama_cloud_usage_auto_refresh'.*- 'ollama_cloud_usage_snapshot'`).
+diff --git a/backend/internal/repository/account_repo_upstream_billing_probe_update_test.go b/backend/internal/repository/account_repo_upstream_billing_probe_update_test.go
+index 46d78ac5b72395335ccd2e77ad45c7263ee49659..b11e55627e7b0aea43bf8d36ebe4c8d4c5137a39 100644
+--- a/backend/internal/repository/account_repo_upstream_billing_probe_update_test.go
++++ b/backend/internal/repository/account_repo_upstream_billing_probe_update_test.go
+@@ -348,2 +348,3 @@ func TestUpdateCredentialsAtomicallyClearsProbeForOpenAIAPIKeyIdentityChange(t *
+ 	mock.ExpectBegin()
++	expectOrdinaryCredentialAccount(mock)
+ 	mock.ExpectExec(`(?s)UPDATE accounts.*credentials IS DISTINCT FROM \$1::jsonb.*- 'upstream_billing_probe'`).
+@@ -375,2 +376,3 @@ func TestUpdateWithAccountBillingSettingsRollsBackWhenOutboxFails(t *testing.T)
+ 			AddRow(true, false, true, []byte(`true`), []byte(`true`), []byte(`{"status":"ok"}`), nil, nil, nil))
++	mock.ExpectQuery("SELECT ag.group_id").WillReturnRows(sqlmock.NewRows([]string{"group_id"}))
+ 	mock.ExpectExec(`(?s)UPDATE .*accounts.*SET.*WHERE .*id.*`).
+@@ -438,2 +440,3 @@ func TestUpdateCredentialsRollsBackWhenOutboxFails(t *testing.T) {
+ 	mock.ExpectBegin()
++	expectOrdinaryCredentialAccount(mock)
+ 	mock.ExpectExec(`(?s)UPDATE accounts.*credentials IS DISTINCT FROM \$1::jsonb.*- 'upstream_billing_probe'`).
+diff --git a/backend/internal/repository/codex_api_credentials_integration_test.go b/backend/internal/repository/codex_api_credentials_integration_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..83d95562dad4429c945d056ff3f72bb43bc6b1d0
+--- /dev/null
++++ b/backend/internal/repository/codex_api_credentials_integration_test.go
+@@ -0,0 +1,50 @@
++//go:build integration
++
++package repository
++
++import (
++	"context"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/stretchr/testify/require"
++)
++
++func TestCodexAPICredentialWritesPreserveValidAccounts(t *testing.T) {
++	ctx := context.Background()
++	tx := testEntTx(t)
++	repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
++	valid := map[string]any{"base_url": "https://gateway.example/prefix", "api_key": "test-key"}
++	var ids []int64
++	for _, kind := range []string{service.AccountTypeAPIKey, service.AccountTypeCodexAPI} {
++		account := &service.Account{Name: kind, Platform: service.PlatformOpenAI, Type: kind, Credentials: valid, Status: service.StatusActive}
++		require.NoError(t, repo.Create(ctx, account))
++		ids = append(ids, account.ID)
++	}
++	for _, patch := range []map[string]any{{"api_key": nil}, {"base_url": "invalid"}} {
++		_, err := repo.BulkUpdate(ctx, ids, service.AccountBulkUpdate{Credentials: patch})
++		require.Error(t, err)
++		for _, id := range ids {
++			account, err := repo.GetByID(ctx, id)
++			require.NoError(t, err)
++			require.Equal(t, valid, account.Credentials)
++		}
++		require.Error(t, repo.UpdateCredentials(ctx, ids[1], patch))
++		account, err := repo.GetByID(ctx, ids[1])
++		require.NoError(t, err)
++		require.Equal(t, valid, account.Credentials)
++	}
++	_, err := repo.BulkUpdate(ctx, ids, service.AccountBulkUpdate{Credentials: map[string]any{"custom": "retained"}})
++	require.NoError(t, err)
++	for _, id := range ids {
++		account, err := repo.GetByID(ctx, id)
++		require.NoError(t, err)
++		require.Equal(t, "retained", account.Credentials["custom"])
++		require.Equal(t, valid["api_key"], account.Credentials["api_key"])
++	}
++	_, err = repo.BulkUpdate(ctx, ids[:1], service.AccountBulkUpdate{Credentials: map[string]any{"api_key": nil}})
++	require.NoError(t, err)
++	ordinary, err := repo.GetByID(ctx, ids[0])
++	require.NoError(t, err)
++	require.Nil(t, ordinary.Credentials["api_key"])
++}
+diff --git a/backend/internal/repository/codex_api_credentials_test.go b/backend/internal/repository/codex_api_credentials_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7d637ffe69169fab2052d0c189a415b9d17667c
+--- /dev/null
++++ b/backend/internal/repository/codex_api_credentials_test.go
+@@ -0,0 +1,43 @@
++package repository
++
++import (
++	"context"
++	"database/sql"
++	"testing"
++
++	"github.com/DATA-DOG/go-sqlmock"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/stretchr/testify/require"
++)
++
++func expectOrdinaryCredentialAccount(mock sqlmock.Sqlmock) {
++	mock.ExpectQuery("SELECT platform, type, credentials").WillReturnRows(
++		sqlmock.NewRows([]string{"platform", "type", "credentials"}).AddRow(service.PlatformOpenAI, service.AccountTypeAPIKey, `{}`))
++}
++
++type credentialRecordingSQL struct {
++	*recordingSQLExecutor
++	db *sql.DB
++}
++
++func (e credentialRecordingSQL) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
++	return e.db.QueryContext(ctx, query, args...)
++}
++
++func TestCodexAPICredentialGuardValidatesEffectiveDocument(t *testing.T) {
++	for _, merge := range []bool{true, false} {
++		db, mock, err := sqlmock.New()
++		require.NoError(t, err)
++		t.Cleanup(func() { _ = db.Close() })
++		for _, patch := range []map[string]any{{"api_key": nil}, {"base_url": "invalid"}, {"extra_field": true}} {
++			mock.ExpectQuery("SELECT platform, type, credentials").WillReturnRows(sqlmock.NewRows([]string{"platform", "type", "credentials"}).AddRow(service.PlatformOpenAI, service.AccountTypeCodexAPI, `{"api_key":"key","base_url":"https://gateway.example"}`))
++			err := validateCodexAPICredentialWrite(context.Background(), db, []int64{1}, patch, merge)
++			if _, extraOnly := patch["extra_field"]; extraOnly && merge {
++				require.NoError(t, err)
++			} else {
++				require.Error(t, err)
++			}
++		}
++		require.NoError(t, mock.ExpectationsWereMet())
++	}
++}
+diff --git a/backend/internal/repository/codex_api_group_guard.go b/backend/internal/repository/codex_api_group_guard.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..61d01fa7ca5e839e52a117015b8c288741bbfecd
+--- /dev/null
++++ b/backend/internal/repository/codex_api_group_guard.go
+@@ -0,0 +1,122 @@
++package repository
++
++import (
++	"context"
++	"encoding/json"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/lib/pq"
++)
++
++// Account locks precede group locks so changing an account type cannot race
++// membership assignment. Group locks serialize prospective membership checks.
++func lockCodexAPIAccounts(ctx context.Context, exec sqlExecutor, ids []int64) error {
++	rows, err := exec.QueryContext(ctx, `SELECT id FROM accounts WHERE id = ANY($1) AND deleted_at IS NULL ORDER BY id FOR NO KEY UPDATE`, pq.Array(ids))
++	if err != nil {
++		return err
++	}
++	defer func() { _ = rows.Close() }()
++	for rows.Next() {
++	}
++	return rows.Err()
++}
++
++func validateCodexAPIGroup(ctx context.Context, exec sqlExecutor, groupID int64, replacement *service.Account, additions []int64, proposed *service.Group) error {
++	group := proposed
++	if group == nil {
++		group = &service.Group{ID: groupID}
++		if err := scanSingleRow(ctx, exec, `SELECT platform, require_oauth_only FROM groups WHERE id = $1 AND deleted_at IS NULL`, []any{groupID}, &group.Platform, &group.RequireOAuthOnly); err != nil {
++			return err
++		}
++	}
++	rows, err := exec.QueryContext(ctx, `SELECT a.id, a.platform, a.type FROM accounts a WHERE a.deleted_at IS NULL AND (a.id = ANY($2) OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ag.group_id = $1))`, groupID, pq.Array(additions))
++	if err != nil {
++		return err
++	}
++	defer func() { _ = rows.Close() }()
++	var members []service.Account
++	for rows.Next() {
++		var account service.Account
++		if err := rows.Scan(&account.ID, &account.Platform, &account.Type); err != nil {
++			return err
++		}
++		if replacement != nil && account.ID == replacement.ID {
++			account = *replacement
++		}
++		members = append(members, account)
++	}
++	if err := rows.Err(); err != nil {
++		return err
++	}
++	return service.ValidateCodexAPIGroupMembership(group, members)
++}
++
++func validateCodexAPIAccountUpdate(ctx context.Context, exec sqlExecutor, account *service.Account) error {
++	if err := service.ValidateCodexAPIAccount(account.Platform, account.Type, account.Credentials); err != nil {
++		return err
++	}
++	rows, err := exec.QueryContext(ctx, `SELECT ag.group_id FROM account_groups ag JOIN accounts a ON a.id = ag.account_id WHERE a.id = $1 AND (a.type = $2 OR $3 = $2) ORDER BY ag.group_id`, account.ID, service.AccountTypeCodexAPI, account.Type)
++	if err != nil {
++		return err
++	}
++	var ids []int64
++	for rows.Next() {
++		var id int64
++		if err := rows.Scan(&id); err != nil {
++			_ = rows.Close()
++			return err
++		}
++		ids = append(ids, id)
++	}
++	err = rows.Err()
++	_ = rows.Close()
++	if err != nil {
++		return err
++	}
++	if err := lockLiveGroups(ctx, exec, ids); err != nil {
++		return err
++	}
++	for _, id := range ids {
++		if err := validateCodexAPIGroup(ctx, exec, id, account, nil, nil); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++func validateCodexAPICredentialWrite(ctx context.Context, exec sqlExecutor, ids []int64, credentials map[string]any, merge bool) error {
++	rows, err := exec.QueryContext(ctx, `SELECT platform, type, credentials FROM accounts WHERE id = ANY($1) AND deleted_at IS NULL ORDER BY id FOR NO KEY UPDATE`, pq.Array(ids))
++	if err != nil {
++		return err
++	}
++	defer func() { _ = rows.Close() }()
++	for rows.Next() {
++		var platform, kind string
++		var stored []byte
++		if err := rows.Scan(&platform, &kind, &stored); err != nil {
++			return err
++		}
++		if kind != service.AccountTypeCodexAPI {
++			continue
++		}
++		effective := credentials
++		if merge {
++			effective = make(map[string]any)
++			if len(stored) > 0 {
++				if err := json.Unmarshal(stored, &effective); err != nil {
++					return err
++				}
++			}
++			if effective == nil {
++				effective = make(map[string]any)
++			}
++			for key, value := range credentials {
++				effective[key] = value
++			}
++		}
++		if err := service.ValidateCodexAPIAccount(platform, kind, effective); err != nil {
++			return err
++		}
++	}
++	return rows.Err()
++}
+diff --git a/backend/internal/repository/codex_api_group_guard_integration_test.go b/backend/internal/repository/codex_api_group_guard_integration_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..4197c09a4351896be5986b3ad8c738825c8e6322
+--- /dev/null
++++ b/backend/internal/repository/codex_api_group_guard_integration_test.go
+@@ -0,0 +1,161 @@
++//go:build integration
++
++package repository
++
++import (
++	"context"
++	"fmt"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/stretchr/testify/require"
++)
++
++func TestCodexAPIConcurrentGroupAssignmentsStayIsolated(t *testing.T) {
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	groups := newGroupRepositoryWithSQL(integrationEntClient, integrationDB)
++	accounts := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, nil)
++	group := &service.Group{Name: "codex-concurrent-assignment", Platform: service.PlatformOpenAI, Status: service.StatusActive, SubscriptionType: service.SubscriptionTypeStandard, RateMultiplier: 1}
++	require.NoError(t, groups.Create(ctx, group))
++	var ids []int64
++	t.Cleanup(func() {
++		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE group_id = $1", group.ID)
++		for _, id := range ids {
++			_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", id)
++		}
++		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = $1", group.ID)
++	})
++	for _, kind := range []string{service.AccountTypeCodexAPI, service.AccountTypeAPIKey} {
++		account := &service.Account{Name: kind, Platform: service.PlatformOpenAI, Type: kind, Status: service.StatusActive, Credentials: map[string]any{"base_url": "https://gateway.example", "api_key": "test-key"}}
++		require.NoError(t, accounts.Create(ctx, account))
++		ids = append(ids, account.ID)
++	}
++	start := make(chan struct{})
++	results := make(chan error, 2)
++	go func() { <-start; results <- accounts.BindGroups(ctx, ids[0], []int64{group.ID}) }()
++	go func() { <-start; results <- groups.BindAccountsToGroup(ctx, group.ID, []int64{ids[1]}) }()
++	close(start)
++	first, second := <-results, <-results
++	require.True(t, (first == nil) != (second == nil), "exactly one incompatible assignment should succeed")
++	members, err := accounts.ListByGroup(ctx, group.ID)
++	require.NoError(t, err)
++	require.Len(t, members, 1)
++}
++
++func TestCodexAPIRejectedGroupedCreateRollsBackAccount(t *testing.T) {
++	ctx := context.Background()
++	groups := newGroupRepositoryWithSQL(integrationEntClient, integrationDB)
++	accounts := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, nil)
++	group := &service.Group{Name: "codex-create-rollback", Platform: service.PlatformOpenAI, Status: service.StatusActive, SubscriptionType: service.SubscriptionTypeStandard, RateMultiplier: 1}
++	require.NoError(t, groups.Create(ctx, group))
++	name := fmt.Sprintf("rejected-for-group-%d", group.ID)
++	t.Cleanup(func() {
++		_, _ = integrationDB.ExecContext(ctx, "DELETE FROM account_groups WHERE group_id = $1", group.ID)
++		_, _ = integrationDB.ExecContext(ctx, "DELETE FROM accounts WHERE name = $1", name)
++		_, _ = integrationDB.ExecContext(ctx, "DELETE FROM groups WHERE id = $1", group.ID)
++	})
++	member := &service.Account{Name: name, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Credentials: map[string]any{"base_url": "https://gateway.example", "api_key": "test-key"}}
++	require.NoError(t, accounts.CreateWithAccountGroups(ctx, member, []service.AccountGroup{{GroupID: group.ID, Priority: 1}}))
++	rejected := &service.Account{Name: name, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive}
++	require.Error(t, accounts.CreateWithAccountGroups(ctx, rejected, []service.AccountGroup{{GroupID: group.ID, Priority: 1}}))
++	var count int
++	require.NoError(t, scanSingleRow(ctx, integrationDB, "SELECT COUNT(*) FROM accounts WHERE name = $1", []any{name}, &count))
++	require.Equal(t, 1, count)
++}
++
++func TestCodexAPIGroupMutationIsolation(t *testing.T) {
++	for _, firstType := range []string{service.AccountTypeCodexAPI, service.AccountTypeAPIKey} {
++		for _, operation := range []string{"bind-account", "bind-group", "add", "duplicate"} {
++			t.Run(firstType+"/"+operation, func(t *testing.T) {
++				ctx := context.Background()
++				tx := testEntTx(t)
++				groups := newGroupRepositoryWithSQL(tx.Client(), tx)
++				accounts := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
++				group := &service.Group{Name: "dedicated-test", Platform: service.PlatformOpenAI, Status: service.StatusActive, SubscriptionType: service.SubscriptionTypeStandard, RateMultiplier: 1}
++				require.NoError(t, groups.Create(ctx, group))
++				create := func(kind string) *service.Account {
++					account := &service.Account{Name: kind, Platform: service.PlatformOpenAI, Type: kind, Status: "inactive", Credentials: map[string]any{"base_url": "https://gateway.example", "api_key": "test-key"}}
++					require.NoError(t, accounts.Create(ctx, account))
++					return account
++				}
++				first := create(firstType)
++				otherType := service.AccountTypeCodexAPI
++				if firstType == otherType {
++					otherType = service.AccountTypeAPIKey
++				}
++				other := create(otherType)
++				require.NoError(t, accounts.BindGroups(ctx, first.ID, []int64{group.ID}))
++				var err error
++				switch operation {
++				case "bind-account":
++					err = accounts.BindGroups(ctx, other.ID, []int64{group.ID})
++				case "bind-group":
++					err = groups.BindAccountsToGroup(ctx, group.ID, []int64{other.ID})
++				case "add":
++					err = accounts.AddToGroup(ctx, other.ID, group.ID, 1)
++				case "duplicate":
++					clone := *other
++					clone.ID = 0
++					err = accounts.CreateWithAccountGroups(ctx, &clone, []service.AccountGroup{{GroupID: group.ID, Priority: 1}})
++				}
++				require.Error(t, err)
++				members, err := accounts.ListAllWithFilters(ctx, "", "", "", "", group.ID, "")
++				require.NoError(t, err)
++				require.Len(t, members, 1)
++				require.Equal(t, first.ID, members[0].ID)
++			})
++		}
++	}
++}
++
++func TestCodexAPIGroupDirectoryIncludesDisabledAndHydratesBindings(t *testing.T) {
++	ctx := context.Background()
++	tx := testEntTx(t)
++	repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
++	proxy := mustCreateProxy(t, tx.Client(), &service.Proxy{Name: "dedicated-proxy"})
++	group := mustCreateGroup(t, tx.Client(), &service.Group{Name: "dedicated-directory", Platform: service.PlatformOpenAI})
++	account := &service.Account{Name: "disabled-codex", Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusDisabled, ProxyID: &proxy.ID, Credentials: map[string]any{"base_url": "https://gateway.example", "api_key": "test-key"}}
++	priority := 17
++	require.NoError(t, repo.CreateWithAccountGroups(ctx, account, []service.AccountGroup{{GroupID: group.ID, Priority: priority}}))
++	members, err := repo.ListAllWithFilters(ctx, "", "", "", "", group.ID, "")
++	require.NoError(t, err)
++	require.Len(t, members, 1)
++	member := members[0]
++	require.Equal(t, account.ID, member.ID)
++	require.Equal(t, service.StatusDisabled, member.Status)
++	require.NotNil(t, member.Proxy)
++	require.Equal(t, proxy.ID, member.Proxy.ID)
++	require.Len(t, member.AccountGroups, 1)
++	require.Equal(t, group.ID, member.AccountGroups[0].GroupID)
++	require.Equal(t, priority, member.AccountGroups[0].Priority)
++}
++
++func TestCodexAPIGroupAndAccountEdits(t *testing.T) {
++	ctx := context.Background()
++	tx := testEntTx(t)
++	groups := newGroupRepositoryWithSQL(tx.Client(), tx)
++	accounts := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
++	group := &service.Group{Name: "dedicated-edit", Platform: service.PlatformOpenAI, Status: service.StatusActive, SubscriptionType: service.SubscriptionTypeStandard, RateMultiplier: 1}
++	require.NoError(t, groups.Create(ctx, group))
++	var members []*service.Account
++	for range 2 {
++		account := &service.Account{Name: "codex", Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Credentials: map[string]any{"base_url": "https://gateway.example", "api_key": "test-key"}}
++		require.NoError(t, accounts.Create(ctx, account))
++		require.NoError(t, accounts.BindGroups(ctx, account.ID, []int64{group.ID}))
++		members = append(members, account)
++	}
++	members[0].Type = service.AccountTypeAPIKey
++	require.Error(t, accounts.Update(ctx, members[0]))
++	members[0].Type = service.AccountTypeCodexAPI
++	members[0].Platform = service.PlatformAnthropic
++	require.Error(t, accounts.Update(ctx, members[0]))
++	group.RequireOAuthOnly = true
++	require.Error(t, groups.Update(ctx, group))
++	group.RequireOAuthOnly = false
++	group.Platform = service.PlatformAnthropic
++	require.Error(t, groups.Update(ctx, group))
++	copy := &service.Group{Name: "invalid-copy", Platform: service.PlatformOpenAI, RequireOAuthOnly: true, Status: service.StatusActive, SubscriptionType: service.SubscriptionTypeStandard, RateMultiplier: 1}
++	require.Error(t, groups.CreateFromSource(ctx, copy, group.ID))
++}
+diff --git a/backend/internal/repository/codex_api_transport_test.go b/backend/internal/repository/codex_api_transport_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..09bfc489f6e7ee2f628514cab3deb4aab18f7045
+--- /dev/null
++++ b/backend/internal/repository/codex_api_transport_test.go
+@@ -0,0 +1,93 @@
++package repository
++
++import (
++	"bytes"
++	"compress/gzip"
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/stretchr/testify/require"
++)
++
++func TestRawUpstreamPreservesCompressedResponse(t *testing.T) {
++	plain := []byte("event: upstream.event\ndata: {\"extra\":true}\n\n")
++	var compressed bytes.Buffer
++	zw := gzip.NewWriter(&compressed)
++	_, err := zw.Write(plain)
++	require.NoError(t, err)
++	require.NoError(t, zw.Close())
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path == "/raw" {
++			require.Empty(t, r.Header.Get("Accept-Encoding"))
++		}
++		w.Header().Set("Content-Encoding", "gzip")
++		w.WriteHeader(http.StatusBadRequest)
++		_, _ = w.Write(compressed.Bytes())
++	}))
++	defer server.Close()
++	upstream := NewHTTPUpstream(nil)
++	for _, raw := range []bool{false, true, false, true} {
++		ctx := t.Context()
++		path := "/ordinary"
++		if raw {
++			ctx = service.WithHTTPUpstreamProfile(ctx, service.HTTPUpstreamProfileRaw)
++			path = "/raw"
++		}
++		req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+path, nil)
++		require.NoError(t, err)
++		resp, err := upstream.Do(req, "", 1, 1)
++		require.NoError(t, err)
++		body, err := io.ReadAll(resp.Body)
++		require.NoError(t, err)
++		require.NoError(t, resp.Body.Close())
++		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
++		if raw {
++			require.Equal(t, compressed.Bytes(), body)
++			require.Equal(t, "gzip", resp.Header.Get("Content-Encoding"))
++		} else {
++			require.Equal(t, plain, body)
++		}
++	}
++}
++
++func TestRawUpstreamCancellationAndRedirect(t *testing.T) {
++	started := make(chan struct{})
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path == "/cancel" {
++			close(started)
++			<-r.Context().Done()
++			return
++		}
++		if r.URL.Path == "/redirect" {
++			http.Redirect(w, r, "/must-not-follow", http.StatusTemporaryRedirect)
++			return
++		}
++		t.Error("unexpected redirected request")
++	}))
++	defer server.Close()
++	ctx := service.WithHTTPUpstreamRedirectsDisabled(service.WithHTTPUpstreamProfile(t.Context(), service.HTTPUpstreamProfileRaw))
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/redirect", nil)
++	require.NoError(t, err)
++	upstream := NewHTTPUpstream(nil)
++	resp, err := upstream.Do(req, "", 1, 1)
++	require.NoError(t, err)
++	require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
++	require.NoError(t, resp.Body.Close())
++	ctx, cancel := context.WithCancel(ctx)
++	defer cancel()
++	req, err = http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/cancel", nil)
++	require.NoError(t, err)
++	go func() {
++		select {
++		case <-started:
++			cancel()
++		case <-ctx.Done():
++		}
++	}()
++	_, err = upstream.Do(req, "", 1, 1)
++	require.ErrorIs(t, err, context.Canceled)
++}
+diff --git a/backend/internal/repository/group_repo.go b/backend/internal/repository/group_repo.go
+index 8b2bbb827db4758042cd8f9a6ce84c8949861277..45d4c821684dba36e1203c015ca8648d141d6d9a 100644
+--- a/backend/internal/repository/group_repo.go
++++ b/backend/internal/repository/group_repo.go
+@@ -32,4 +32,4 @@ type groupRepository struct {
+ // lockLiveGroups makes account-group inserts participate in the same row-lock
+-// protocol as guarded group deletion. FOR SHARE conflicts with the deleter's
+-// FOR UPDATE lock, and READ COMMITTED rechecks deleted_at after any wait.
++// protocol as guarded group deletion and serializes membership validation.
++// READ COMMITTED rechecks deleted_at after any wait.
+ func lockLiveGroups(ctx context.Context, exec sqlExecutor, groupIDs []int64) error {
+@@ -46,3 +46,3 @@ func lockLiveGroups(ctx context.Context, exec sqlExecutor, groupIDs []int64) err
+ 		ORDER BY id
+-		FOR SHARE`, pq.Array(groupIDs))
++		FOR UPDATE`, pq.Array(groupIDs))
+ 	if err != nil {
+@@ -220,2 +220,23 @@ func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service
+ 	}
++	rows, err := txClient.QueryContext(ctx, `SELECT a.id FROM accounts a JOIN account_groups ag ON ag.account_id = a.id WHERE ag.group_id = $1 AND a.deleted_at IS NULL AND (NOT $2 OR a.type <> $3) ORDER BY a.id FOR NO KEY UPDATE OF a`, sourceGroupID, groupIn.RequireOAuthOnly, service.AccountTypeAPIKey)
++	if err != nil {
++		return err
++	}
++	var copiedIDs []int64
++	for rows.Next() {
++		var id int64
++		if err := rows.Scan(&id); err != nil {
++			_ = rows.Close()
++			return err
++		}
++		copiedIDs = append(copiedIDs, id)
++	}
++	err = rows.Err()
++	_ = rows.Close()
++	if err != nil {
++		return err
++	}
++	if err := validateCodexAPIGroup(ctx, txClient, groupIn.ID, nil, copiedIDs, groupIn); err != nil {
++		return err
++	}
+ 	result, err := txClient.ExecContext(
+@@ -229,2 +250,3 @@ func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service
+ 		   AND (NOT $3 OR a.type <> $4)
++		   AND a.id = ANY($5)
+ 		 ON CONFLICT (account_id, group_id) DO NOTHING`,
+@@ -234,2 +256,3 @@ func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service
+ 		service.AccountTypeAPIKey,
++		pq.Array(copiedIDs),
+ 	)
+@@ -284,3 +307,18 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
+ 	}
+-	builder := r.client.Group.UpdateOneID(groupIn.ID).
++	tx, err := r.client.Tx(ctx)
++	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
++		return err
++	}
++	client := r.client
++	if tx != nil {
++		defer func() { _ = tx.Rollback() }()
++		client = tx.Client()
++	}
++	if err := lockLiveGroups(ctx, client, []int64{groupIn.ID}); err != nil {
++		return err
++	}
++	if err := validateCodexAPIGroup(ctx, client, groupIn.ID, nil, nil, groupIn); err != nil {
++		return err
++	}
++	builder := client.Group.UpdateOneID(groupIn.ID).
+ 		SetName(groupIn.Name).
+@@ -438,2 +476,7 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
+ 	groupIn.UpdatedAt = updated.UpdatedAt
++	if tx != nil {
++		if err := tx.Commit(); err != nil {
++			return err
++		}
++	}
+ 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupIn.ID, nil); err != nil {
+@@ -1089,2 +1132,5 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
+ 	}
++	if err := lockCodexAPIAccounts(ctx, exec, accountIDs); err != nil {
++		return err
++	}
+ 	if err := lockLiveGroups(ctx, exec, []int64{groupID}); err != nil {
+@@ -1092,2 +1138,5 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
+ 	}
++	if err := validateCodexAPIGroup(ctx, exec, groupID, nil, accountIDs, nil); err != nil {
++		return err
++	}
+ 
+diff --git a/backend/internal/repository/http_upstream.go b/backend/internal/repository/http_upstream.go
+index f765d0f66e07a6e1c4cc26fabe798b546e339214..e30b482bf1ecc406e96252822373992f3d18ee3d 100644
+--- a/backend/internal/repository/http_upstream.go
++++ b/backend/internal/repository/http_upstream.go
+@@ -106,2 +106,3 @@ const (
+ 	upstreamProtocolModeGrok             = "grok"
++	upstreamProtocolModeRaw              = "raw"
+ )
+@@ -203,3 +204,2 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
+ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+-	applyGrokCLIProxyHeaders(req)
+ 	if err := s.validateRequestHost(req); err != nil {
+@@ -211,2 +211,5 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
+ 	}
++	if profile != service.HTTPUpstreamProfileRaw {
++		applyGrokCLIProxyHeaders(req)
++	}
+ 
+@@ -220,3 +223,5 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
+ 	client := s.httpClientForUpstreamRequest(entry.client, req)
+-	client = httpClientWithGrokAccessDeniedFallback(client)
++	if profile != service.HTTPUpstreamProfileRaw {
++		client = httpClientWithGrokAccessDeniedFallback(client)
++	}
+ 	resp, err := servertiming.Do(client, req)
+@@ -232,3 +237,5 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
+ 	// 如果上游返回了压缩内容，解压后再交给业务层
+-	decompressResponseBody(resp)
++	if profile != service.HTTPUpstreamProfileRaw {
++		decompressResponseBody(resp)
++	}
+ 
+@@ -249,2 +256,5 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
+ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
++	if req != nil && service.HTTPUpstreamProfileFromContext(req.Context()) == service.HTTPUpstreamProfileRaw {
++		return s.Do(req, proxyURL, accountID, accountConcurrency)
++	}
+ 	if profile == nil {
+@@ -1013,2 +1023,5 @@ func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
+ func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamProfile, proxyKey string, parsedProxy *url.URL) string {
++	if profile == service.HTTPUpstreamProfileRaw {
++		return upstreamProtocolModeRaw
++	}
+ 	if profile == service.HTTPUpstreamProfileLongStream {
+@@ -1332,2 +1345,3 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
+ 	transport := &http.Transport{
++		DisableCompression:    protocolMode == upstreamProtocolModeRaw,
+ 		DialContext:           newUpstreamDialer().DialContext,
+diff --git a/backend/internal/repository/usage_billing_repo.go b/backend/internal/repository/usage_billing_repo.go
+index ce0adc2772d5cb465ab4e241c2dbba8507206174..7227abdedc2fe1ee790740eed096bc58ff1340ad 100644
+--- a/backend/internal/repository/usage_billing_repo.go
++++ b/backend/internal/repository/usage_billing_repo.go
+@@ -203,3 +203,3 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
+ 
+-	if cmd.AccountQuotaCost > 0 && (strings.EqualFold(cmd.AccountType, service.AccountTypeAPIKey) || strings.EqualFold(cmd.AccountType, service.AccountTypeBedrock)) {
++	if cmd.AccountQuotaCost > 0 && (strings.EqualFold(cmd.AccountType, service.AccountTypeAPIKey) || strings.EqualFold(cmd.AccountType, service.AccountTypeBedrock) || strings.EqualFold(cmd.AccountType, service.AccountTypeCodexAPI)) {
+ 		quotaState, err := incrementUsageBillingAccountQuota(ctx, tx, cmd.AccountID, cmd.AccountQuotaCost)
+diff --git a/backend/internal/repository/usage_billing_repo_integration_test.go b/backend/internal/repository/usage_billing_repo_integration_test.go
+index e8d4d32707fbd3393c1f966303a2117cf43165aa..c69b47022515ab320833d08cd9e9cff7a49e2d5f 100644
+--- a/backend/internal/repository/usage_billing_repo_integration_test.go
++++ b/backend/internal/repository/usage_billing_repo_integration_test.go
+@@ -165,2 +165,11 @@ func TestUsageBillingRepositoryApply_RequestFingerprintConflict(t *testing.T) {
+ func TestUsageBillingRepositoryApply_UpdatesAccountQuota(t *testing.T) {
++	testUsageBillingRepositoryAccountQuota(t, service.AccountTypeAPIKey)
++}
++
++func TestUsageBillingRepositoryApply_UpdatesCodexAPIAccountQuota(t *testing.T) {
++	testUsageBillingRepositoryAccountQuota(t, service.AccountTypeCodexAPI)
++}
++
++func testUsageBillingRepositoryAccountQuota(t *testing.T, accountType string) {
++	t.Helper()
+ 	ctx := context.Background()
+@@ -180,3 +189,3 @@ func TestUsageBillingRepositoryApply_UpdatesAccountQuota(t *testing.T) {
+ 		Name: "usage-billing-account-quota-" + uuid.NewString(),
+-		Type: service.AccountTypeAPIKey,
++		Type: accountType,
+ 		Extra: map[string]any{
+@@ -191,3 +200,3 @@ func TestUsageBillingRepositoryApply_UpdatesAccountQuota(t *testing.T) {
+ 		AccountID:        account.ID,
+-		AccountType:      service.AccountTypeAPIKey,
++		AccountType:      accountType,
+ 		AccountQuotaCost: 3.5,
+diff --git a/backend/internal/server/routes/codex_api_gateway_test.go b/backend/internal/server/routes/codex_api_gateway_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..94a3733028934ac29c9a3875613b85bd9c98626f
+--- /dev/null
++++ b/backend/internal/server/routes/codex_api_gateway_test.go
+@@ -0,0 +1,119 @@
++package routes
++
++import (
++	"bytes"
++	"compress/gzip"
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/handler"
++	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	"github.com/gin-gonic/gin"
++	"github.com/stretchr/testify/require"
++)
++
++type codexAPIRoutesRepository struct {
++	service.AccountRepository
++	members []service.Account
++}
++
++func (r codexAPIRoutesRepository) ListAllWithFilters(context.Context, string, string, string, string, int64, string) ([]service.Account, error) {
++	return r.members, nil
++}
++
++func (r *pinnedModelsRoutesRepository) ListAllWithFilters(context.Context, string, string, string, string, int64, string) ([]service.Account, error) {
++	return []service.Account{r.account}, nil
++}
++
++func newOrdinaryRoutesOpenAIHandler(cfg *config.Config) *handler.OpenAIGatewayHandler {
++	s := service.NewOpenAIGatewayService(codexAPIRoutesRepository{}, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
++	return handler.NewOpenAIGatewayHandler(s, nil, nil, nil, nil, nil, nil, nil, cfg)
++}
++
++type codexAPIRoutesUpstream struct {
++	service.HTTPUpstream
++	do func(*http.Request) (*http.Response, error)
++}
++
++func (u codexAPIRoutesUpstream) Do(r *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
++	return u.do(r)
++}
++
++func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	cfg := &config.Config{RunMode: config.RunModeSimple, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
++	account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "upstream", "base_url": "https://codex.example"}}
++	repo := codexAPIRoutesRepository{members: []service.Account{account}}
++	wire := new(bytes.Buffer)
++	encoder := gzip.NewWriter(wire)
++	_, err := encoder.Write([]byte(`{ "model": "upstream-only-model", "future_field": true }`))
++	require.NoError(t, err)
++	require.NoError(t, encoder.Close())
++	var expectedPath string
++	calls := 0
++	upstream := codexAPIRoutesUpstream{do: func(r *http.Request) (*http.Response, error) {
++		calls++
++		require.Equal(t, expectedPath, r.URL.Path)
++		require.Equal(t, "Bearer upstream", r.Header.Get("Authorization"))
++		if r.Method == http.MethodPost {
++			body, err := io.ReadAll(r.Body)
++			require.NoError(t, err)
++			require.Equal(t, wire.Bytes(), body)
++			require.Equal(t, "gzip", r.Header.Get("Content-Encoding"))
++		}
++		return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: http.Header{"Etag": {"original"}}, Body: io.NopCloser(strings.NewReader("upstream owns this decision"))}, nil
++	}}
++	s := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
++	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
++	t.Cleanup(billing.Stop)
++	h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: handler.NewOpenAIGatewayHandler(s, service.NewConcurrencyService(nil), billing, nil, nil, nil, nil, nil, cfg), AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
++	group := &service.Group{ID: 1, Platform: service.PlatformOpenAI, ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: []string{"different-local-model"}}}
++	router := gin.New()
++	RegisterGatewayRoutes(router, h, servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
++		if c.GetHeader("Authorization") != "Bearer local" {
++			c.AbortWithStatus(http.StatusUnauthorized)
++			return
++		}
++		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{GroupID: &group.ID, Group: group})
++		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{})
++		c.Next()
++	}), nil, nil, nil, nil, nil, cfg)
++	for _, test := range []struct{ method, path, target string }{
++		{"POST", "/v1/responses", "/v1/responses"},
++		{"POST", "/responses", "/v1/responses"},
++		{"POST", "/backend-api/codex/responses", "/backend-api/codex/responses"},
++		{"POST", "/responses/compact", "/v1/responses/compact"},
++		{"GET", "/v1/models", "/v1/models"},
++		{"GET", "/models?client_version=any", "/backend-api/codex/models"},
++		{"GET", "/backend-api/codex/models", "/backend-api/codex/models"},
++	} {
++		expectedPath = test.target
++		r := httptest.NewRequest(test.method, test.path, bytes.NewReader(wire.Bytes()))
++		r.Header.Set("Authorization", "Bearer local")
++		r.Header.Set("Content-Encoding", "gzip")
++		w := httptest.NewRecorder()
++		router.ServeHTTP(w, r)
++		require.Equal(t, http.StatusUnprocessableEntity, w.Code, test.path+": "+w.Body.String())
++		require.Equal(t, "upstream owns this decision", w.Body.String())
++	}
++	before := calls
++	for _, path := range []string{"/v1/responses", "/responses", "/backend-api/codex/responses", "/antigravity/models", "/antigravity/v1/models"} {
++		r := httptest.NewRequest(http.MethodGet, path, nil)
++		r.Header.Set("Authorization", "Bearer local")
++		r.Header.Set("Connection", "Upgrade")
++		r.Header.Set("Upgrade", "websocket")
++		w := httptest.NewRecorder()
++		router.ServeHTTP(w, r)
++		require.Equal(t, http.StatusNotFound, w.Code, path)
++	}
++	w := httptest.NewRecorder()
++	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/models", nil))
++	require.Equal(t, http.StatusUnauthorized, w.Code)
++	require.Equal(t, before, calls)
++}
+diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
+index 2690b23578bc33a241596745929329bb317fd08e..935cd34a853e7c3796cb6ce98122edffab38ab9b 100644
+--- a/backend/internal/server/routes/gateway.go
++++ b/backend/internal/server/routes/gateway.go
+@@ -192,2 +192,3 @@ func RegisterGatewayRoutes(
+ 	gateway.GET("/sub2api/billing", h.Gateway.KeyBillingInfo)
++	gateway.Use(h.OpenAIGateway.CodexAPIDispatch)
+ 	gateway.Use(groupModelAllowlist)
+@@ -399,2 +400,3 @@ func RegisterGatewayRoutes(
+ 	gemini.Use(middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg))
++	gemini.Use(h.OpenAIGateway.CodexAPIDispatch)
+ 	gemini.Use(groupModelAllowlist)
+@@ -420,3 +422,3 @@ func RegisterGatewayRoutes(
+ 	rootRoute := func(method, path string, limit gin.HandlerFunc, handler gin.HandlerFunc) {
+-		r.Handle(method, path, limit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), groupModelAllowlist, compositeTarget, requireGroupAnthropic, handler)
++		r.Handle(method, path, limit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), h.OpenAIGateway.CodexAPIDispatch, groupModelAllowlist, compositeTarget, requireGroupAnthropic, handler)
+ 	}
+@@ -437,3 +439,3 @@ func RegisterGatewayRoutes(
+ 	codexDirect := r.Group("/backend-api/codex")
+-	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), groupModelAllowlist, compositeTarget, requireGroupAnthropic)
++	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), h.OpenAIGateway.CodexAPIDispatch, groupModelAllowlist, compositeTarget, requireGroupAnthropic)
+ 	{
+@@ -553,3 +555,3 @@ func RegisterGatewayRoutes(
+ 	// Antigravity 模型列表
+-	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)
++	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), h.OpenAIGateway.CodexAPIDispatch, requireGroupAnthropic, h.Gateway.AntigravityModels)
+ 
+@@ -563,2 +565,3 @@ func RegisterGatewayRoutes(
+ 	antigravityV1.Use(gin.HandlerFunc(apiKeyAuth))
++	antigravityV1.Use(h.OpenAIGateway.CodexAPIDispatch)
+ 	antigravityV1.Use(groupModelAllowlist)
+@@ -579,2 +582,3 @@ func RegisterGatewayRoutes(
+ 	antigravityV1Beta.Use(middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg))
++	antigravityV1Beta.Use(h.OpenAIGateway.CodexAPIDispatch)
+ 	antigravityV1Beta.Use(groupModelAllowlist)
+diff --git a/backend/internal/server/routes/gateway_model_allowlist_test.go b/backend/internal/server/routes/gateway_model_allowlist_test.go
+index 85c5099342792f7aa123de3cb8722f773dd62d15..ed80a0a91e1393dd9bd3dc5a3939cd6ea7f14e28 100644
+--- a/backend/internal/server/routes/gateway_model_allowlist_test.go
++++ b/backend/internal/server/routes/gateway_model_allowlist_test.go
+@@ -25,3 +25,3 @@ func newGatewayRoutesTestRouterWithGroup(group *service.Group) *gin.Engine {
+ 			Gateway:       &handler.GatewayHandler{},
+-			OpenAIGateway: &handler.OpenAIGatewayHandler{},
++			OpenAIGateway: newOrdinaryRoutesOpenAIHandler(&config.Config{}),
+ 			AsyncImage:    handler.NewAsyncImageHandler(nil, nil),
+@@ -71,3 +71,3 @@ func TestGatewayRoutesGroupModelAllowlistMountedOnEveryGatewayRoute(t *testing.T
+ 	// rootRoute helper：apiKeyAuth 之后、compositeTarget 之前。
+-	rootHelper := regexp.MustCompile(regexp.QuoteMeta(`r.Handle(method, path, limit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), groupModelAllowlist, compositeTarget, requireGroupAnthropic, handler)`))
++	rootHelper := regexp.MustCompile(`r\.Handle\(method, path, [^\n]+gin\.HandlerFunc\(apiKeyAuth\), [^\n]*groupModelAllowlist, compositeTarget, requireGroupAnthropic, handler\)`)
+ 	require.Regexp(t, rootHelper, source,
+@@ -96,3 +96,3 @@ func TestGatewayRoutesGroupModelAllowlistMountedOnEveryGatewayRoute(t *testing.T
+ 	// codexDirect 链是一条 Use 调用，直接断言顺序。
+-	codexDirect := regexp.MustCompile(regexp.QuoteMeta(`codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), groupModelAllowlist, compositeTarget, requireGroupAnthropic)`))
++	codexDirect := regexp.MustCompile(`codexDirect\.Use\([^\n]+gin\.HandlerFunc\(apiKeyAuth\), [^\n]*groupModelAllowlist, compositeTarget, requireGroupAnthropic\)`)
+ 	require.Regexp(t, codexDirect, source, "codexDirect chain must mount the allowlist after auth and before compositeTarget")
+diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
+index 3f545b22ecf7f8ad7e6e42366be6a8545e86396a..988e4c6ed574b15cd0ea0e47123a3f6de8694432 100644
+--- a/backend/internal/server/routes/gateway_test.go
++++ b/backend/internal/server/routes/gateway_test.go
+@@ -38,3 +38,3 @@ func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string
+ 			Gateway:       &handler.GatewayHandler{},
+-			OpenAIGateway: &handler.OpenAIGatewayHandler{},
++			OpenAIGateway: newOrdinaryRoutesOpenAIHandler(cfg),
+ 			AsyncImage:    handler.NewAsyncImageHandler(nil, nil),
+diff --git a/backend/internal/service/account_codex_api.go b/backend/internal/service/account_codex_api.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..05b9ac5b48f04427488fd3ec6939939035a041f4
+--- /dev/null
++++ b/backend/internal/service/account_codex_api.go
+@@ -0,0 +1,98 @@
++package service
++
++import (
++	"context"
++	"net/url"
++	"strings"
++
++	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
++)
++
++func (a *Account) IsCodexAPI() bool {
++	return a != nil && a.Platform == PlatformOpenAI && a.Type == AccountTypeCodexAPI
++}
++
++// Grouped creation must roll back the account when membership is rejected.
++func createAccountWithGroups(ctx context.Context, repo AccountRepository, account *Account, ids []int64) error {
++	if len(ids) > 0 {
++		if atomic, ok := repo.(AccountDuplicateRepository); ok {
++			groups := make([]AccountGroup, len(ids))
++			for i, id := range ids {
++				groups[i] = AccountGroup{GroupID: id, Priority: i + 1}
++			}
++			return atomic.CreateWithAccountGroups(ctx, account, groups)
++		}
++	}
++	if err := repo.Create(ctx, account); err != nil {
++		return err
++	}
++	if len(ids) > 0 {
++		return repo.BindGroups(ctx, account.ID, ids)
++	}
++	return nil
++}
++
++func ValidateCodexAPIAccount(platform, accountType string, credentials map[string]any) error {
++	if accountType != AccountTypeCodexAPI {
++		return nil
++	}
++	if platform != PlatformOpenAI {
++		return infraerrors.BadRequest("CODEX_API_PLATFORM", "codex-api accounts require the OpenAI platform")
++	}
++	for _, key := range []string{"base_url", "api_key"} {
++		value, _ := credentials[key].(string)
++		if strings.TrimSpace(value) == "" {
++			return infraerrors.BadRequest("CODEX_API_CREDENTIALS", "codex-api accounts require base_url and api_key")
++		}
++	}
++	rawURL, _ := credentials["base_url"].(string)
++	u, err := url.Parse(strings.TrimSpace(rawURL))
++	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
++		return infraerrors.BadRequest("CODEX_API_BASE_URL", "codex-api base_url must be an HTTP(S) deployment URL without userinfo, query or fragment")
++	}
++	return nil
++}
++
++// ValidateCodexAPIGroupMembership includes inactive accounts: re-enabling an
++// account must not change whether a group uses the dedicated forwarding path.
++func ValidateCodexAPIGroupMembership(group *Group, accounts []Account) error {
++	hasCodex, hasOther := false, false
++	for i := range accounts {
++		if accounts[i].Type == AccountTypeCodexAPI {
++			if accounts[i].Platform != PlatformOpenAI {
++				return infraerrors.BadRequest("CODEX_API_PLATFORM", "codex-api accounts require the OpenAI platform")
++			}
++			hasCodex = true
++		} else {
++			hasOther = true
++		}
++	}
++	if hasCodex && (hasOther || group.Platform != PlatformOpenAI || group.RequireOAuthOnly) {
++		return infraerrors.BadRequest("CODEX_API_GROUP_ISOLATION", "codex-api accounts require a dedicated OpenAI group without OAuth-only restrictions")
++	}
++	return nil
++}
++
++func validateCodexAPIAccountGroups(ctx context.Context, accounts AccountRepository, groups GroupRepository, account *Account, groupIDs []int64) error {
++	for _, id := range groupIDs {
++		group, err := groups.GetByID(ctx, id)
++		if err != nil {
++			return err
++		}
++		members, err := accounts.ListAllWithFilters(ctx, "", "", "", "", id, "")
++		if err != nil {
++			return err
++		}
++		prospective := make([]Account, 0, len(members)+1)
++		for _, member := range members {
++			if member.ID != account.ID {
++				prospective = append(prospective, member)
++			}
++		}
++		prospective = append(prospective, *account)
++		if err := ValidateCodexAPIGroupMembership(group, prospective); err != nil {
++			return err
++		}
++	}
++	return nil
++}
+diff --git a/backend/internal/service/account_codex_api_test.go b/backend/internal/service/account_codex_api_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..13d8f5cb58c73f568c9db6cb2918cea6978d93bc
+--- /dev/null
++++ b/backend/internal/service/account_codex_api_test.go
+@@ -0,0 +1,88 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++)
++
++type codexAPIAtomicCreateRepository struct {
++	AccountRepository
++	groups []AccountGroup
++	err    error
++}
++
++type codexAPIGroupMembersRepository struct {
++	AccountRepository
++	members []Account
++}
++
++func (r *codexAPIGroupMembersRepository) ListAllWithFilters(context.Context, string, string, string, string, int64, string) ([]Account, error) {
++	return r.members, nil
++}
++
++type codexAPIGroupRepository struct {
++	GroupRepository
++	group *Group
++}
++
++func (r *codexAPIGroupRepository) GetByID(context.Context, int64) (*Group, error) {
++	return r.group, nil
++}
++
++func TestCodexAPIGroupPreflightIncludesDisabledMembers(t *testing.T) {
++	accounts := &codexAPIGroupMembersRepository{members: []Account{{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusDisabled}}}
++	groups := &codexAPIGroupRepository{group: &Group{ID: 1, Platform: PlatformOpenAI}}
++	err := validateCodexAPIAccountGroups(context.Background(), accounts, groups, &Account{Platform: PlatformOpenAI, Type: AccountTypeCodexAPI}, []int64{1})
++	require.Error(t, err)
++}
++
++func (r *codexAPIAtomicCreateRepository) CreateWithAccountGroups(_ context.Context, _ *Account, groups []AccountGroup) error {
++	r.groups = groups
++	return r.err
++}
++
++func TestCodexAPIGroupedCreateUsesAtomicRepository(t *testing.T) {
++	repo := &codexAPIAtomicCreateRepository{}
++	ids := []int64{7, 19}
++	require.NoError(t, createAccountWithGroups(context.Background(), repo, &Account{}, ids))
++	require.Equal(t, []AccountGroup{{GroupID: ids[0], Priority: 1}, {GroupID: ids[1], Priority: 2}}, repo.groups)
++	repo.err = errors.New("membership rejected")
++	require.ErrorIs(t, createAccountWithGroups(context.Background(), repo, &Account{}, ids), repo.err)
++}
++
++func TestCodexAPIAccountValidation(t *testing.T) {
++	credentials := map[string]any{"base_url": "https://gateway.example", "api_key": "test-key"}
++	require.NoError(t, ValidateCodexAPIAccount(PlatformOpenAI, AccountTypeCodexAPI, credentials))
++	require.Error(t, ValidateCodexAPIAccount(PlatformAnthropic, AccountTypeCodexAPI, credentials))
++	require.Error(t, ValidateCodexAPIAccount(PlatformOpenAI, AccountTypeCodexAPI, nil))
++	require.NoError(t, ValidateCodexAPIAccount(PlatformAnthropic, AccountTypeAPIKey, nil))
++	require.True(t, canDuplicateAccountType(AccountTypeCodexAPI))
++}
++
++func TestCodexAPIGroupIsolation(t *testing.T) {
++	group := &Group{Platform: PlatformOpenAI}
++	codex := Account{Platform: PlatformOpenAI, Type: AccountTypeCodexAPI, Status: "inactive"}
++	require.NoError(t, ValidateCodexAPIGroupMembership(group, []Account{codex}))
++	for _, accountType := range []string{AccountTypeOAuth, AccountTypeAPIKey} {
++		other := Account{Platform: PlatformOpenAI, Type: accountType}
++		require.Error(t, ValidateCodexAPIGroupMembership(group, []Account{other, codex}))
++		require.Error(t, ValidateCodexAPIGroupMembership(group, []Account{codex, other}))
++	}
++	group.RequireOAuthOnly = true
++	require.Error(t, ValidateCodexAPIGroupMembership(group, []Account{codex}))
++	group.RequireOAuthOnly = false
++	group.Platform = PlatformAnthropic
++	require.Error(t, ValidateCodexAPIGroupMembership(group, []Account{codex}))
++}
++
++func TestCodexAPIExcludedFromGenericScheduling(t *testing.T) {
++	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeCodexAPI}
++	scheduler := &defaultOpenAIAccountScheduler{}
++	allowed, _ := scheduler.isAccountRequestCompatibleReason(context.Background(), account, OpenAIAccountScheduleRequest{})
++	require.False(t, allowed)
++	require.NotEmpty(t, openAICompatibleAccountEligibilityFailureReasonBeforeProfit(context.Background(), account, PlatformOpenAI, "", false, ""))
++	require.False(t, account.IsOpenAIApiKey())
++}
+diff --git a/backend/internal/service/account_service.go b/backend/internal/service/account_service.go
+index 205907abc1cdd6c7ef51665b71b5b74f1500bc35..f8b1d4dbd45cd966948fa67956352cd039e383ab 100644
+--- a/backend/internal/service/account_service.go
++++ b/backend/internal/service/account_service.go
+@@ -225,2 +225,5 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
+ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
++	if err := ValidateCodexAPIAccount(req.Platform, req.Type, req.Credentials); err != nil {
++		return nil, err
++	}
+ 	// 验证分组是否存在（如果指定了分组）
+@@ -252,6 +255,7 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
+ 
+-	if err := s.accountRepo.Create(ctx, account); err != nil {
+-		return nil, fmt.Errorf("create account: %w", err)
++	if account.IsCodexAPI() {
++		if err := validateCodexAPIAccountGroups(ctx, s.accountRepo, s.groupRepo, account, req.GroupIDs); err != nil {
++			return nil, err
++		}
+ 	}
+-
+ 	// require_oauth_only 检查：apikey 类型账号不可加入限制分组
+@@ -269,7 +273,4 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
+ 
+-	// 绑定分组
+-	if len(req.GroupIDs) > 0 {
+-		if err := s.accountRepo.BindGroups(ctx, account.ID, req.GroupIDs); err != nil {
+-			return nil, fmt.Errorf("bind groups: %w", err)
+-		}
++	if err := createAccountWithGroups(ctx, s.accountRepo, account, req.GroupIDs); err != nil {
++		return nil, fmt.Errorf("create account: %w", err)
+ 	}
+@@ -377,2 +378,5 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
+ 	// 执行更新
++	if err := ValidateCodexAPIAccount(account.Platform, account.Type, account.Credentials); err != nil {
++		return nil, err
++	}
+ 	if err := s.accountRepo.Update(ctx, account); err != nil {
+diff --git a/backend/internal/service/account_test_codex_api.go b/backend/internal/service/account_test_codex_api.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..adddca73762ca9876d32b402c61673355ba79a9a
+--- /dev/null
++++ b/backend/internal/service/account_test_codex_api.go
+@@ -0,0 +1,86 @@
++package service
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"strings"
++
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
++	"github.com/gin-gonic/gin"
++)
++
++func (s *AccountTestService) fetchCodexAPIAccountModels(ctx context.Context, account *Account) ([]openai.Model, error) {
++	if s == nil || s.openaiGatewayService == nil {
++		return nil, errors.New("codex-api model discovery service is unavailable")
++	}
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/v1/models", nil)
++	if err != nil {
++		return nil, err
++	}
++	resp, err := s.openaiGatewayService.RoundTripCodexAPI(ctx, account, req, "/v1/models")
++	if err != nil {
++		return nil, err
++	}
++	defer func() { _ = resp.Body.Close() }()
++	if resp.StatusCode != http.StatusOK {
++		return nil, fmt.Errorf("codex-api model discovery returned HTTP %d", resp.StatusCode)
++	}
++	var payload struct {
++		Data []openai.Model `json:"data"`
++	}
++	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&payload); err != nil {
++		return nil, fmt.Errorf("decode Codex API models: %w", err)
++	}
++	return payload.Data, nil
++}
++
++func (s *AccountTestService) testCodexAPIAccountConnection(c *gin.Context, account *Account, model, prompt, mode string) error {
++	if s.openaiGatewayService == nil {
++		return s.sendErrorAndEnd(c, "Codex API transport is unavailable")
++	}
++	if normalizeAccountTestMode(mode) != AccountTestModeDefault {
++		return s.sendErrorAndEnd(c, "Codex API account tests support Responses only")
++	}
++	if strings.TrimSpace(model) == "" {
++		models, err := s.fetchCodexAPIAccountModels(c.Request.Context(), account)
++		if err != nil {
++			return s.sendErrorAndEnd(c, err.Error())
++		}
++		for _, candidate := range models {
++			if candidate.ID != "" {
++				model = candidate.ID
++				break
++			}
++		}
++		if model == "" {
++			return s.sendErrorAndEnd(c, "Codex API returned no models")
++		}
++	}
++	if prompt == "" {
++		prompt = "hi"
++	}
++	body, err := json.Marshal(map[string]any{"model": model, "input": prompt, "stream": true})
++	if err != nil {
++		return s.sendErrorAndEnd(c, err.Error())
++	}
++	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, "http://localhost/v1/responses", bytes.NewReader(body))
++	if err != nil {
++		return s.sendErrorAndEnd(c, err.Error())
++	}
++	req.Header.Set("Content-Type", "application/json")
++	s.sendEvent(c, TestEvent{Type: "test_start", Model: model})
++	resp, err := s.openaiGatewayService.RoundTripCodexAPI(c.Request.Context(), account, req, "/v1/responses")
++	if err != nil {
++		return s.sendErrorAndEnd(c, err.Error())
++	}
++	defer func() { _ = resp.Body.Close() }()
++	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
++		return s.sendErrorAndEnd(c, fmt.Sprintf("Codex API returned HTTP %d", resp.StatusCode))
++	}
++	return s.processOpenAIStream(c, resp.Body)
++}
+diff --git a/backend/internal/service/account_test_codex_api_test.go b/backend/internal/service/account_test_codex_api_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..a9258cbf0296dc1b074bd8afd698922d1c51d168
+--- /dev/null
++++ b/backend/internal/service/account_test_codex_api_test.go
+@@ -0,0 +1,86 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/stretchr/testify/require"
++)
++
++type codexAPIConnectionTestRepository struct {
++	AccountRepository
++	account *Account
++}
++
++func (r codexAPIConnectionTestRepository) GetByID(context.Context, int64) (*Account, error) {
++	return r.account, nil
++}
++
++func TestCodexAPIAccountTestUsesUpstreamModelAndResponses(t *testing.T) {
++	model := "upstream-only-model"
++	var forwardedModel string
++	gateway := newCodexModelsAPIKeyTestService(&codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
++		if req.URL.Path == "/v1/models" {
++			body, err := json.Marshal(map[string]any{"data": []map[string]string{{"id": model}}})
++			require.NoError(t, err)
++			return ordinaryModelsUpstreamResponse(string(body)), nil
++		}
++		require.Equal(t, "/v1/responses", req.URL.Path)
++		var payload struct {
++			Model string `json:"model"`
++		}
++		require.NoError(t, json.NewDecoder(req.Body).Decode(&payload))
++		forwardedModel = payload.Model
++		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"))}, nil
++	}})
++	account := newCodexModelsAPIKeyTestAccount("https://models.example")
++	account.Type = AccountTypeCodexAPI
++	account.Credentials["model_mapping"] = map[string]any{model: "must-not-map"}
++	svc := &AccountTestService{openaiGatewayService: gateway, accountRepo: codexAPIConnectionTestRepository{account: account}}
++	recorder := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(recorder)
++	c.Request = httptest.NewRequest(http.MethodPost, "/test", nil)
++	require.NoError(t, svc.TestAccountConnection(c, account.ID, "", "hello", ""))
++	require.Equal(t, model, forwardedModel)
++	require.Contains(t, recorder.Body.String(), `"success":true`)
++}
++
++func TestCodexAPIAccountModelsUseOnlyUpstream(t *testing.T) {
++	for _, body := range []string{`{"data":[]}`, `{"data":[{"id":"upstream-future-model","display_name":"Upstream name"}]}`} {
++		t.Run(body, func(t *testing.T) {
++			gateway := newCodexModelsAPIKeyTestService(&codexModelsHTTPUpstreamStub{do: func(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
++				return ordinaryModelsUpstreamResponse(body), nil
++			}})
++			account := newCodexModelsAPIKeyTestAccount("https://models.example")
++			account.Type = AccountTypeCodexAPI
++			models, err := (&AccountTestService{openaiGatewayService: gateway}).FetchOpenAIAccountModels(context.Background(), account)
++			require.NoError(t, err)
++			if body == `{"data":[]}` {
++				require.Empty(t, models)
++			} else {
++				require.Len(t, models, 1)
++				require.Equal(t, "upstream-future-model", models[0].ID)
++				require.Equal(t, "Upstream name", models[0].DisplayName)
++			}
++		})
++	}
++}
++
++func TestCodexAPIAccountModelFailureHasNoFallback(t *testing.T) {
++	gateway := newCodexModelsAPIKeyTestService(&codexModelsHTTPUpstreamStub{do: func(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
++		response := ordinaryModelsUpstreamResponse(`{"error":"unavailable"}`)
++		response.StatusCode = http.StatusBadGateway
++		return response, nil
++	}})
++	account := newCodexModelsAPIKeyTestAccount("https://models.example")
++	account.Type = AccountTypeCodexAPI
++	models, err := (&AccountTestService{openaiGatewayService: gateway}).FetchOpenAIAccountModels(context.Background(), account)
++	require.Error(t, err)
++	require.Empty(t, models)
++}
+diff --git a/backend/internal/service/account_test_service.go b/backend/internal/service/account_test_service.go
+index 178a8d8c6d40912dc2c9b8551f9001f7c4458f21..b89395bf4e5a9b279c7b1f07e6a0ec857fe6a08a 100644
+--- a/backend/internal/service/account_test_service.go
++++ b/backend/internal/service/account_test_service.go
+@@ -183,2 +183,5 @@ func (s *AccountTestService) SetOpenAIGatewayService(gateway *OpenAIGatewayServi
+ func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, account *Account) ([]openai.Model, error) {
++	if account.IsCodexAPI() {
++		return s.fetchCodexAPIAccountModels(ctx, account)
++	}
+ 	if s == nil || s.openaiGatewayService == nil {
+@@ -756,2 +759,5 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
+ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string) error {
++	if account.IsCodexAPI() {
++		return s.testCodexAPIAccountConnection(c, account, modelID, prompt, mode)
++	}
+ 	ctx := c.Request.Context()
+diff --git a/backend/internal/service/admin_account.go b/backend/internal/service/admin_account.go
+index 5d778b75ce8396f94e73431d94cb1ef1c9d57b82..c5b428f00cfb4d1733406f481ed52d8506b7e86b 100644
+--- a/backend/internal/service/admin_account.go
++++ b/backend/internal/service/admin_account.go
+@@ -169,3 +169,3 @@ func canDuplicateAccountType(accountType string) bool {
+ 	switch accountType {
+-	case AccountTypeAPIKey, AccountTypeUpstream, AccountTypeBedrock, AccountTypeServiceAccount:
++	case AccountTypeAPIKey, AccountTypeCodexAPI, AccountTypeUpstream, AccountTypeBedrock, AccountTypeServiceAccount:
+ 		return true
+@@ -413,2 +413,5 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
+ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
++	if err := ValidateCodexAPIAccount(input.Platform, input.Type, input.Credentials); err != nil {
++		return nil, err
++	}
+ 	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
+@@ -532,9 +535,4 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
+ 	}
+-	if err := s.accountRepo.Create(ctx, account); err != nil {
+-		return nil, err
+-	}
+-
+-	// 绑定分组
+-	if len(groupIDs) > 0 {
+-		if err := s.accountRepo.BindGroups(ctx, account.ID, groupIDs); err != nil {
++	if account.IsCodexAPI() {
++		if err := validateCodexAPIAccountGroups(ctx, s.accountRepo, s.groupRepo, account, groupIDs); err != nil {
+ 			return nil, err
+@@ -542,2 +540,5 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
+ 	}
++	if err := createAccountWithGroups(ctx, s.accountRepo, account, groupIDs); err != nil {
++		return nil, err
++	}
+ 
+@@ -839,2 +840,5 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
+ 
++	if err := ValidateCodexAPIAccount(account.Platform, account.Type, account.Credentials); err != nil {
++		return nil, err
++	}
+ 	billingSettingsAppliedAtomically := false
+diff --git a/backend/internal/service/codex_api_billing_test.go b/backend/internal/service/codex_api_billing_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..8702119f88a31e31a8bfdfb62a04d519032e67ff
+--- /dev/null
++++ b/backend/internal/service/codex_api_billing_test.go
+@@ -0,0 +1,28 @@
++package service
++
++import (
++	"context"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestCodexAPIObservedUsageChargesConfiguredAccountQuota(t *testing.T) {
++	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
++	billingRepo := &openAIRecordUsageBillingRepoStub{}
++	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo,
++		&openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
++	account := &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeCodexAPI,
++		Extra: map[string]any{"quota_limit": 100.0}}
++	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
++		Result: &OpenAIForwardResult{RequestID: "codex-api-billing", Model: "gpt-5.1", Usage: OpenAIUsage{InputTokens: 1200, OutputTokens: 300}},
++		APIKey: &APIKey{ID: 1, Group: &Group{RateMultiplier: 1}},
++		User:   &User{ID: 2}, Account: account,
++	})
++	require.NoError(t, err)
++	require.NotNil(t, usageRepo.lastLog)
++	require.NotNil(t, billingRepo.lastCmd)
++	require.Greater(t, billingRepo.lastCmd.AccountQuotaCost, 0.0)
++	require.InDelta(t, usageRepo.lastLog.TotalCost, billingRepo.lastCmd.AccountQuotaCost, 1e-10)
++	require.Equal(t, 1200, usageRepo.lastLog.InputTokens)
++}
+diff --git a/backend/internal/service/codex_api_group.go b/backend/internal/service/codex_api_group.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..2e65fb5e96401d923fa32ecbb339d72343852681
+--- /dev/null
++++ b/backend/internal/service/codex_api_group.go
+@@ -0,0 +1,44 @@
++package service
++
++import (
++	"context"
++	"fmt"
++	"sort"
++)
++
++// CodexAPIGroupAccounts inspects all members, including disabled accounts, so
++// disabling a dedicated account cannot switch the group's protocol behavior.
++func (s *OpenAIGatewayService) CodexAPIGroupAccounts(ctx context.Context, groupID int64) ([]Account, bool, error) {
++	members, err := s.accountRepo.ListAllWithFilters(ctx, "", "", "", "", groupID, "")
++	if err != nil {
++		return nil, false, err
++	}
++	dedicated := false
++	for i := range members {
++		dedicated = dedicated || members[i].IsCodexAPI()
++	}
++	if !dedicated {
++		return nil, false, nil
++	}
++	for i := range members {
++		if !members[i].IsCodexAPI() {
++			return nil, true, fmt.Errorf("codex API group contains other account types")
++		}
++	}
++	priority := func(account Account) int {
++		for _, membership := range account.AccountGroups {
++			if membership.GroupID == groupID {
++				return membership.Priority
++			}
++		}
++		return 0
++	}
++	sort.SliceStable(members, func(i, j int) bool {
++		a, b := priority(members[i]), priority(members[j])
++		if a != b {
++			return a < b
++		}
++		return members[i].Priority < members[j].Priority
++	})
++	return members, true, nil
++}
+diff --git a/backend/internal/service/codex_api_group_test.go b/backend/internal/service/codex_api_group_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a522038e0cb364cb9d7e3c6b5bad2b63096b849
+--- /dev/null
++++ b/backend/internal/service/codex_api_group_test.go
+@@ -0,0 +1,58 @@
++package service
++
++import (
++	"context"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++)
++
++type codexAPIGroupRepo struct {
++	AccountRepository
++	members []Account
++}
++
++func (r codexAPIGroupRepo) ListAllWithFilters(_ context.Context, _, _, status, _ string, _ int64, _ string) ([]Account, error) {
++	var members []Account
++	for _, member := range r.members {
++		if status == "" || member.Status == status {
++			members = append(members, member)
++		}
++	}
++	return members, nil
++}
++
++func TestCodexAPIGroupAccounts(t *testing.T) {
++	dedicated := Account{Platform: PlatformOpenAI, Type: AccountTypeCodexAPI, Status: "disabled"}
++	ordinary := Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
++	for _, test := range []struct {
++		name               string
++		members            []Account
++		dedicated, invalid bool
++	}{
++		{"ordinary", []Account{ordinary}, false, false},
++		{"empty", nil, false, false},
++		{"disabled dedicated", []Account{dedicated}, true, false},
++		{"mixed", []Account{dedicated, ordinary}, true, true},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			s := &OpenAIGatewayService{accountRepo: codexAPIGroupRepo{members: test.members}}
++			_, mode, err := s.CodexAPIGroupAccounts(context.Background(), 1)
++			require.Equal(t, test.dedicated, mode)
++			if test.invalid {
++				require.Error(t, err)
++			} else {
++				require.NoError(t, err)
++			}
++		})
++	}
++}
++
++func TestCodexAPIGroupUsesMembershipPriority(t *testing.T) {
++	first := Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeCodexAPI, Priority: 1, AccountGroups: []AccountGroup{{GroupID: 7, Priority: 10}}}
++	second := Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeCodexAPI, Priority: 10, AccountGroups: []AccountGroup{{GroupID: 7, Priority: 1}}}
++	s := &OpenAIGatewayService{accountRepo: codexAPIGroupRepo{members: []Account{first, second}}}
++	members, _, err := s.CodexAPIGroupAccounts(context.Background(), 7)
++	require.NoError(t, err)
++	require.Equal(t, second.ID, members[0].ID)
++}
+diff --git a/backend/internal/service/codex_api_transport.go b/backend/internal/service/codex_api_transport.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c942ed2127ee0826ded410990ce1177070f0d8a8
+--- /dev/null
++++ b/backend/internal/service/codex_api_transport.go
+@@ -0,0 +1,87 @@
++package service
++
++import (
++	"context"
++	"fmt"
++	"net/http"
++	"net/url"
++	"strings"
++)
++
++// RoundTripCodexAPI leaves protocol interpretation to the configured gateway.
++func (s *OpenAIGatewayService) RoundTripCodexAPI(ctx context.Context, account *Account, incoming *http.Request, targetPath string) (*http.Response, error) {
++	if account == nil || !account.IsCodexAPI() || incoming == nil || incoming.URL == nil {
++		return nil, fmt.Errorf("invalid Codex API request")
++	}
++	switch targetPath {
++	case "/v1/responses", "/backend-api/codex/responses", "/v1/responses/compact", "/v1/models", "/backend-api/codex/models":
++	default:
++		return nil, fmt.Errorf("unsupported Codex API endpoint")
++	}
++	base, err := s.validateUpstreamBaseURL(strings.TrimSpace(account.GetCredential("base_url")))
++	if err != nil {
++		return nil, err
++	}
++	target, err := url.Parse(base)
++	if err != nil || target.User != nil || target.RawQuery != "" || target.Fragment != "" {
++		return nil, fmt.Errorf("invalid Codex API base URL")
++	}
++	token := strings.TrimSpace(account.GetCredential("api_key"))
++	if token == "" {
++		return nil, fmt.Errorf("missing Codex API gateway key")
++	}
++	escapedPath := strings.TrimSuffix(strings.TrimRight(target.EscapedPath(), "/"), "/v1") + targetPath
++	target.Path, err = url.PathUnescape(escapedPath)
++	if err != nil {
++		return nil, fmt.Errorf("invalid Codex API base path")
++	}
++	target.RawPath = escapedPath
++	target.RawQuery = codexAPIQuery(incoming.URL.RawQuery)
++	ctx = WithHTTPUpstreamRedirectsDisabled(WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileRaw))
++	req, err := http.NewRequestWithContext(ctx, incoming.Method, target.String(), incoming.Body)
++	if err != nil {
++		return nil, err
++	}
++	req.ContentLength = incoming.ContentLength
++	req.Header = incoming.Header.Clone()
++	StripCodexAPIHopHeaders(req.Header)
++	for _, name := range []string{"Authorization", "X-Codex-Gateway-Authorization", "X-Api-Key", "X-Goog-Api-Key", "Cookie"} {
++		req.Header.Del(name)
++	}
++	req.Header.Set("Authorization", "Bearer "+token)
++	// Suppress Go's synthetic User-Agent when the caller sent none.
++	if _, ok := req.Header["User-Agent"]; !ok {
++		req.Header["User-Agent"] = []string{""}
++	}
++	proxyURL := ""
++	if account.Proxy != nil {
++		proxyURL = account.Proxy.URL()
++	}
++	return s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
++}
++
++// StripCodexAPIHopHeaders removes fields that apply only to a single connection.
++func StripCodexAPIHopHeaders(header http.Header) {
++	for _, value := range header.Values("Connection") {
++		for _, name := range strings.Split(value, ",") {
++			header.Del(strings.TrimSpace(name))
++		}
++	}
++	for _, name := range []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade"} {
++		header.Del(name)
++	}
++}
++
++func codexAPIQuery(raw string) string {
++	parts := strings.Split(raw, "&")
++	kept := parts[:0]
++	for _, part := range parts {
++		key, _, _ := strings.Cut(part, "=")
++		decoded, err := url.QueryUnescape(key)
++		if err == nil && (decoded == "key" || decoded == "api_key") {
++			continue
++		}
++		kept = append(kept, part)
++	}
++	return strings.Join(kept, "&")
++}
+diff --git a/backend/internal/service/codex_api_transport_test.go b/backend/internal/service/codex_api_transport_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6af2e02b6e9e19d1dc33fde1f15a046f0560a9d
+--- /dev/null
++++ b/backend/internal/service/codex_api_transport_test.go
+@@ -0,0 +1,70 @@
++package service
++
++import (
++	"bytes"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++)
++
++type codexAPITransportCapture struct {
++	HTTPUpstream
++	request *http.Request
++}
++
++func (c *codexAPITransportCapture) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
++	c.request = req
++	return &http.Response{StatusCode: http.StatusAccepted, Body: io.NopCloser(strings.NewReader("upstream"))}, nil
++}
++
++func TestCodexAPITransportPreservesCallerPayloadAndReplacesCredentials(t *testing.T) {
++	for _, body := range [][]byte{[]byte(" {\"model\":\"unknown-model\", \"tools\":[{\"name\":\"namespace__pi\"}]}\n"), {0x28, 0xb5, 0x2f, 0xfd, 0, 1}} {
++		t.Run(http.DetectContentType(body), func(t *testing.T) {
++			upstream := &codexAPITransportCapture{}
++			svc := &OpenAIGatewayService{httpUpstream: upstream}
++			account := &Account{Platform: PlatformOpenAI, Type: AccountTypeCodexAPI, Credentials: map[string]any{"base_url": "https://gateway.example/prefix/v1", "api_key": "gateway-key"}}
++			incoming := httptest.NewRequest(http.MethodPost, "/v1/responses?business=a%20b&key=local&business=c%2Fd&api_key=local", bytes.NewReader(body))
++			incoming.Header.Set("Authorization", "Bearer local-key")
++			incoming.Header.Set("X-Codex-Gateway-Authorization", "Bearer stale-gateway-key")
++			incoming.Header.Set("X-Api-Key", "local-key")
++			incoming.Header.Set("X-Goog-Api-Key", "local-key")
++			incoming.Header.Set("Cookie", "session=local")
++			incoming.Header.Set("Proxy-Authorization", "local-proxy")
++			incoming.Header.Set("Connection", "X-Connection-Secret")
++			incoming.Header.Set("X-Connection-Secret", "local")
++			incoming.Header.Set("Content-Encoding", "zstd")
++			incoming.Header["X-Business"] = []string{"one", "two"}
++			resp, err := svc.RoundTripCodexAPI(t.Context(), account, incoming, "/backend-api/codex/responses")
++			require.NoError(t, err)
++			require.NoError(t, resp.Body.Close())
++			out := upstream.request
++			got, err := io.ReadAll(out.Body)
++			require.NoError(t, err)
++			require.Equal(t, body, got)
++			require.Equal(t, incoming.Method, out.Method)
++			require.Equal(t, incoming.ContentLength, out.ContentLength)
++			require.Equal(t, "/prefix/backend-api/codex/responses", out.URL.Path)
++			require.Equal(t, "business=a%20b&business=c%2Fd", out.URL.RawQuery)
++			require.Equal(t, "Bearer gateway-key", out.Header.Get("Authorization"))
++			for _, name := range []string{"X-Codex-Gateway-Authorization", "X-Api-Key", "X-Goog-Api-Key", "Cookie", "Proxy-Authorization", "Connection", "X-Connection-Secret"} {
++				require.Empty(t, out.Header.Get(name), name)
++			}
++			require.ElementsMatch(t, incoming.Header.Values("X-Business"), out.Header.Values("X-Business"))
++			require.Equal(t, incoming.Header.Get("Content-Encoding"), out.Header.Get("Content-Encoding"))
++			require.Equal(t, "Bearer local-key", incoming.Header.Get("Authorization"))
++			require.True(t, HTTPUpstreamRedirectsDisabled(out.Context()))
++			require.Equal(t, HTTPUpstreamProfileRaw, HTTPUpstreamProfileFromContext(out.Context()))
++		})
++	}
++}
++
++func TestCodexAPITransportRejectsUnsupportedEndpoint(t *testing.T) {
++	svc := &OpenAIGatewayService{}
++	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeCodexAPI}
++	_, err := svc.RoundTripCodexAPI(t.Context(), account, httptest.NewRequest(http.MethodGet, "/", nil), "//other.example/secrets")
++	require.Error(t, err)
++}
+diff --git a/backend/internal/service/codex_api_usage.go b/backend/internal/service/codex_api_usage.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..8878da87a9fa8f638fabbef1cb507b927b018e92
+--- /dev/null
++++ b/backend/internal/service/codex_api_usage.go
+@@ -0,0 +1,184 @@
++package service
++
++import (
++	"bytes"
++	"compress/gzip"
++	"compress/zlib"
++	"io"
++	"math"
++	"strings"
++
++	"github.com/andybalholm/brotli"
++	"github.com/klauspost/compress/zstd"
++	"github.com/tidwall/gjson"
++)
++
++const codexAPIObservationLimit = 8 << 20
++
++// CodexAPIUsageObserver observes a copy of response bytes without changing relay
++// behavior. Observation limits affect accounting availability, never delivery.
++type CodexAPIUsageObserver struct {
++	stream   bool
++	encoding string
++	buffer   []byte
++	data     []byte
++	event    string
++	discard  bool
++	result   *OpenAIForwardResult
++	finished bool
++}
++
++func NewCodexAPIUsageObserver(contentType, contentEncoding string) *CodexAPIUsageObserver {
++	return &CodexAPIUsageObserver{
++		stream:   strings.EqualFold(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]), "text/event-stream"),
++		encoding: strings.ToLower(strings.TrimSpace(contentEncoding)),
++	}
++}
++
++func (o *CodexAPIUsageObserver) Write(p []byte) (int, error) {
++	n := len(p)
++	if o.finished {
++		return n, nil
++	}
++	if !o.stream || o.encoding != "" && o.encoding != "identity" {
++		if !o.discard && len(p) <= codexAPIObservationLimit-len(o.buffer) {
++			o.buffer = append(o.buffer, p...)
++		} else {
++			o.discard, o.buffer = true, nil
++		}
++		return n, nil
++	}
++	for len(p) > 0 {
++		i := bytes.IndexByte(p, '\n')
++		if i < 0 {
++			i = len(p)
++		}
++		if len(p[:i]) <= codexAPIObservationLimit-len(o.buffer)-len(o.data) && !o.discard {
++			o.buffer = append(o.buffer, p[:i]...)
++		} else {
++			o.discard, o.data = true, nil
++			if len(bytes.Trim(p[:i], "\r")) > 0 || len(o.buffer) > 0 {
++				o.buffer = []byte{1}
++			}
++		}
++		if i == len(p) {
++			break
++		}
++		o.line(bytes.TrimSuffix(o.buffer, []byte{'\r'}))
++		o.buffer = nil
++		p = p[i+1:]
++	}
++	return n, nil
++}
++
++func (o *CodexAPIUsageObserver) line(line []byte) {
++	if len(line) == 0 {
++		if !o.discard {
++			o.observe(o.data, o.event)
++		}
++		o.data, o.event, o.discard = nil, "", false
++		return
++	}
++	if o.discard {
++		return
++	}
++	field, value, _ := bytes.Cut(line, []byte{':'})
++	value = bytes.TrimPrefix(value, []byte{' '})
++	switch string(field) {
++	case "event":
++		o.event = string(value)
++	case "data":
++		if len(o.data) > 0 {
++			o.data = append(o.data, '\n')
++		}
++		o.data = append(o.data, value...)
++	}
++}
++
++func (o *CodexAPIUsageObserver) observe(body []byte, event string) {
++	if !gjson.ValidBytes(body) {
++		return
++	}
++	if o.stream && !openAIStreamEventTypeIsTerminal(effectiveOpenAISSEEventType(body, event)) {
++		return
++	}
++	root := gjson.ParseBytes(body)
++	if response := root.Get("response"); response.IsObject() {
++		root = response
++	}
++	usage := root.Get("usage")
++	// Missing, empty and malformed usage must not become a fabricated zero bill.
++	for _, name := range []string{"input_tokens", "output_tokens"} {
++		v := usage.Get(name)
++		if v.Type != gjson.Number || v.Float() < 0 || v.Float() >= float64(math.MaxInt) || math.Trunc(v.Float()) != v.Float() {
++			return
++		}
++	}
++	parsed, ok := extractOpenAIUsageFromJSONBytes(body)
++	if !ok {
++		return
++	}
++	o.result = &OpenAIForwardResult{
++		Usage: parsed, ResponseID: extractOpenAIResponseIDFromJSONBytes(body),
++		UpstreamResponseModel:       root.Get("model").String(),
++		UpstreamResponseServiceTier: root.Get("service_tier").String(),
++	}
++}
++
++func (o *CodexAPIUsageObserver) Result() (*OpenAIForwardResult, bool) {
++	if o.finished {
++		return o.result, o.result != nil
++	}
++	o.finished = true
++	if o.encoding != "" && o.encoding != "identity" {
++		if o.discard {
++			return nil, false
++		}
++		var reader io.Reader
++		var closeReader func()
++		switch o.encoding {
++		case "gzip":
++			r, err := gzip.NewReader(bytes.NewReader(o.buffer))
++			if err != nil {
++				return nil, false
++			}
++			reader, closeReader = r, func() { _ = r.Close() }
++		case "deflate":
++			r, err := zlib.NewReader(bytes.NewReader(o.buffer))
++			if err != nil {
++				return nil, false
++			}
++			reader, closeReader = r, func() { _ = r.Close() }
++		case "br":
++			reader = brotli.NewReader(bytes.NewReader(o.buffer))
++		case "zstd":
++			r, err := zstd.NewReader(bytes.NewReader(o.buffer), zstd.WithDecoderMaxMemory(codexAPIObservationLimit), zstd.WithDecoderConcurrency(1))
++			if err != nil {
++				return nil, false
++			}
++			reader, closeReader = r, r.Close
++		default:
++			return nil, false
++		}
++		if closeReader != nil {
++			defer closeReader()
++		}
++		decoded := NewCodexAPIUsageObserver("application/json", "")
++		decoded.stream = o.stream
++		n, err := io.Copy(decoded, io.LimitReader(reader, 4*codexAPIObservationLimit+1))
++		o.buffer = nil
++		if err != nil || n > 4*codexAPIObservationLimit {
++			return nil, false
++		}
++		o.result, _ = decoded.Result()
++	} else if o.stream {
++		if len(o.buffer) > 0 {
++			o.line(bytes.TrimSuffix(o.buffer, []byte{'\r'}))
++		}
++		o.line(nil)
++	} else if !o.discard {
++		o.observe(o.buffer, "")
++	}
++	o.buffer, o.data = nil, nil
++	return o.result, o.result != nil
++}
+diff --git a/backend/internal/service/codex_api_usage_test.go b/backend/internal/service/codex_api_usage_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..11dba5397f5ee2309601477c6409c17604b10845
+--- /dev/null
++++ b/backend/internal/service/codex_api_usage_test.go
+@@ -0,0 +1,128 @@
++package service
++
++import (
++	"bytes"
++	"compress/gzip"
++	"compress/zlib"
++	"io"
++	"testing"
++
++	"github.com/andybalholm/brotli"
++	"github.com/klauspost/compress/zstd"
++	"github.com/stretchr/testify/require"
++)
++
++func TestCodexAPIUsageObserverJSON(t *testing.T) {
++	observer := NewCodexAPIUsageObserver("application/json", "")
++	body := []byte(`{"id":"response","model":"upstream-model","usage":{"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":5}}}`)
++	original := bytes.Clone(body)
++	_, err := observer.Write(body)
++	require.NoError(t, err)
++	require.Equal(t, original, body)
++	result, ok := observer.Result()
++	require.True(t, ok)
++	require.Equal(t, 12, result.Usage.InputTokens)
++	require.Equal(t, 3, result.Usage.OutputTokens)
++	require.Equal(t, 5, result.Usage.CacheReadInputTokens)
++	require.Equal(t, "upstream-model", result.UpstreamResponseModel)
++}
++
++func TestCodexAPIUsageObserverSSE(t *testing.T) {
++	observer := NewCodexAPIUsageObserver("text/event-stream; charset=utf-8", "")
++	body := "data: {\"type\":\"response.created\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\r\n\r\n" +
++		"event: response.completed\r\ndata: {\"response\":{\"usage\":\r\ndata: {\"input_tokens\":20,\"output_tokens\":4}}}\r\n\r\n"
++	for _, b := range []byte(body) {
++		_, err := observer.Write([]byte{b})
++		require.NoError(t, err)
++	}
++	result, ok := observer.Result()
++	require.True(t, ok)
++	require.Equal(t, 20, result.Usage.InputTokens)
++	require.Equal(t, 4, result.Usage.OutputTokens)
++}
++
++func TestCodexAPIUsageObserverMissingUsage(t *testing.T) {
++	for _, body := range []string{`{}`, `{"usage":{}}`, `{"usage":{"input_tokens":"bad","output_tokens":0}}`, `{"usage":{"input_tokens":-1,"output_tokens":2}}`} {
++		t.Run(body, func(t *testing.T) {
++			observer := NewCodexAPIUsageObserver("application/json", "")
++			_, _ = observer.Write([]byte(body))
++			_, ok := observer.Result()
++			require.False(t, ok)
++		})
++	}
++}
++
++func TestCodexAPIUsageObserverCompressed(t *testing.T) {
++	var body bytes.Buffer
++	w := gzip.NewWriter(&body)
++	_, err := w.Write([]byte(`{"usage":{"input_tokens":2,"output_tokens":0}}`))
++	require.NoError(t, err)
++	require.NoError(t, w.Close())
++	for _, corrupt := range []bool{false, true} {
++		observer := NewCodexAPIUsageObserver("application/json", "gzip")
++		data := bytes.Clone(body.Bytes())
++		if corrupt {
++			data[len(data)-1] ^= 1
++		}
++		_, _ = observer.Write(data)
++		result, ok := observer.Result()
++		require.Equal(t, !corrupt, ok)
++		if ok {
++			require.Equal(t, 2, result.Usage.InputTokens)
++		}
++	}
++}
++
++func TestCodexAPIUsageObserverLimits(t *testing.T) {
++	observer := NewCodexAPIUsageObserver("application/json", "")
++	_, _ = observer.Write(bytes.Repeat([]byte{' '}, codexAPIObservationLimit+1))
++	_, _ = observer.Write([]byte(`{"usage":{"input_tokens":1,"output_tokens":1}}`))
++	_, ok := observer.Result()
++	require.False(t, ok)
++	require.Empty(t, observer.buffer)
++
++	observer = NewCodexAPIUsageObserver("text/event-stream", "")
++	_, _ = observer.Write(append([]byte("data: "), bytes.Repeat([]byte{'x'}, codexAPIObservationLimit)...))
++	_, _ = observer.Write([]byte("\r\n\r\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":8,\"output_tokens\":2}}}\r\n\r\n"))
++	result, ok := observer.Result()
++	require.True(t, ok)
++	require.Equal(t, 8, result.Usage.InputTokens)
++}
++
++func TestCodexAPIUsageObserverEncodings(t *testing.T) {
++	for _, encoding := range []string{"gzip", "deflate", "br", "zstd"} {
++		t.Run(encoding, func(t *testing.T) {
++			var body bytes.Buffer
++			var writer io.WriteCloser
++			switch encoding {
++			case "gzip":
++				writer = gzip.NewWriter(&body)
++			case "deflate":
++				writer = zlib.NewWriter(&body)
++			case "br":
++				writer = brotli.NewWriter(&body)
++			case "zstd":
++				var err error
++				writer, err = zstd.NewWriter(&body, zstd.WithEncoderConcurrency(1))
++				require.NoError(t, err)
++			}
++			_, err := io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":2}}}\n\n")
++			require.NoError(t, err)
++			require.NoError(t, writer.Close())
++			observer := NewCodexAPIUsageObserver("text/event-stream", encoding)
++			_, _ = observer.Write(body.Bytes())
++			result, ok := observer.Result()
++			require.True(t, ok)
++			require.Equal(t, 7, result.Usage.InputTokens)
++		})
++	}
++}
++
++func TestCodexAPIUsageObserverOversizeTailRetainsUsage(t *testing.T) {
++	observer := NewCodexAPIUsageObserver("text/event-stream", "")
++	_, _ = observer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":8,\"output_tokens\":2}}}\n\n"))
++	_, _ = observer.Write(append([]byte("data: "), bytes.Repeat([]byte{'x'}, codexAPIObservationLimit)...))
++	result, ok := observer.Result()
++	require.True(t, ok)
++	require.Equal(t, 8, result.Usage.InputTokens)
++}
+diff --git a/backend/internal/service/domain_constants.go b/backend/internal/service/domain_constants.go
+index 883ac9f0d59f9fb3af29966251c330eb606057dc..4cafafffd1b2e85b8f1e9e80069f219abfc36be7 100644
+--- a/backend/internal/service/domain_constants.go
++++ b/backend/internal/service/domain_constants.go
+@@ -170,2 +170,3 @@ const (
+ 	AccountTypeServiceAccount = domain.AccountTypeServiceAccount // Google Service Account 类型账号（用于 Vertex AI）
++	AccountTypeCodexAPI       = domain.AccountTypeCodexAPI
+ )
+diff --git a/backend/internal/service/gateway_usage_billing.go b/backend/internal/service/gateway_usage_billing.go
+index 1e1a0f84779b7230a00a1b67a38f97c37356ef73..5f757627beab8aaa858f60eb1bd6d402b5168bc4 100644
+--- a/backend/internal/service/gateway_usage_billing.go
++++ b/backend/internal/service/gateway_usage_billing.go
+@@ -128,3 +128,3 @@ func (p *postUsageBillingParams) shouldUpdateRateLimits() bool {
+ func (p *postUsageBillingParams) shouldUpdateAccountQuota() bool {
+-	return p.Cost.TotalCost > 0 && p.Account.IsAPIKeyOrBedrock() && p.Account.HasAnyQuotaLimit()
++	return p.Cost.TotalCost > 0 && (p.Account.IsAPIKeyOrBedrock() || p.Account.IsCodexAPI()) && p.Account.HasAnyQuotaLimit()
+ }
+@@ -494,3 +494,3 @@ func notifyAccountQuota(p *postUsageBillingParams, deps *billingDeps, result *Us
+ 	}()
+-	if p.Cost.TotalCost <= 0 || p.Account == nil || !p.Account.IsAPIKeyOrBedrock() || deps.balanceNotifyService == nil {
++	if p.Cost.TotalCost <= 0 || p.Account == nil || (!p.Account.IsAPIKeyOrBedrock() && !p.Account.IsCodexAPI()) || deps.balanceNotifyService == nil {
+ 		slog.Debug("notifyAccountQuota: skipped",
+diff --git a/backend/internal/service/http_upstream_profile.go b/backend/internal/service/http_upstream_profile.go
+index 92020abb357c5822bd2271eebe30baf6ff97aabc..c76fd2337927ad40dd07f31538728b3fb92c6a17 100644
+--- a/backend/internal/service/http_upstream_profile.go
++++ b/backend/internal/service/http_upstream_profile.go
+@@ -13,2 +13,3 @@ const (
+ 	HTTPUpstreamProfileLongStream HTTPUpstreamProfile = "long_stream"
++	HTTPUpstreamProfileRaw        HTTPUpstreamProfile = "raw"
+ )
+@@ -40,3 +41,3 @@ func HTTPUpstreamProfileFromContext(ctx context.Context) HTTPUpstreamProfile {
+ 	switch profile {
+-	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileGrok, HTTPUpstreamProfileLongStream:
++	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileGrok, HTTPUpstreamProfileLongStream, HTTPUpstreamProfileRaw:
+ 		return profile
+diff --git a/backend/internal/service/openai_account_scheduler.go b/backend/internal/service/openai_account_scheduler.go
+index 8d072e349dd99e6f0a82dc75caf5ad85563ecb37..f349c063479cdedd55bd08d6a8eb5faa31a49fc4 100644
+--- a/backend/internal/service/openai_account_scheduler.go
++++ b/backend/internal/service/openai_account_scheduler.go
+@@ -1835,2 +1835,5 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
+ 	}
++	if account.IsCodexAPI() {
++		return false, "dedicated_codex_api_account"
++	}
+ 	if (openAIAudioTranscriptionSelectionFromContext(ctx) || openAIRealtimeRESTSelectionFromContext(ctx)) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
+diff --git a/backend/internal/service/openai_gateway_scheduling.go b/backend/internal/service/openai_gateway_scheduling.go
+index be0bc80b152fe5295fef258322f70499163a1d76..dfc64cbc2f4b75db389be1264117273629531199 100644
+--- a/backend/internal/service/openai_gateway_scheduling.go
++++ b/backend/internal/service/openai_gateway_scheduling.go
+@@ -394,2 +394,5 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
+ 	}
++	if account.IsCodexAPI() {
++		return "dedicated_codex_api_account"
++	}
+ 	if account.Platform != platform || !account.IsOpenAICompatible() {
+diff --git a/frontend/src/components/account/AccountTestModal.vue b/frontend/src/components/account/AccountTestModal.vue
+index 5192d0b66707af023bd6b5419f1be42a7df68bd8..ea6d727e8361a03de240f1d487934382cff500aa 100644
+--- a/frontend/src/components/account/AccountTestModal.vue
++++ b/frontend/src/components/account/AccountTestModal.vue
+@@ -57,2 +57,9 @@
+ 
++      <div v-if="modelLoadFailed && account?.type === 'codex-api'" role="alert" class="flex items-center gap-2 text-sm text-red-600">
++        {{ t('admin.accounts.syncUpstreamModelsFailed') }}
++        <button type="button" class="btn btn-secondary" :disabled="loadingModels" @click="loadAvailableModels">
++          <Icon name="refresh" size="sm" />{{ t('common.refresh') }}
++        </button>
++      </div>
++
+       <div v-if="isOpenAIAccount" class="space-y-1.5">
+@@ -283,2 +290,3 @@ const errorMessage = ref('')
+ const availableModels = ref<ClaudeModel[]>([])
++const modelLoadFailed = ref(false)
+ const selectedModelId = ref('')
+@@ -346,2 +354,3 @@ const loadAvailableModels = async () => {
+ 
++  modelLoadFailed.value = false
+   loadingModels.value = true
+@@ -355,3 +364,3 @@ const loadAvailableModels = async () => {
+     if (availableModels.value.length > 0) {
+-      if (props.account.platform === 'gemini') {
++      if (props.account.platform === 'gemini' || props.account.type === 'codex-api') {
+         selectedModelId.value = availableModels.value[0].id
+@@ -365,2 +374,3 @@ const loadAvailableModels = async () => {
+     console.error('Failed to load available models:', error)
++    modelLoadFailed.value = true
+     // Fallback to empty list
+diff --git a/frontend/src/components/account/CodexAPICredentialsFields.vue b/frontend/src/components/account/CodexAPICredentialsFields.vue
+new file mode 100644
+index 0000000000000000000000000000000000000000..de556764d69744b504586e9320258ebe81279e58
+--- /dev/null
++++ b/frontend/src/components/account/CodexAPICredentialsFields.vue
+@@ -0,0 +1,21 @@
++<template>
++  <div class="space-y-4">
++    <div>
++      <label class="input-label" for="codex-api-base-url">{{ t('admin.accounts.baseUrl') }}</label>
++      <input id="codex-api-base-url" v-model="baseUrl" type="url" class="input" required />
++    </div>
++    <div>
++      <label class="input-label" for="codex-api-key">{{ t('admin.accounts.apiKey') }}</label>
++      <input id="codex-api-key" v-model="apiKey" type="password" class="input" autocomplete="new-password" :required="!editing" :placeholder="editing ? t('admin.accounts.leaveEmptyToKeep') : ''" />
++    </div>
++  </div>
++</template>
++
++<script setup lang="ts">
++import { useI18n } from 'vue-i18n'
++
++defineProps<{ editing?: boolean }>()
++const baseUrl = defineModel<string>('baseUrl', { required: true })
++const apiKey = defineModel<string>('apiKey', { required: true })
++const { t } = useI18n()
++</script>
+diff --git a/frontend/src/components/account/CreateAccountModal.vue b/frontend/src/components/account/CreateAccountModal.vue
+index c6616c679f5b09c2bb0bf08861dedc8d7877fa10..0bc22afc9ab6e5458b3818378bf686aaf95f259d 100644
+--- a/frontend/src/components/account/CreateAccountModal.vue
++++ b/frontend/src/components/account/CreateAccountModal.vue
+@@ -418,3 +418,7 @@
+           </button>
+-
++          <button type="button" :aria-pressed="accountCategory === 'codex-api'" @click="accountCategory = 'codex-api'"
++            :class="['flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all', accountCategory === 'codex-api' ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20' : 'border-gray-200 hover:border-primary-300 dark:border-dark-600']">
++            <Icon name="key" size="sm" />
++            <span class="text-sm font-medium text-gray-900 dark:text-white">Codex API</span>
++          </button>
+         </div>
+@@ -422,2 +426,4 @@
+ 
++      <CodexAPICredentialsFields v-if="form.type === 'codex-api'" v-model:base-url="codexAPIBaseUrl" v-model:api-key="codexAPIKey" />
++
+       <!-- Account Type Selection (Grok) -->
+@@ -2441,3 +2447,3 @@
+       <!-- Temp Unschedulable Rules -->
+-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
++      <div v-if="form.type !== 'codex-api'" class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
+         <div class="mb-3 flex items-center justify-between">
+@@ -3009,2 +3015,3 @@
+       <UpstreamRequestIdHeaderField
++        v-if="form.type !== 'codex-api'"
+         v-model="upstreamRequestIdHeader"
+@@ -3063,3 +3070,3 @@
+       <div
+-        v-if="form.platform === 'openai'"
++        v-if="form.platform === 'openai' && form.type !== 'codex-api'"
+         class="border-t border-gray-200 pt-4 dark:border-dark-600"
+@@ -3075,2 +3082,3 @@
+             type="button"
++            data-testid="create-openai-passthrough-toggle"
+             @click="openaiPassthroughEnabled = !openaiPassthroughEnabled"
+@@ -3929,2 +3937,3 @@ import HelpTooltip from '@/components/common/HelpTooltip.vue'
+ import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
++import CodexAPICredentialsFields from '@/components/account/CodexAPICredentialsFields.vue'
+ import PlatformIcon from '@/components/common/PlatformIcon.vue'
+@@ -4149,3 +4158,5 @@ const step = ref(1)
+ const submitting = ref(false)
+-const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
++const accountCategory = ref<'oauth-based' | 'apikey' | 'codex-api' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
++const codexAPIBaseUrl = ref('')
++const codexAPIKey = ref('')
+ const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
+@@ -4819,3 +4830,5 @@ watch(
+     }
+-    if ((form.platform === 'gemini' || form.platform === 'anthropic') && category === 'service_account') {
++    if (form.platform === 'openai' && category === 'codex-api') {
++      form.type = 'codex-api'
++    } else if ((form.platform === 'gemini' || form.platform === 'anthropic') && category === 'service_account') {
+       form.type = 'service_account' as AccountType
+@@ -4834,2 +4847,5 @@ watch(
+   (newPlatform) => {
++    if (newPlatform !== 'openai' && accountCategory.value === 'codex-api') {
++      accountCategory.value = 'oauth-based'
++    }
+     // Reset base URL based on platform
+@@ -5250,3 +5266,3 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
+       )
+-    if (upstreamModelsPreviewed.value || hasConcreteMappedTarget) {
++    if (payload.type !== 'codex-api' && (upstreamModelsPreviewed.value || hasConcreteMappedTarget)) {
+       try {
+@@ -5309,2 +5325,4 @@ const resetForm = () => {
+   accountCategory.value = 'oauth-based'
++  codexAPIBaseUrl.value = ''
++  codexAPIKey.value = ''
+   addMethod.value = 'oauth'
+@@ -5621,2 +5639,18 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
+ const handleSubmit = async () => {
++  if (form.type === 'codex-api') {
++    if (!form.name.trim()) {
++      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
++      return
++    }
++    if (!codexAPIBaseUrl.value.trim() || !codexAPIKey.value.trim()) return
++    await doCreateAccount({
++      ...form,
++      platform: 'openai',
++      type: 'codex-api',
++      credentials: { base_url: codexAPIBaseUrl.value.trim(), api_key: codexAPIKey.value.trim() },
++      load_factor: form.load_factor ?? undefined,
++      auto_pause_on_expired: autoPauseOnExpired.value
++    })
++    return
++  }
+   // For OAuth-based type, handle OAuth flow (goes to step 2)
+diff --git a/frontend/src/components/account/EditAccountModal.vue b/frontend/src/components/account/EditAccountModal.vue
+index 4e9bbff7a12a7b10df322692d402e4ad493d3007..7f7ad67744f2e44e2a1d2cdf8cde2b821114926f 100644
+--- a/frontend/src/components/account/EditAccountModal.vue
++++ b/frontend/src/components/account/EditAccountModal.vue
+@@ -28,2 +28,3 @@
+ 
++      <CodexAPICredentialsFields v-if="account.type === 'codex-api'" v-model:base-url="editBaseUrl" v-model:api-key="editApiKey" editing />
+       <!-- API Key fields (only for apikey type) -->
+@@ -1432,3 +1433,3 @@
+       <!-- Temp Unschedulable Rules -->
+-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
++      <div v-if="account.type !== 'codex-api'" class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
+         <div class="mb-3 flex items-center justify-between">
+@@ -1654,2 +1655,3 @@
+       <UpstreamRequestIdHeaderField
++        v-if="account.type !== 'codex-api'"
+         v-model="upstreamRequestIdHeader"
+@@ -2376,3 +2378,3 @@
+       <div
+-        v-if="account?.platform === 'openai'"
++        v-if="account?.platform === 'openai' && account.type !== 'codex-api'"
+         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
+@@ -3045,2 +3047,3 @@ import HelpTooltip from '@/components/common/HelpTooltip.vue'
+ import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
++import CodexAPICredentialsFields from '@/components/account/CodexAPICredentialsFields.vue'
+ import Toggle from '@/components/common/Toggle.vue'
+@@ -3470,3 +3473,3 @@ const ACCOUNT_SCHEDULING_THRESHOLD_CREDENTIAL_KEY = 'account_scheduling_threshol
+ const supportsAccountSchedulingThresholdOverride = computed(() =>
+-  supportsAccountSchedulingThresholdOverridePlatform(props.account?.platform)
++  props.account?.type !== 'codex-api' && supportsAccountSchedulingThresholdOverridePlatform(props.account?.platform)
+ )
+@@ -4331,3 +4334,3 @@ const syncFormFromAccount = (newAccount: Account | null) => {
+     loadModelRestrictionFromMapping(bedrockCreds.model_mapping as Record<string, unknown> | undefined)
+-  } else if (newAccount.type === 'upstream' && newAccount.credentials) {
++  } else if ((newAccount.type === 'upstream' || newAccount.type === 'codex-api') && newAccount.credentials) {
+     const credentials = newAccount.credentials as Record<string, unknown>
+@@ -4987,2 +4990,11 @@ const handleSubmit = async () => {
+     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
++    if (props.account.type === 'codex-api') {
++      if (!editBaseUrl.value.trim()) return
++      updatePayload.credentials = {
++        base_url: editBaseUrl.value.trim(),
++        ...(editApiKey.value.trim() ? { api_key: editApiKey.value.trim() } : {})
++      }
++      await submitUpdateAccount(accountID, updatePayload)
++      return
++    }
+     if (props.account.type === 'apikey') {
+diff --git a/frontend/src/components/account/__tests__/AccountTestModal.spec.ts b/frontend/src/components/account/__tests__/AccountTestModal.spec.ts
+index 9670b521cf0ec9bbc44174393840ac5055666296..a3543ed8765f89105354f02d9296df4d74168eab 100644
+--- a/frontend/src/components/account/__tests__/AccountTestModal.spec.ts
++++ b/frontend/src/components/account/__tests__/AccountTestModal.spec.ts
+@@ -120,2 +120,70 @@ describe('AccountTestModal', () => {
+ 
++  it('uses the Codex API catalog in returned order without a local model fallback', async () => {
++    const model = `upstream-${Date.now()}`
++    getAvailableModelsMock.mockResolvedValue([
++      { id: model, display_name: model },
++      { id: 'sonnet-local', display_name: 'Local preferred model' }
++    ])
++    const wrapper = mount(AccountTestModal, {
++      props: {
++        show: false,
++        account: { ...buildAccount(), type: 'codex-api', name: 'Gateway' }
++      },
++      global: {
++        stubs: {
++          BaseDialog: BaseDialogStub,
++          Select: SelectStub,
++          TextArea: TextAreaStub,
++          Icon: true
++        }
++      }
++    })
++
++    await wrapper.setProps({ show: true })
++    await flushPromises()
++    const startButton = wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))
++    expect(startButton).toBeTruthy()
++    await startButton!.trigger('click')
++    await flushPromises()
++
++    const [, options] = (global.fetch as any).mock.calls[0]
++    expect(JSON.parse(options.body).model_id).toBe(model)
++    wrapper.unmount()
++  })
++
++  it('keeps Codex API tests disabled after catalog failure until refresh succeeds', async () => {
++    getAvailableModelsMock.mockRejectedValueOnce(new Error('upstream unavailable'))
++    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
++    const wrapper = mount(AccountTestModal, {
++      props: {
++        show: false,
++        account: { ...buildAccount(), type: 'codex-api', name: 'Gateway' }
++      },
++      global: {
++        stubs: {
++          BaseDialog: BaseDialogStub,
++          Select: SelectStub,
++          TextArea: TextAreaStub,
++          Icon: true
++        }
++      }
++    })
++
++    await wrapper.setProps({ show: true })
++    await flushPromises()
++    const startButton = wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))
++    expect(startButton?.attributes('disabled')).toBeDefined()
++    expect(global.fetch).not.toHaveBeenCalled()
++    expect(wrapper.get('[role="alert"]').text()).toContain('admin.accounts.syncUpstreamModelsFailed')
++
++    getAvailableModelsMock.mockResolvedValueOnce([{ id: 'upstream-recovered', display_name: 'Recovered model' }])
++    await wrapper.get('[role="alert"] button').trigger('click')
++    await flushPromises()
++
++    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
++    expect(startButton?.attributes('disabled')).toBeUndefined()
++    consoleError.mockRestore()
++    wrapper.unmount()
++  })
++
+   it('posts compact mode for OpenAI compact probe', async () => {
+diff --git a/frontend/src/components/account/__tests__/CreateAccountModal.spec.ts b/frontend/src/components/account/__tests__/CreateAccountModal.spec.ts
+index f9cf78675a4a7f9d47157bc47369539dec655a71..d51350cbd7c0d2c197078f28fa239899ede7f1e9 100644
+--- a/frontend/src/components/account/__tests__/CreateAccountModal.spec.ts
++++ b/frontend/src/components/account/__tests__/CreateAccountModal.spec.ts
+@@ -216,2 +216,39 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
+ 
++  it('creates Codex API accounts without local transformation settings or model probes', async () => {
++    const wrapper = mountModal()
++    await selectButtonByText(wrapper, 'OpenAI')
++    await selectButtonByText(wrapper, 'Codex API')
++    await wrapper.get('form#create-account-form input[type="text"]').setValue('Upstream gateway')
++    await wrapper.get('#codex-api-base-url').setValue('https://gateway.example')
++    await wrapper.get('#codex-api-key').setValue('gateway-test-key')
++    expect(wrapper.findComponent(ModelWhitelistSelectorStub).exists()).toBe(false)
++    expect(wrapper.find('[data-testid="create-openai-passthrough-toggle"]').exists()).toBe(false)
++    expect(wrapper.find('[data-testid="upstream-billing-auto-probe"]').exists()).toBe(false)
++    await wrapper.get('form#create-account-form').trigger('submit.prevent')
++    await flushPromises()
++    const payload = createAccountMock.mock.calls[0][0]
++    expect(payload.type).toBe('codex-api')
++    expect(payload.credentials.base_url).toBe('https://gateway.example')
++    expect(payload.credentials.api_key).toBe('gateway-test-key')
++    expect(payload.credentials.model_mapping).toBeUndefined()
++    expect(payload.extra).toBeUndefined()
++    expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
++    expect(syncUpstreamModelsMock).not.toHaveBeenCalled()
++    wrapper.unmount()
++  })
++
++  it('submits OpenAI passthrough from the create toggle', async () => {
++    const wrapper = mountModal()
++    await selectButtonByText(wrapper, 'OpenAI')
++    await selectButtonByText(wrapper, 'API Key')
++    await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenAI account')
++    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
++    await wrapper.get('[data-testid="create-openai-passthrough-toggle"]').trigger('click')
++    await wrapper.get('form#create-account-form').trigger('submit.prevent')
++    await flushPromises()
++
++    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_passthrough).toBe(true)
++    wrapper.unmount()
++  })
++
+   it('sets month and year expiry presets without submitting the account form', async () => {
+diff --git a/frontend/src/components/account/__tests__/EditAccountModal.spec.ts b/frontend/src/components/account/__tests__/EditAccountModal.spec.ts
+index 7b104410c1bc1bd5fa6dde6f31dc286bfcdd3d3a..455d338209c139c471ed9d073420891d394f4e10 100644
+--- a/frontend/src/components/account/__tests__/EditAccountModal.spec.ts
++++ b/frontend/src/components/account/__tests__/EditAccountModal.spec.ts
+@@ -332,2 +332,18 @@ describe('EditAccountModal', () => {
+ 
++  it('edits Codex API upstream settings without replacing an unchanged secret', async () => {
++    const account = { ...buildAccount(), type: 'codex-api', credentials: { base_url: 'https://gateway.example' } }
++    updateAccountMock.mockReset().mockResolvedValue(account)
++    const wrapper = mountModal(account)
++    expect(wrapper.findComponent(ModelWhitelistSelectorStub).exists()).toBe(false)
++    expect(wrapper.get<HTMLInputElement>('#codex-api-base-url').element.value).toBe(account.credentials.base_url)
++    await wrapper.get('#codex-api-base-url').setValue('https://other-gateway.example')
++    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
++    const payload = updateAccountMock.mock.calls[0][1]
++    expect(payload.credentials.base_url).toBe('https://other-gateway.example')
++    expect(payload.credentials.api_key).toBeUndefined()
++    expect(payload.credentials.model_mapping).toBeUndefined()
++    expect(payload.extra).toBeUndefined()
++    wrapper.unmount()
++  })
++
+   it('sets expiry presets from now instead of extending the saved expiry', async () => {
+diff --git a/frontend/src/components/admin/account/AccountActionMenu.vue b/frontend/src/components/admin/account/AccountActionMenu.vue
+index 0523dcad028b48910d8fbdcbef328cd129cd5fc5..bf10bc5e919944e18b0019629d0bf7d7ae962c38 100644
+--- a/frontend/src/components/admin/account/AccountActionMenu.vue
++++ b/frontend/src/components/admin/account/AccountActionMenu.vue
+@@ -109,3 +109,3 @@ const canDuplicate = computed(() => {
+   if (!props.account || props.account.parent_account_id != null) return false
+-  return ['apikey', 'upstream', 'bedrock', 'service_account'].includes(props.account.type)
++  return ['apikey', 'codex-api', 'upstream', 'bedrock', 'service_account'].includes(props.account.type)
+ })
+diff --git a/frontend/src/components/admin/account/AccountTableFilters.vue b/frontend/src/components/admin/account/AccountTableFilters.vue
+index 9e48be822b2ca1e2f7ebd51e924b07109c6cc949..4c1e22ad00b76ba573ade69598314e96877d8b09 100644
+--- a/frontend/src/components/admin/account/AccountTableFilters.vue
++++ b/frontend/src/components/admin/account/AccountTableFilters.vue
+@@ -29,3 +29,3 @@ const updateGroup = (value: string | number | boolean | null) => { emit('update:
+ const pOpts = computed(() => [{ value: '', label: t('admin.accounts.allPlatforms') }, ...CONCRETE_PLATFORM_OPTIONS])
+-const tOpts = computed(() => [{ value: '', label: t('admin.accounts.allTypes') }, { value: 'oauth', label: t('admin.accounts.oauthType') }, { value: 'setup-token', label: t('admin.accounts.setupToken') }, { value: 'apikey', label: t('admin.accounts.apiKey') }, { value: 'bedrock', label: 'AWS Bedrock' }])
++const tOpts = computed(() => [{ value: '', label: t('admin.accounts.allTypes') }, { value: 'oauth', label: t('admin.accounts.oauthType') }, { value: 'setup-token', label: t('admin.accounts.setupToken') }, { value: 'apikey', label: t('admin.accounts.apiKey') }, { value: 'codex-api', label: 'Codex API' }, { value: 'bedrock', label: 'AWS Bedrock' }])
+ const sOpts = computed(() => [{ value: '', label: t('admin.accounts.allStatus') }, { value: 'active', label: t('admin.accounts.status.active') }, { value: 'inactive', label: t('admin.accounts.status.inactive') }, { value: 'error', label: t('admin.accounts.status.error') }, { value: 'rate_limited', label: t('admin.accounts.status.rateLimited') }, { value: 'temp_unschedulable', label: t('admin.accounts.status.tempUnschedulable') }, { value: 'unschedulable', label: t('admin.accounts.status.unschedulable') }])
+diff --git a/frontend/src/components/admin/account/AccountTestModal.vue b/frontend/src/components/admin/account/AccountTestModal.vue
+index 766686e3de4e91f7d8e497c808af12a2f1dfd1eb..4379a8cb033091a738591220e9975f3feb891269 100644
+--- a/frontend/src/components/admin/account/AccountTestModal.vue
++++ b/frontend/src/components/admin/account/AccountTestModal.vue
+@@ -72,2 +72,9 @@
+ 
++      <div v-if="modelLoadFailed && account?.type === 'codex-api'" role="alert" class="flex items-center gap-2 text-sm text-red-600">
++        {{ t('admin.accounts.syncUpstreamModelsFailed') }}
++        <button type="button" class="btn btn-secondary" :disabled="loadingModels" @click="loadAvailableModels">
++          <Icon name="refresh" size="sm" />{{ t('common.refresh') }}
++        </button>
++      </div>
++
+       <div v-if="isOpenAIAccount" class="space-y-1.5">
+@@ -407,2 +414,3 @@ const errorMessage = ref('')
+ const availableModels = ref<ClaudeModel[]>([])
++const modelLoadFailed = ref(false)
+ const selectedModelId = ref('')
+@@ -765,2 +773,3 @@ const loadAvailableModels = async () => {
+ 
++  modelLoadFailed.value = false
+   loadingModels.value = true
+@@ -774,3 +783,3 @@ const loadAvailableModels = async () => {
+     if (availableModels.value.length > 0) {
+-      if (props.account.platform === 'gemini') {
++      if (props.account.platform === 'gemini' || props.account.type === 'codex-api') {
+         selectedModelId.value = availableModels.value[0].id
+@@ -784,2 +793,3 @@ const loadAvailableModels = async () => {
+     console.error('Failed to load available models:', error)
++    modelLoadFailed.value = true
+     // Fallback to empty list
+diff --git a/frontend/src/components/admin/account/__tests__/AccountTestModal.spec.ts b/frontend/src/components/admin/account/__tests__/AccountTestModal.spec.ts
+index 4ea4b51d8c37d865662d1c294a29f3d1b837cbb5..880695541bc31a970b01ea1dcacbe75852c1b2d4 100644
+--- a/frontend/src/components/admin/account/__tests__/AccountTestModal.spec.ts
++++ b/frontend/src/components/admin/account/__tests__/AccountTestModal.spec.ts
+@@ -121,2 +121,36 @@ describe('AccountTestModal', () => {
+ 
++  it('uses the Codex API catalog without applying a local preferred model', async () => {
++    const model = `upstream-${Date.now()}`
++    getAvailableModels.mockResolvedValue([
++      { id: model, display_name: model },
++      { id: 'sonnet-custom', display_name: 'Other upstream model' }
++    ])
++    const wrapper = mountModal({ id: 71, platform: 'openai', type: 'codex-api', name: 'Gateway' })
++    await wrapper.setProps({ show: true })
++    await flushPromises()
++    await wrapper.findAll('button').find(button => button.text().includes('admin.accounts.startTest'))!.trigger('click')
++    await flushPromises()
++    const request = vi.mocked(global.fetch).mock.calls[0][1]
++    expect(JSON.parse(String(request?.body)).model_id).toBe(model)
++    wrapper.unmount()
++  })
++
++  it('does not start a Codex API test when its upstream catalog fails', async () => {
++    getAvailableModels.mockRejectedValue(new Error('upstream unavailable'))
++    vi.spyOn(console, 'error').mockImplementation(() => {})
++    const wrapper = mountModal({ id: 71, platform: 'openai', type: 'codex-api', name: 'Gateway' })
++    await wrapper.setProps({ show: true })
++    await flushPromises()
++    const button = wrapper.findAll('button').find(button => button.text().includes('admin.accounts.startTest'))!
++    expect(button.attributes('disabled')).toBeDefined()
++    expect(global.fetch).not.toHaveBeenCalled()
++    expect(wrapper.get('[role="alert"]').text()).toContain('admin.accounts.syncUpstreamModelsFailed')
++    getAvailableModels.mockResolvedValue([{ id: 'upstream-recovered', display_name: 'Recovered model' }])
++    await wrapper.get('[role="alert"] button').trigger('click')
++    await flushPromises()
++    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
++    expect(button.attributes('disabled')).toBeUndefined()
++    wrapper.unmount()
++  })
++
+   it('gemini 图片模型测试会携带提示词并渲染图片预览', async () => {
+diff --git a/frontend/src/components/common/PlatformTypeBadge.vue b/frontend/src/components/common/PlatformTypeBadge.vue
+index fc295f693a908617f698b2cd67f6ccefc7db5373..ee69986bc28bd35067374c6b7486b50bfed1abfa 100644
+--- a/frontend/src/components/common/PlatformTypeBadge.vue
++++ b/frontend/src/components/common/PlatformTypeBadge.vue
+@@ -107,2 +107,4 @@ const typeLabel = computed(() => {
+       return 'Key'
++    case 'codex-api':
++      return 'Codex API'
+     case 'bedrock':
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 80cef707bd9113a59988db00183ad067aae4a7c8..34129be3ee4598dbbf8f4ec95d264ba6135b6226 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -921,3 +921,3 @@ export interface UpdateGroupRequest {
+ export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go'
+-export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
++export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'codex-api' | 'upstream' | 'bedrock' | 'service_account'
+ export type OAuthAddMethod = 'oauth' | 'setup-token'

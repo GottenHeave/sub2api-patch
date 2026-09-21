@@ -17,6 +17,7 @@ and deleted lines. Paths are relative to upstream, with backend paths under
 more than one row. This table is maintained manually, not enforced by CI.
 Rows 5, 6, and 12-16 were updated on 2026-09-19.
 Rows 9 and 15 were refreshed on 2026-09-21.
+Row 17 was added on 2026-09-21.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -36,6 +37,7 @@ Rows 9 and 15 were refreshed on 2026-09-21.
 | 14: Email-scoped sessions | Derive Compact and Claude session identities from account email and workspace instead of local rows | Shared email helper, Compact probe, Claude rewrite/synthesis, and tests | 10 | +345 / -56 |
 | 15: Heartbeat test timing | Use virtual time to exercise idle SSE comments without wall-clock scheduling assumptions | `service/gemini_sse_comment_compat_test.go` only | 1 | +17 / -12 |
 | 16: Behavior-focused tests | Remove incidental request ordering, internal encoding and wording constraints while retaining routing, isolation and data-preservation checks | Eight audio, realtime and identity test files only | 8 | +67 / -42 |
+| 17: Dedicated Codex API accounts | Forward native/public Responses and model catalogs without local protocol transforms; enforce dedicated groups and credential validity | New handler/service/repository helpers and tests, guarded account/group/transport/routes/billing changes, account UI | 54 | +2433 / -56 |
 
 ## Behavior boundaries
 
@@ -62,10 +64,21 @@ Rows 9 and 15 were refreshed on 2026-09-21.
   domain case and outer whitespace. Missing/invalid email stops Compact before
   forwarding; Claude preserves caller metadata and skips optional synthesis.
   Credit-redemption IDs and internal row-owned keys are unchanged.
+- Codex API accounts use the OpenAI-only string type `codex-api` and dedicated
+  groups. Configure the gateway deployment URL and gateway key, then bind the
+  user's API key to that group. Native Responses and model requests use the
+  native gateway endpoints; public requests use its public adapters. Compact
+  uses its JSON facade. Model catalogs, request bodies and upstream errors are
+  not locally mapped, repaired or synthesized. Other endpoints, including WS,
+  are not supported for this type; existing account paths remain unchanged.
+- Dedicated forwarding retains local access, security, concurrency and billing
+  controls. Usage observation never changes forwarded bytes. Missing usage is
+  not fabricated; models without configured local prices retain the existing
+  warning and zero-cost token-log behavior. Configure prices for monetary billing.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 16 patches.
+Apply patches in numerical order. The complete series contains all 17 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
@@ -75,6 +88,9 @@ For separate capabilities:
 - Integrated Realtime: 4, 7, 8, 9, 10.
 - Docker publication, pnpm cache, cached-token parsing and caller-prompt
   preservation can be selected independently as patches 1, 2, 3 and 11.
+- Patch 17 is authored after the full series and touches shared scheduler/routes
+  context; apply it after patches 1-16. Its implementation is isolated from
+  ordinary account request transformations.
 
 Runtime verification and replay against the automatically selected upstream
 run in CI. Patch sizes and the manual review version are documentation only.
