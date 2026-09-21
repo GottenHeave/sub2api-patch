@@ -11,7 +11,6 @@ import (
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -19,6 +18,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// The caller's path selects the gateway contract, regardless of client identity.
 func codexAPITarget(r *http.Request) string {
 	path := r.URL.Path
 	if r.Method == http.MethodGet {
@@ -26,9 +26,6 @@ func codexAPITarget(r *http.Request) string {
 		case "/backend-api/codex/models":
 			return path
 		case "/models", "/v1/models":
-			if r.URL.Query().Get("client_version") != "" {
-				return "/backend-api/codex/models"
-			}
 			return "/v1/models"
 		}
 	}
@@ -39,9 +36,6 @@ func codexAPITarget(r *http.Request) string {
 		case "/backend-api/codex/responses":
 			return path
 		case "/responses", "/v1/responses":
-			if openai.IsCodexOfficialClientByHeaders(r.Header.Get("User-Agent"), r.Header.Get("originator")) {
-				return "/backend-api/codex/responses"
-			}
 			return "/v1/responses"
 		}
 	}
