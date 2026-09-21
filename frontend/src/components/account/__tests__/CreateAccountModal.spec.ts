@@ -214,6 +214,43 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it('creates Codex API accounts without local transformation settings or model probes', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'Codex API')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Upstream gateway')
+    await wrapper.get('#codex-api-base-url').setValue('https://gateway.example')
+    await wrapper.get('#codex-api-key').setValue('gateway-test-key')
+    expect(wrapper.findComponent(ModelWhitelistSelectorStub).exists()).toBe(false)
+    expect(wrapper.find('[data-testid="create-openai-passthrough-toggle"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="upstream-billing-auto-probe"]').exists()).toBe(false)
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const payload = createAccountMock.mock.calls[0][0]
+    expect(payload.type).toBe('codex-api')
+    expect(payload.credentials.base_url).toBe('https://gateway.example')
+    expect(payload.credentials.api_key).toBe('gateway-test-key')
+    expect(payload.credentials.model_mapping).toBeUndefined()
+    expect(payload.extra).toBeUndefined()
+    expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
+    expect(syncUpstreamModelsMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('submits OpenAI passthrough from the create toggle', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenAI account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="create-openai-passthrough-toggle"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_passthrough).toBe(true)
+    wrapper.unmount()
+  })
+
   it('sets month and year expiry presets without submitting the account form', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-01-31T12:34:00'))
