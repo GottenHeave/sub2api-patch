@@ -163,6 +163,15 @@ func TestUsageBillingRepositoryApply_RequestFingerprintConflict(t *testing.T) {
 }
 
 func TestUsageBillingRepositoryApply_UpdatesAccountQuota(t *testing.T) {
+	testUsageBillingRepositoryAccountQuota(t, service.AccountTypeAPIKey)
+}
+
+func TestUsageBillingRepositoryApply_UpdatesCodexAPIAccountQuota(t *testing.T) {
+	testUsageBillingRepositoryAccountQuota(t, service.AccountTypeCodexAPI)
+}
+
+func testUsageBillingRepositoryAccountQuota(t *testing.T, accountType string) {
+	t.Helper()
 	ctx := context.Background()
 	client := testEntClient(t)
 	repo := NewUsageBillingRepository(client, integrationDB)
@@ -178,7 +187,7 @@ func TestUsageBillingRepositoryApply_UpdatesAccountQuota(t *testing.T) {
 	})
 	account := mustCreateAccount(t, client, &service.Account{
 		Name: "usage-billing-account-quota-" + uuid.NewString(),
-		Type: service.AccountTypeAPIKey,
+		Type: accountType,
 		Extra: map[string]any{
 			"quota_limit": 100.0,
 		},
@@ -189,7 +198,7 @@ func TestUsageBillingRepositoryApply_UpdatesAccountQuota(t *testing.T) {
 		APIKeyID:         apiKey.ID,
 		UserID:           user.ID,
 		AccountID:        account.ID,
-		AccountType:      service.AccountTypeAPIKey,
+		AccountType:      accountType,
 		AccountQuotaCost: 3.5,
 	})
 	require.NoError(t, err)
