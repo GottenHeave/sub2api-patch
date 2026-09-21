@@ -402,6 +402,9 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 			return "account_model_not_owned"
 		}
 	}
+	if account.IsCodexAPI() {
+		return "dedicated_codex_api_account"
+	}
 	if account.Platform != platform || !account.IsOpenAICompatible() {
 		return "platform_mismatch"
 	}
