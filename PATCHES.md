@@ -18,6 +18,7 @@ more than one row. This table is maintained manually, not enforced by CI.
 Rows 5, 6, and 12-16 were updated on 2026-09-19.
 Rows 9 and 15 were refreshed on 2026-09-21.
 Row 17 was added on 2026-09-21.
+Row 18 was added on 2026-09-21.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -38,6 +39,7 @@ Row 17 was added on 2026-09-21.
 | 15: Heartbeat test timing | Use virtual time to exercise idle SSE comments without wall-clock scheduling assumptions | `service/gemini_sse_comment_compat_test.go` only | 1 | +17 / -12 |
 | 16: Behavior-focused tests | Remove incidental request ordering, internal encoding and wording constraints while retaining routing, isolation and data-preservation checks | Eight audio, realtime and identity test files only | 8 | +67 / -42 |
 | 17: Dedicated Codex API accounts | Forward native/public Responses and model catalogs without local protocol transforms; enforce dedicated groups and credential validity | New handler/service/repository helpers and tests, guarded account/group/transport/routes/billing changes, account UI | 54 | +2433 / -56 |
+| 18: Codex API OAuth billing | Use the OAuth service-tier contract for Codex API, retaining requested priority when its upstream reports default | `service/service_tier_billing.go` and billing parity test | 2 | +75 / -4 |
 
 ## Behavior boundaries
 
@@ -72,13 +74,15 @@ Row 17 was added on 2026-09-21.
   not locally mapped, repaired or synthesized. Other endpoints, including WS,
   are not supported for this type; existing account paths remain unchanged.
 - Dedicated forwarding retains local access, security, concurrency and billing
-  controls. Usage observation never changes forwarded bytes. Missing usage is
-  not fabricated; models without configured local prices retain the existing
-  warning and zero-cost token-log behavior. Configure prices for monetary billing.
+  controls. Codex API uses the same model/token/cache pricing and multipliers as
+  normal OpenAI OAuth, including the service-tier response contract. No separate
+  Codex API price configuration is required. Usage observation never changes
+  forwarded bytes. Missing usage is not fabricated; unknown prices retain the
+  same warning and zero-cost token-log behavior as other OpenAI accounts.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 17 patches.
+Apply patches in numerical order. The complete series contains all 18 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
@@ -91,6 +95,7 @@ For separate capabilities:
 - Patch 17 is authored after the full series and touches shared scheduler/routes
   context; apply it after patches 1-16. Its implementation is isolated from
   ordinary account request transformations.
+- Patch 18 follows patch 17 and only aligns its billing contract with OAuth.
 
 Runtime verification and replay against the automatically selected upstream
 run in CI. Patch sizes and the manual review version are documentation only.

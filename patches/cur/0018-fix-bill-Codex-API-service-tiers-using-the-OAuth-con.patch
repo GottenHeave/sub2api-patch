@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 19:43:49 +0000
+Subject: [PATCH 18/18] fix: bill Codex API service tiers using the OAuth
+ contract
+
+---
+ .../service/codex_api_billing_test.go         | 70 +++++++++++++++++++
+ .../internal/service/service_tier_billing.go  |  9 +--
+ 2 files changed, 75 insertions(+), 4 deletions(-)
+
+diff --git a/backend/internal/service/codex_api_billing_test.go b/backend/internal/service/codex_api_billing_test.go
+index 8702119f88a31e31a8bfdfb62a04d519032e67ff..a5bb5199d9cfd2d777f53ab35089cff105c74980 100644
+--- a/backend/internal/service/codex_api_billing_test.go
++++ b/backend/internal/service/codex_api_billing_test.go
+@@ -28 +28,71 @@ func TestCodexAPIObservedUsageChargesConfiguredAccountQuota(t *testing.T) {
+ }
++
++func TestCodexAPIBillingMatchesOAuthServiceTierContract(t *testing.T) {
++	tests := []struct {
++		name      string
++		requested string
++		observed  string
++	}{
++		{name: "default response for default request", requested: "default", observed: "default"},
++		{name: "default response for priority request", requested: "priority", observed: "default"},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			oauthLog, oauthBilling := recordCodexTierUsage(t, AccountTypeOAuth, tt.requested, tt.observed)
++			codexLog, codexBilling := recordCodexTierUsage(t, AccountTypeCodexAPI, tt.requested, tt.observed)
++
++			require.Equal(t, *oauthLog.ServiceTier, *codexLog.ServiceTier)
++			require.Equal(t, 2000, oauthLog.CacheReadTokens)
++			require.Equal(t, 1.5, oauthLog.RateMultiplier)
++			require.InDelta(t, oauthLog.TotalCost, codexLog.TotalCost, 1e-12)
++			require.InDelta(t, oauthLog.ActualCost, codexLog.ActualCost, 1e-12)
++			require.InDelta(t, codexLog.TotalCost, codexBilling.AccountQuotaCost, 1e-12)
++			require.Equal(t, *oauthLog.ServiceTier, oauthBilling.ServiceTier)
++			require.Equal(t, *codexLog.ServiceTier, codexBilling.ServiceTier)
++		})
++	}
++
++	apiKeyLog, _ := recordCodexTierUsage(t, AccountTypeAPIKey, "priority", "default")
++	require.Equal(t, "default", *apiKeyLog.ServiceTier)
++	priorityOAuthLog, _ := recordCodexTierUsage(t, AccountTypeOAuth, "priority", "default")
++	require.Less(t, apiKeyLog.TotalCost, priorityOAuthLog.TotalCost)
++}
++
++func recordCodexTierUsage(t *testing.T, accountType, requested, observed string) (*UsageLog, *UsageBillingCommand) {
++	t.Helper()
++	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
++	billingRepo := &openAIRecordUsageBillingRepoStub{}
++	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo,
++		&openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
++	groupID := int64(1)
++	requestedTier := requested
++	account := &Account{Platform: PlatformOpenAI, Type: accountType}
++	if accountType == AccountTypeCodexAPI {
++		account.Extra = map[string]any{"quota_limit": 100.0}
++	}
++
++	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
++		Result: &OpenAIForwardResult{
++			Model:                       "gpt-5.1",
++			ServiceTier:                 &requestedTier,
++			UpstreamResponseServiceTier: observed,
++			Usage: OpenAIUsage{
++				InputTokens:          5000,
++				OutputTokens:         1000,
++				CacheReadInputTokens: 2000,
++			},
++		},
++		APIKey: &APIKey{
++			GroupID: &groupID,
++			Group:   &Group{ID: groupID, RateMultiplier: 1.5},
++		},
++		User:    &User{},
++		Account: account,
++	})
++	require.NoError(t, err)
++	require.NotNil(t, usageRepo.lastLog)
++	require.NotNil(t, billingRepo.lastCmd)
++	require.NotNil(t, usageRepo.lastLog.ServiceTier)
++	return usageRepo.lastLog, billingRepo.lastCmd
++}
+diff --git a/backend/internal/service/service_tier_billing.go b/backend/internal/service/service_tier_billing.go
+index 6bf74ea01e9b21b9a69cec4c89f8629e9d6faf98..ee2634820cc55bc21af0505ba94bb457e1723d4d 100644
+--- a/backend/internal/service/service_tier_billing.go
++++ b/backend/internal/service/service_tier_billing.go
+@@ -62,7 +62,8 @@ func serviceTierCostRank(tier string) (rank int, known bool) {
+ // selected credential. Public OpenAI API responses declare the actual tier and
+-// may lower billing. The private ChatGPT Codex endpoint does not: it commonly
+-// reports default for effective Fast turns, so OAuth-like credentials retain
+-// the final outbound tier while still exposing the observed value.
++// may lower billing. The ChatGPT/Codex Responses contract does not: it commonly
++// reports default for effective Fast turns, so OAuth-like and dedicated Codex
++// API credentials retain the final outbound tier while still exposing the
++// observed value.
+ func ResolveOpenAIServiceTierBilling(account *Account, requested, observed string) ServiceTierBillingResolution {
+-	if account != nil && account.IsOpenAIOAuthLike() && codexOAuthResponseTierIsNonAuthoritative(observed) {
++	if account != nil && (account.IsOpenAIOAuthLike() || account.IsCodexAPI()) && codexOAuthResponseTierIsNonAuthoritative(observed) {
+ 		return ServiceTierBillingResolution{
