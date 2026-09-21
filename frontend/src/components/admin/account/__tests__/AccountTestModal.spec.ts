@@ -119,6 +119,40 @@ describe('AccountTestModal', () => {
     vi.restoreAllMocks()
   })
 
+  it('uses the Codex API catalog without applying a local preferred model', async () => {
+    const model = `upstream-${Date.now()}`
+    getAvailableModels.mockResolvedValue([
+      { id: model, display_name: model },
+      { id: 'sonnet-custom', display_name: 'Other upstream model' }
+    ])
+    const wrapper = mountModal({ id: 71, platform: 'openai', type: 'codex-api', name: 'Gateway' })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text().includes('admin.accounts.startTest'))!.trigger('click')
+    await flushPromises()
+    const request = vi.mocked(global.fetch).mock.calls[0][1]
+    expect(JSON.parse(String(request?.body)).model_id).toBe(model)
+    wrapper.unmount()
+  })
+
+  it('does not start a Codex API test when its upstream catalog fails', async () => {
+    getAvailableModels.mockRejectedValue(new Error('upstream unavailable'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const wrapper = mountModal({ id: 71, platform: 'openai', type: 'codex-api', name: 'Gateway' })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    const button = wrapper.findAll('button').find(button => button.text().includes('admin.accounts.startTest'))!
+    expect(button.attributes('disabled')).toBeDefined()
+    expect(global.fetch).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toContain('admin.accounts.syncUpstreamModelsFailed')
+    getAvailableModels.mockResolvedValue([{ id: 'upstream-recovered', display_name: 'Recovered model' }])
+    await wrapper.get('[role="alert"] button').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(button.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('gemini 图片模型测试会携带提示词并渲染图片预览', async () => {
     const wrapper = mountModal()
     await wrapper.setProps({ show: true })

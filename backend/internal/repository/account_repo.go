@@ -138,6 +138,9 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 	if account == nil {
 		return service.ErrAccountNilInput
 	}
+	if err := service.ValidateCodexAPIAccount(account.Platform, account.Type, account.Credentials); err != nil {
+		return err
+	}
 
 	builder := client.Account.Create().
 		SetName(account.Name).
@@ -233,6 +236,11 @@ func (r *accountRepository) CreateWithAccountGroups(ctx context.Context, account
 
 	if err := createAccountRecord(ctx, txClient, account); err != nil {
 		return err
+	}
+	for _, groupID := range groupIDs {
+		if err := validateCodexAPIGroup(ctx, txClient, groupID, nil, []int64{account.ID}, nil); err != nil {
+			return err
+		}
 	}
 	if len(groups) > 0 {
 		builders := make([]*dbent.AccountGroupCreate, 0, len(groups))
@@ -527,6 +535,9 @@ func (r *accountRepository) updateLockedAccount(
 		return nil, err
 	}
 	account.Extra = extra
+	if err := validateCodexAPIAccountUpdate(ctx, client, account); err != nil {
+		return nil, err
+	}
 
 	schedulable := account.Schedulable
 	if account.Status == service.StatusError {
@@ -862,6 +873,9 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 			ctx = dbent.NewTxContext(ctx, tx)
 			client = tx.Client()
 		}
+	}
+	if err := validateCodexAPICredentialWrite(ctx, client, []int64{id}, credentials, false); err != nil {
+		return err
 	}
 	result, err := client.ExecContext(ctx, `
 		UPDATE accounts
@@ -1871,7 +1885,13 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
 		defer func() { _ = tx.Rollback() }()
 		client = tx.Client()
 	}
+	if err := lockCodexAPIAccounts(ctx, client, []int64{accountID}); err != nil {
+		return err
+	}
 	if err := lockLiveGroups(ctx, client, []int64{groupID}); err != nil {
+		return err
+	}
+	if err := validateCodexAPIGroup(ctx, client, groupID, nil, []int64{accountID}, nil); err != nil {
 		return err
 	}
 	_, err = client.AccountGroup.Create().
@@ -1947,8 +1967,16 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 		// 已处于外部事务中（ErrTxStarted），复用当前 client
 		txClient = r.client
 	}
+	if err := lockCodexAPIAccounts(ctx, txClient, []int64{accountID}); err != nil {
+		return err
+	}
 	if err := lockLiveGroups(ctx, txClient, groupIDs); err != nil {
 		return err
+	}
+	for _, groupID := range groupIDs {
+		if err := validateCodexAPIGroup(ctx, txClient, groupID, nil, []int64{accountID}, nil); err != nil {
+			return err
+		}
 	}
 
 	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(accountID)).Exec(ctx); err != nil {
@@ -3248,6 +3276,11 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		}
 	}
 
+	if len(updates.Credentials) > 0 && updates.ProbeEnabled == nil {
+		if err := validateCodexAPICredentialWrite(ctx, exec, ids, updates.Credentials, true); err != nil {
+			return 0, err
+		}
+	}
 	result, err := exec.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
