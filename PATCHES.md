@@ -19,6 +19,7 @@ Rows 5, 6, and 12-16 were updated on 2026-09-19.
 Rows 9 and 15 were refreshed on 2026-09-21.
 Row 17 was added on 2026-09-21.
 Row 18 was added on 2026-09-21.
+Row 19 was added on 2026-09-21.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -40,6 +41,7 @@ Row 18 was added on 2026-09-21.
 | 16: Behavior-focused tests | Remove incidental request ordering, internal encoding and wording constraints while retaining routing, isolation and data-preservation checks | Eight audio, realtime and identity test files only | 8 | +67 / -42 |
 | 17: Dedicated Codex API accounts | Forward native/public Responses and model catalogs without local protocol transforms; enforce dedicated groups and credential validity | New handler/service/repository helpers and tests, guarded account/group/transport/routes/billing changes, account UI | 54 | +2433 / -56 |
 | 18: Codex API OAuth billing | Use the OAuth service-tier contract for Codex API, retaining requested priority when its upstream reports default | `service/service_tier_billing.go` and billing parity test | 2 | +75 / -4 |
+| 19: Explicit Codex API entrypoints | Select public/native Responses and model catalogs by request path, never client metadata | Dedicated handler and handler/route tests | 3 | +11 / -11 |
 
 ## Behavior boundaries
 
@@ -69,7 +71,9 @@ Row 18 was added on 2026-09-21.
 - Codex API accounts use the OpenAI-only string type `codex-api` and dedicated
   groups. Configure the gateway deployment URL and gateway key, then bind the
   user's API key to that group. Native Responses and model requests use the
-  native gateway endpoints; public requests use its public adapters. Compact
+  native gateway endpoints; `/v1` requests use Codex API's public adapters.
+  Request paths select these contracts; client headers and `client_version`
+  do not switch them. Sub2API performs no protocol preprocessing on either. Compact
   uses its JSON facade. Model catalogs, request bodies and upstream errors are
   not locally mapped, repaired or synthesized. Other endpoints, including WS,
   are not supported for this type; existing account paths remain unchanged.
@@ -82,7 +86,7 @@ Row 18 was added on 2026-09-21.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 18 patches.
+Apply patches in numerical order. The complete series contains all 19 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
@@ -96,6 +100,7 @@ For separate capabilities:
   context; apply it after patches 1-16. Its implementation is isolated from
   ordinary account request transformations.
 - Patch 18 follows patch 17 and only aligns its billing contract with OAuth.
+- Patch 19 depends on patch 17; apply it in series order to separate public and native paths.
 
 Runtime verification and replay against the automatically selected upstream
 run in CI. Patch sizes and the manual review version are documentation only.
