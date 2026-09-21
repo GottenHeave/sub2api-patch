@@ -36,7 +36,7 @@ func newGatewayRoutesTestRouterWithConfig(cfg *config.Config, platform ...string
 		router,
 		&handler.Handlers{
 			Gateway:       &handler.GatewayHandler{},
-			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+			OpenAIGateway: newOrdinaryRoutesOpenAIHandler(cfg),
 			AsyncImage:    handler.NewAsyncImageHandler(nil, nil),
 		},
 		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
