@@ -15,6 +15,7 @@ func TestAccountSupportsAccountQuota(t *testing.T) {
 		{AccountTypeAPIKey, true},
 		{AccountTypeBedrock, true},
 		{AccountTypeServiceAccount, true},
+		{AccountTypeCodexAPI, true},
 		{AccountTypeOAuth, false},
 		{AccountTypeSetupToken, false},
 		{AccountTypeUpstream, false},
