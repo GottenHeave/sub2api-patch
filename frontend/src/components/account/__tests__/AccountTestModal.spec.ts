@@ -118,6 +118,74 @@ describe('AccountTestModal', () => {
     localStorage.clear()
   })
 
+  it('uses the Codex API catalog in returned order without a local model fallback', async () => {
+    const model = `upstream-${Date.now()}`
+    getAvailableModelsMock.mockResolvedValue([
+      { id: model, display_name: model },
+      { id: 'sonnet-local', display_name: 'Local preferred model' }
+    ])
+    const wrapper = mount(AccountTestModal, {
+      props: {
+        show: false,
+        account: { ...buildAccount(), type: 'codex-api', name: 'Gateway' }
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Select: SelectStub,
+          TextArea: TextAreaStub,
+          Icon: true
+        }
+      }
+    })
+
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    const startButton = wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))
+    expect(startButton).toBeTruthy()
+    await startButton!.trigger('click')
+    await flushPromises()
+
+    const [, options] = (global.fetch as any).mock.calls[0]
+    expect(JSON.parse(options.body).model_id).toBe(model)
+    wrapper.unmount()
+  })
+
+  it('keeps Codex API tests disabled after catalog failure until refresh succeeds', async () => {
+    getAvailableModelsMock.mockRejectedValueOnce(new Error('upstream unavailable'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const wrapper = mount(AccountTestModal, {
+      props: {
+        show: false,
+        account: { ...buildAccount(), type: 'codex-api', name: 'Gateway' }
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Select: SelectStub,
+          TextArea: TextAreaStub,
+          Icon: true
+        }
+      }
+    })
+
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    const startButton = wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))
+    expect(startButton?.attributes('disabled')).toBeDefined()
+    expect(global.fetch).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toContain('admin.accounts.syncUpstreamModelsFailed')
+
+    getAvailableModelsMock.mockResolvedValueOnce([{ id: 'upstream-recovered', display_name: 'Recovered model' }])
+    await wrapper.get('[role="alert"] button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(startButton?.attributes('disabled')).toBeUndefined()
+    consoleError.mockRestore()
+    wrapper.unmount()
+  })
+
   it('posts compact mode for OpenAI compact probe', async () => {
     const wrapper = mount(AccountTestModal, {
       props: {
