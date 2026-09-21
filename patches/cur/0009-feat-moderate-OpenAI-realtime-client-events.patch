@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From b6a43d31c54084951971f109cbc6f975d9ef46b9 Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Wed, 2 Sep 2026 14:02:58 +0000
-Subject: [PATCH 09/11] feat: moderate OpenAI realtime client events
+Subject: [PATCH] feat: moderate OpenAI realtime client events
 
 ---
  backend/internal/handler/openai_live.go       |  2 +-
@@ -10,8 +10,8 @@ Subject: [PATCH 09/11] feat: moderate OpenAI realtime client events
  .../internal/securityaudit/prompt_snapshot.go | 26 ++++++++
  .../internal/service/content_moderation.go    |  9 +++
  .../service/content_moderation_input.go       | 64 ++++++++++++++++++
- .../service/content_moderation_test.go        | 51 +++++++++++++++
- 7 files changed, 243 insertions(+), 1 deletion(-)
+ .../service/content_moderation_test.go        | 62 ++++++++++++++++++
+ 7 files changed, 254 insertions(+), 1 deletion(-)
 
 diff --git a/backend/internal/handler/openai_live.go b/backend/internal/handler/openai_live.go
 index 1f6b6c49a5b010de62c75902bd3b514952ccd5d5..9c21c31e19fa241bafcb86732a2bd7650fd031ef 100644
@@ -171,18 +171,18 @@ index b47e8467417e79e92fbe21eea5ab651e77aba4e2..2f77d4c3a927b90926505b14af88ea29
 +
  // clientInstructionRoles are roles a client may freely populate. Attackers can
 diff --git a/backend/internal/service/content_moderation.go b/backend/internal/service/content_moderation.go
-index b25f5ec4dc83ab29b82b6e9657c9a73ad6894cae..e8015ba40c0c7c5d4991bc9777ddd02a8022f58c 100644
+index cb000e2a0a2584cf4924b174941753603b7ba7a1..3d865c549fafa57cfc7c93dd731bd2819161a921 100644
 --- a/backend/internal/service/content_moderation.go
 +++ b/backend/internal/service/content_moderation.go
 @@ -55,2 +55,3 @@ const (
  	ContentModerationProtocolOpenAIResponses   = "openai_responses"
 +	ContentModerationProtocolOpenAIRealtime    = "openai_realtime"
  	ContentModerationProtocolOpenAIChat        = "openai_chat_completions"
-@@ -815,2 +816,3 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
+@@ -811,2 +812,3 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
  	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
 +	input.Protocol = normalizeContentModerationProtocol(input.Protocol, input.Endpoint)
  	if s == nil || s.settingRepo == nil || s.repo == nil {
-@@ -1046,2 +1048,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
+@@ -1043,2 +1045,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
  
 +func normalizeContentModerationProtocol(protocol string, endpoint string) string {
 +	if protocol == ContentModerationProtocolOpenAIResponses && strings.EqualFold(strings.TrimSpace(endpoint), "/v1/realtime") {
@@ -193,42 +193,42 @@ index b25f5ec4dc83ab29b82b6e9657c9a73ad6894cae..e8015ba40c0c7c5d4991bc9777ddd02a
 +
  func (s *ContentModerationService) checkSync(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) *ContentModerationDecision {
 diff --git a/backend/internal/service/content_moderation_input.go b/backend/internal/service/content_moderation_input.go
-index 73d5b6973a2df79ae0b25d735d5d39340f04a518..1e9dff174d40bb9de7185ae3946e8dba366643d6 100644
+index 013c10c13de28173405bcd2753e77cf403f83de2..f87238aa371abe918bb3e161ede37a0f211b990b 100644
 --- a/backend/internal/service/content_moderation_input.go
 +++ b/backend/internal/service/content_moderation_input.go
-@@ -28,2 +28,4 @@ func ExtractContentModerationInput(protocol string, body []byte) ContentModerati
- 		collectLastResponsesInput(gjson.GetBytes(body, "input"), &parts, &images)
+@@ -43,2 +43,4 @@ func extractContentModerationInput(protocol string, body []byte, filterReminders
+ 		collector.collectLastResponsesInput(gjson.GetBytes(body, "input"), &parts, &images)
 +	case ContentModerationProtocolOpenAIRealtime:
-+		collectRealtimeEventInput(gjson.ParseBytes(body), &parts, &images)
++		collector.collectRealtimeEventInput(gjson.ParseBytes(body), &parts, &images)
  	case ContentModerationProtocolGemini:
-@@ -173,2 +175,64 @@ func responseItemHasModerationText(item gjson.Result) bool {
+@@ -190,2 +192,64 @@ func (collector moderationTextCollector) responseItemHasModerationText(item gjso
  
-+func collectRealtimeEventInput(event gjson.Result, parts *[]string, images *[]string) {
++func (collector moderationTextCollector) collectRealtimeEventInput(event gjson.Result, parts *[]string, images *[]string) {
 +	eventType := strings.ToLower(strings.TrimSpace(event.Get("type").String()))
 +	switch eventType {
 +	case "session.update":
-+		collectRealtimeSessionInput(event.Get("session"), parts, images)
++		collector.collectRealtimeSessionInput(event.Get("session"), parts, images)
 +	case "conversation.item.create":
-+		collectRealtimeConversationItemInput(event.Get("item"), parts, images)
++		collector.collectRealtimeConversationItemInput(event.Get("item"), parts, images)
 +	case "response.create":
-+		collectLastResponsesInput(event.Get("response.input"), parts, images)
++		collector.collectLastResponsesInput(event.Get("response.input"), parts, images)
 +		if normalizeContentModerationText(strings.Join(*parts, "\n")) == "" && len(*images) == 0 {
-+			collectLastResponsesInput(event.Get("input"), parts, images)
++			collector.collectLastResponsesInput(event.Get("input"), parts, images)
 +		}
 +	default:
-+		collectRealtimeSessionInput(event.Get("session"), parts, images)
-+		collectRealtimeConversationItemInput(event.Get("item"), parts, images)
++		collector.collectRealtimeSessionInput(event.Get("session"), parts, images)
++		collector.collectRealtimeConversationItemInput(event.Get("item"), parts, images)
 +	}
 +}
 +
-+func collectRealtimeSessionInput(session gjson.Result, parts *[]string, images *[]string) {
++func (collector moderationTextCollector) collectRealtimeSessionInput(session gjson.Result, parts *[]string, images *[]string) {
 +	if !session.IsObject() {
 +		return
 +	}
-+	addModerationText(parts, session.Get("instructions").String())
++	collector.addModerationText(parts, session.Get("instructions").String())
 +}
 +
-+func collectRealtimeConversationItemInput(item gjson.Result, parts *[]string, images *[]string) {
++func (collector moderationTextCollector) collectRealtimeConversationItemInput(item gjson.Result, parts *[]string, images *[]string) {
 +	if !item.IsObject() {
 +		return
 +	}
@@ -236,42 +236,53 @@ index 73d5b6973a2df79ae0b25d735d5d39340f04a518..1e9dff174d40bb9de7185ae3946e8dba
 +	if role != "" && role != "user" {
 +		return
 +	}
-+	collectRealtimeContentValue(item.Get("content"), parts, images)
++	collector.collectRealtimeContentValue(item.Get("content"), parts, images)
 +}
 +
-+func collectRealtimeContentValue(value gjson.Result, parts *[]string, images *[]string) {
++func (collector moderationTextCollector) collectRealtimeContentValue(value gjson.Result, parts *[]string, images *[]string) {
 +	switch {
 +	case !value.Exists():
 +		return
 +	case value.Type == gjson.String:
-+		addModerationText(parts, value.String())
++		collector.addModerationText(parts, value.String())
 +	case value.IsArray():
 +		value.ForEach(func(_, item gjson.Result) bool {
-+			collectRealtimeContentValue(item, parts, images)
++			collector.collectRealtimeContentValue(item, parts, images)
 +			return true
 +		})
 +	case value.IsObject():
 +		typ := strings.ToLower(strings.TrimSpace(value.Get("type").String()))
 +		switch typ {
 +		case "image_url", "input_image", "image":
-+			collectContentValue(value, parts, images)
++			collector.collectContentValue(value, parts, images)
 +			return
 +		}
-+		addModerationText(parts, value.Get("text").String())
-+		addModerationText(parts, value.Get("transcript").String())
++		collector.addModerationText(parts, value.Get("text").String())
++		collector.addModerationText(parts, value.Get("transcript").String())
 +		if value.Get("content").Exists() {
-+			collectRealtimeContentValue(value.Get("content"), parts, images)
++			collector.collectRealtimeContentValue(value.Get("content"), parts, images)
 +		}
 +	}
 +}
 +
- func collectLastGeminiContent(contents gjson.Result, parts *[]string, images *[]string) {
+ func (collector moderationTextCollector) collectLastGeminiContent(contents gjson.Result, parts *[]string, images *[]string) {
 diff --git a/backend/internal/service/content_moderation_test.go b/backend/internal/service/content_moderation_test.go
-index 1cacc67477aed829f530c5541a0a1e46644a764b..e0ee4340c4a893300149289f97f636f5d8a832a2 100644
+index 1cacc67477aed829f530c5541a0a1e46644a764b..5063e8c0390ce47c5d98b5290cc093f0aef29d42 100644
 --- a/backend/internal/service/content_moderation_test.go
 +++ b/backend/internal/service/content_moderation_test.go
-@@ -1012,2 +1012,53 @@ func TestExtractContentModerationInput_OpenAIResponsesCodexPayloadUsesLastUserMe
+@@ -1012,2 +1012,64 @@ func TestExtractContentModerationInput_OpenAIResponsesCodexPayloadUsesLastUserMe
  
++func TestRealtimeModerationRetainsRemindersForKeywordChecks(t *testing.T) {
++	for _, body := range []string{
++		`{"type":"session.update","session":{"instructions":"<system-reminder>keyword</system-reminder>"}}`,
++		`{"type":"conversation.item.create","item":{"role":"user","content":[{"type":"input_text","text":"<system-reminder>keyword</system-reminder>"}]}}`,
++		`{"type":"response.create","response":{"input":"<system-reminder>keyword</system-reminder>"}}`,
++	} {
++		require.Empty(t, ExtractContentModerationText(ContentModerationProtocolOpenAIRealtime, []byte(body)))
++		require.Contains(t, extractContentModerationKeywordText(ContentModerationProtocolOpenAIRealtime, []byte(body)), "keyword")
++	}
++}
++
 +func TestExtractContentModerationInput_OpenAIRealtimeSessionUpdateExtractsInstructions(t *testing.T) {
 +	body := []byte(`{
 +		"type":"session.update",

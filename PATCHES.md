@@ -16,6 +16,7 @@ and deleted lines. Paths are relative to upstream, with backend paths under
 `backend/internal/`. File counts are per patch, so shared files appear in
 more than one row. This table is maintained manually, not enforced by CI.
 Rows 5, 6, and 12-16 were updated on 2026-09-19.
+Rows 9 and 15 were refreshed on 2026-09-21.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -27,13 +28,13 @@ Rows 5, 6, and 12-16 were updated on 2026-09-19.
 | 6: STT routes | Expose `/v1/audio/transcriptions` and `/transcribe`, with body limits and handler dispatch | `handler/openai_audio_transcriptions*`, `server/routes/gateway.go` and route coverage test | 4 | +1023 / -4 |
 | 7: Realtime WebSocket | Relay sessions and translations, preserve caller model aliases and protocol headers, support OAuth call sideband, retain Grok routing | Gateway handler, routes, scheduler, `service/openai_ws_*`, relay tests | 16 | +923 / -102 |
 | 8: Realtime REST | Forward sessions, client secrets, calls and translations; map models before scheduling, retry/fail over, bind calls to accounts | `handler/endpoint.go`, `handler/openai_realtime_calls*`, `service/openai_realtime_calls*`, routes and tests | 8 | +1742 / -1 |
-| 9: Realtime moderation | Extract Realtime text/images for moderation and security audit, including Live requests | `handler/openai_live*`, `securityaudit/*`, `service/content_moderation*` | 7 | +243 / -1 |
+| 9: Realtime moderation | Extract Realtime text/images for moderation and security audit, including Live requests | `handler/openai_live*`, `securityaudit/*`, `service/content_moderation*` | 7 | +254 / -1 |
 | 10: REST moderation hook | Use the shared Realtime moderation protocol in the REST handler | `handler/openai_realtime_calls.go` | 1 | +1 / -1 |
 | 11: Caller prompts | Preserve non-empty system or developer prompts in transformed, raw passthrough and Responses-shaped requests | `service/openai_codex_transform.go`, gateway forward/passthrough/request-body helpers and prompt tests | 5 | +313 / -14 |
 | 12: Outbound instruction text | Remove product tags, deduplicate by instruction text, and use `namespace__pi` for the reserved Python tool alias | Codex transforms, tool names, Messages bridge/todo guidance, and tests | 13 | +140 / -52 |
 | 13: Turn-state ownership | Scope cached state to resolved credentials and strip known foreign echoes using actual delivered headers | Turn-state helpers, HTTP passthrough, WS forwarding/cache, and tests | 15 | +431 / -66 |
 | 14: Email-scoped sessions | Derive Compact and Claude session identities from account email and workspace instead of local rows | Shared email helper, Compact probe, Claude rewrite/synthesis, and tests | 10 | +345 / -56 |
-| 15: Heartbeat test timing | Use virtual time to exercise idle SSE comments without wall-clock scheduling assumptions | `service/gemini_sse_comment_compat_test.go` only | 1 | +17 / -8 |
+| 15: Heartbeat test timing | Use virtual time to exercise idle SSE comments without wall-clock scheduling assumptions | `service/gemini_sse_comment_compat_test.go` only | 1 | +17 / -12 |
 | 16: Behavior-focused tests | Remove incidental request ordering, internal encoding and wording constraints while retaining routing, isolation and data-preservation checks | Eight audio, realtime and identity test files only | 8 | +67 / -42 |
 
 ## Behavior boundaries

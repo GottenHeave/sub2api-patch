@@ -1,14 +1,14 @@
-From 57407028203efe9aa24218ccc91493493ea002b0 Mon Sep 17 00:00:00 2001
+From 0c1d639a5b9645636d40e89825af8e5fdc5753da Mon Sep 17 00:00:00 2001
 From: sub2api-patch automation <actions@users.noreply.github.com>
 Date: Sat, 19 Sep 2026 19:04:25 +0000
 Subject: [PATCH] test: use virtual time for Gemini comment keepalives
 
 ---
- .../service/gemini_sse_comment_compat_test.go | 25 +++++++++++++------
- 1 file changed, 17 insertions(+), 8 deletions(-)
+ .../service/gemini_sse_comment_compat_test.go | 29 +++++++++++--------
+ 1 file changed, 17 insertions(+), 12 deletions(-)
 
 diff --git a/backend/internal/service/gemini_sse_comment_compat_test.go b/backend/internal/service/gemini_sse_comment_compat_test.go
-index 360f51ad3..ab0745efa 100644
+index c53e18ca0..ab0745efa 100644
 --- a/backend/internal/service/gemini_sse_comment_compat_test.go
 +++ b/backend/internal/service/gemini_sse_comment_compat_test.go
 @@ -5,6 +5,7 @@ import (
@@ -35,11 +35,15 @@ index 360f51ad3..ab0745efa 100644
  	time.Sleep(idle)
  	require.NoError(t, writer.Close())
  	require.NoError(t, <-done)
-@@ -81,15 +86,19 @@ func runAntigravityGeminiStreamWithIdle(t *testing.T, userAgent string, idle tim
+@@ -81,19 +86,19 @@ func runAntigravityGeminiStreamWithIdle(t *testing.T, userAgent string, idle tim
  }
  
  func TestAntigravityGeminiStreamKeepsCommentKeepaliveForOrdinaryClients(t *testing.T) {
--	out := runAntigravityGeminiStreamWithIdle(t, "curl/8.7.1", 1200*time.Millisecond)
+-	// The keepalive interval is configured in whole seconds. Leave enough idle
+-	// time for the first data event to be processed before the ticker fires;
+-	// otherwise a busy CI runner can consume the first tick too early and close
+-	// the stream before any heartbeat is written.
+-	out := runAntigravityGeminiStreamWithIdle(t, "curl/8.7.1", 2200*time.Millisecond)
 -	require.Contains(t, out, ":\n\n", "ordinary clients should still get the idle keepalive")
 -	require.Contains(t, out, `"text":"partial"`)
 +	synctest.Test(t, func(t *testing.T) {
