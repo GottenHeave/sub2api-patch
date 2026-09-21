@@ -1833,6 +1833,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if account == nil {
 		return false, "account_nil"
 	}
+	if account.IsCodexAPI() {
+		return false, "dedicated_codex_api_account"
+	}
 	if (openAIAudioTranscriptionSelectionFromContext(ctx) || openAIRealtimeRESTSelectionFromContext(ctx)) && account.Type != AccountTypeAPIKey && account.Type != AccountTypeOAuth {
 		return false, "audio_transcription_account_type"
 	}

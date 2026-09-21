@@ -181,6 +181,9 @@ func (s *AccountTestService) SetOpenAIGatewayService(gateway *OpenAIGatewayServi
 // It only fills picker-only gaps (local display-name fallbacks, OAuth image choices)
 // on its own copy; the shared catalog and its cache stay untouched.
 func (s *AccountTestService) FetchOpenAIAccountModels(ctx context.Context, account *Account) ([]openai.Model, error) {
+	if account.IsCodexAPI() {
+		return s.fetchCodexAPIAccountModels(ctx, account)
+	}
 	if s == nil || s.openaiGatewayService == nil {
 		return nil, errors.New("OpenAI model discovery service is unavailable")
 	}
@@ -781,6 +784,9 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 
 // testOpenAIAccountConnection tests an OpenAI account's connection
 func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string) error {
+	if account.IsCodexAPI() {
+		return s.testCodexAPIAccountConnection(c, account, modelID, prompt, mode)
+	}
 	ctx := c.Request.Context()
 	mode = normalizeAccountTestMode(mode)
 
