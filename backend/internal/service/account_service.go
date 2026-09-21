@@ -227,6 +227,9 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 	if req.Platform == PlatformTypeSafe && req.Type != AccountTypeAPIKey {
 		return nil, errors.New("typesafe accounts only support apikey credentials")
 	}
+	if err := ValidateCodexAPIAccount(req.Platform, req.Type, req.Credentials); err != nil {
+		return nil, err
+	}
 	// 验证分组是否存在（如果指定了分组）
 	if len(req.GroupIDs) > 0 {
 		if err := s.validateGroupIDsExist(ctx, req.GroupIDs); err != nil {
@@ -254,10 +257,11 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 		account.AutoPauseOnExpired = true
 	}
 
-	if err := s.accountRepo.Create(ctx, account); err != nil {
-		return nil, fmt.Errorf("create account: %w", err)
+	if account.IsCodexAPI() {
+		if err := validateCodexAPIAccountGroups(ctx, s.accountRepo, s.groupRepo, account, req.GroupIDs); err != nil {
+			return nil, err
+		}
 	}
-
 	// require_oauth_only 检查：apikey 类型账号不可加入限制分组
 	if account.Type == AccountTypeAPIKey && len(req.GroupIDs) > 0 {
 		for _, gid := range req.GroupIDs {
@@ -271,11 +275,8 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 		}
 	}
 
-	// 绑定分组
-	if len(req.GroupIDs) > 0 {
-		if err := s.accountRepo.BindGroups(ctx, account.ID, req.GroupIDs); err != nil {
-			return nil, fmt.Errorf("bind groups: %w", err)
-		}
+	if err := createAccountWithGroups(ctx, s.accountRepo, account, req.GroupIDs); err != nil {
+		return nil, fmt.Errorf("create account: %w", err)
 	}
 
 	return account, nil
@@ -379,6 +380,9 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 	}
 
 	// 执行更新
+	if err := ValidateCodexAPIAccount(account.Platform, account.Type, account.Credentials); err != nil {
+		return nil, err
+	}
 	if err := s.accountRepo.Update(ctx, account); err != nil {
 		return nil, fmt.Errorf("update account: %w", err)
 	}
