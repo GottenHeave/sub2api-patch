@@ -52,7 +52,7 @@ func TestCodexAPIModelsUpstreamAndCancellationReleaseSlots(t *testing.T) {
 			h := &OpenAIGatewayHandler{gatewayService: gateway, concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatComment, 0)}
 			writer := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(writer)
-			c.Request = httptest.NewRequest(http.MethodGet, "/models?client_version=client", nil).WithContext(ctx)
+			c.Request = httptest.NewRequest(http.MethodGet, "/backend-api/codex/models?client_version=client", nil).WithContext(ctx)
 			c.Request.Header.Set("Authorization", "Bearer downstream-key")
 			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 1, GroupID: &groupID, Group: &service.Group{Platform: service.PlatformOpenAI}})
 			c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
@@ -108,11 +108,13 @@ func TestCodexAPIDispatchGroupBoundary(t *testing.T) {
 func TestCodexAPITarget(t *testing.T) {
 	for _, test := range []struct{ method, path, originator, target string }{
 		{"POST", "/v1/responses", "", "/v1/responses"},
-		{"POST", "/responses", "codex_cli_rs", "/backend-api/codex/responses"},
+		{"POST", "/responses", "codex_cli_rs", "/v1/responses"},
+		{"POST", "/v1/responses", "codex_cli_rs", "/v1/responses"},
 		{"POST", "/backend-api/codex/responses", "", "/backend-api/codex/responses"},
 		{"POST", "/backend-api/codex/responses/compact", "", "/v1/responses/compact"},
 		{"GET", "/v1/models", "", "/v1/models"},
-		{"GET", "/models?client_version=1", "", "/backend-api/codex/models"},
+		{"GET", "/models?client_version=1", "", "/v1/models"},
+		{"GET", "/v1/models?client_version=1", "codex_cli_rs", "/v1/models"},
 		{"GET", "/backend-api/codex/models", "", "/backend-api/codex/models"},
 		{"GET", "/responses", "", ""},
 		{"POST", "/v1/chat/completions", "", ""},
@@ -121,6 +123,7 @@ func TestCodexAPITarget(t *testing.T) {
 		t.Run(test.method+test.path+test.originator, func(t *testing.T) {
 			r := httptest.NewRequest(test.method, test.path, nil)
 			r.Header.Set("originator", test.originator)
+			r.Header.Set("User-Agent", "codex_cli_rs/1.0")
 			require.Equal(t, test.target, codexAPITarget(r))
 		})
 	}
