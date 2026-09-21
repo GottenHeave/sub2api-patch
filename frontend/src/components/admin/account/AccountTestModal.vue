@@ -70,6 +70,13 @@
         />
       </div>
 
+      <div v-if="modelLoadFailed && account?.type === 'codex-api'" role="alert" class="flex items-center gap-2 text-sm text-red-600">
+        {{ t('admin.accounts.syncUpstreamModelsFailed') }}
+        <button type="button" class="btn btn-secondary" :disabled="loadingModels" @click="loadAvailableModels">
+          <Icon name="refresh" size="sm" />{{ t('common.refresh') }}
+        </button>
+      </div>
+
       <div v-if="isOpenAIAccount" class="space-y-1.5">
         <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
           {{ t('admin.accounts.openai.testMode') }}
@@ -405,6 +412,7 @@ const outputLines = ref<OutputLine[]>([])
 const streamingContent = ref('')
 const errorMessage = ref('')
 const availableModels = ref<ClaudeModel[]>([])
+const modelLoadFailed = ref(false)
 const selectedModelId = ref('')
 const testPrompt = ref('')
 const loadingModels = ref(false)
@@ -763,6 +771,7 @@ watch(grokTestMode, () => {
 const loadAvailableModels = async () => {
   if (!props.account) return
 
+  modelLoadFailed.value = false
   loadingModels.value = true
   selectedModelId.value = '' // Reset selection before loading
   try {
@@ -772,7 +781,7 @@ const loadAvailableModels = async () => {
       : models
     // Default selection by platform
     if (availableModels.value.length > 0) {
-      if (props.account.platform === 'gemini') {
+      if (props.account.platform === 'gemini' || props.account.type === 'codex-api') {
         selectedModelId.value = availableModels.value[0].id
       } else {
         // Try to select Sonnet as default, otherwise use first model
@@ -782,6 +791,7 @@ const loadAvailableModels = async () => {
     }
   } catch (error) {
     console.error('Failed to load available models:', error)
+    modelLoadFailed.value = true
     // Fallback to empty list
     availableModels.value = []
     selectedModelId.value = ''
