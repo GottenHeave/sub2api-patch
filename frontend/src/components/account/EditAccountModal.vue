@@ -40,6 +40,7 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+      <CodexAPICredentialsFields v-if="account.type === 'codex-api'" v-model:base-url="editBaseUrl" v-model:api-key="editApiKey" editing />
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
         <div v-if="!isCNApiKeyAccount || editApiProtocol !== 'adaptive'">
@@ -1682,7 +1683,7 @@
       </div>
 
       <!-- Temp Unschedulable Rules -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
+      <div v-if="account.type !== 'codex-api'" class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
         <div class="mb-3 flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.tempUnschedulable.title') }}</label>
@@ -1942,6 +1943,7 @@
       </div>
 
       <UpstreamRequestIdHeaderField
+        v-if="account.type !== 'codex-api'"
         v-model="upstreamRequestIdHeader"
         :platform="account.platform"
         :type="account.type"
@@ -2772,7 +2774,7 @@
       </div>
 
       <div
-        v-if="account?.platform === 'openai'"
+        v-if="account?.platform === 'openai' && account.type !== 'codex-api'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="space-y-2">
@@ -3445,6 +3447,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
+import CodexAPICredentialsFields from '@/components/account/CodexAPICredentialsFields.vue'
 import UpstreamGroupSyncButton from '@/components/account/UpstreamGroupSyncButton.vue'
 import OpenAIImageSizeTiersField from '@/components/account/OpenAIImageSizeTiersField.vue'
 import {
@@ -4153,7 +4156,7 @@ const accountSchedulingThresholdOverrideEnabled = ref(false)
 const accountSchedulingThresholdOverrideValue = ref(100)
 const ACCOUNT_SCHEDULING_THRESHOLD_CREDENTIAL_KEY = 'account_scheduling_threshold'
 const supportsAccountSchedulingThresholdOverride = computed(() =>
-  supportsAccountSchedulingThresholdOverridePlatform(props.account?.platform)
+  props.account?.type !== 'codex-api' && supportsAccountSchedulingThresholdOverridePlatform(props.account?.platform)
 )
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-model-mapping')
@@ -5061,7 +5064,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
     // Load model mappings for bedrock
     loadModelRestrictionFromMapping(bedrockCreds.model_mapping as Record<string, unknown> | undefined)
-  } else if (newAccount.type === 'upstream' && newAccount.credentials) {
+  } else if ((newAccount.type === 'upstream' || newAccount.type === 'codex-api') && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     editBaseUrl.value = (credentials.base_url as string) || ''
   } else if ((newAccount.platform === 'gemini' || newAccount.platform === 'anthropic') && newAccount.type === 'service_account' && newAccount.credentials) {
@@ -5736,6 +5739,15 @@ const handleSubmit = async () => {
       updatePayload.load_factor = 0
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
+    if (props.account.type === 'codex-api') {
+      if (!editBaseUrl.value.trim()) return
+      updatePayload.credentials = {
+        base_url: editBaseUrl.value.trim(),
+        ...(editApiKey.value.trim() ? { api_key: editApiKey.value.trim() } : {})
+      }
+      await submitUpdateAccount(accountID, updatePayload)
+      return
+    }
     if (props.account.type === 'apikey') {
       if (form.name === props.account.name) delete updatePayload.name
       if (form.notes === (props.account.notes || '')) delete updatePayload.notes
