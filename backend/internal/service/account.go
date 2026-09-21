@@ -1435,7 +1435,7 @@ func (a *Account) IsAPIKeyOrBedrock() bool {
 // 在 apikey/bedrock 之外额外放开 Vertex service_account；池模式等其它特性仍只看 IsAPIKeyOrBedrock。
 func AccountTypeSupportsQuota(accountType string) bool {
 	switch strings.ToLower(accountType) {
-	case AccountTypeAPIKey, AccountTypeBedrock, AccountTypeServiceAccount:
+	case AccountTypeAPIKey, AccountTypeBedrock, AccountTypeServiceAccount, AccountTypeCodexAPI:
 		return true
 	}
 	return false
