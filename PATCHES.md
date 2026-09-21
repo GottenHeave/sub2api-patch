@@ -19,7 +19,6 @@ Rows 5, 6, and 12-16 were updated on 2026-09-19.
 Rows 9 and 15 were refreshed on 2026-09-21.
 Row 17 was added on 2026-09-21.
 Row 18 was added on 2026-09-21.
-Row 19 was added on 2026-09-21.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -40,8 +39,7 @@ Row 19 was added on 2026-09-21.
 | 15: Heartbeat test timing | Use virtual time to exercise idle SSE comments without wall-clock scheduling assumptions | `service/gemini_sse_comment_compat_test.go` only | 1 | +17 / -12 |
 | 16: Behavior-focused tests | Remove incidental request ordering, internal encoding and wording constraints while retaining routing, isolation and data-preservation checks | Eight audio, realtime and identity test files only | 8 | +67 / -42 |
 | 17: Dedicated Codex API accounts | Forward native/public Responses and model catalogs without local protocol transforms; enforce dedicated groups and credential validity | New handler/service/repository helpers and tests, guarded account/group/transport/routes/billing changes, account UI | 54 | +2433 / -56 |
-| 18: Codex API OAuth billing | Use the OAuth service-tier contract for Codex API, retaining requested priority when its upstream reports default | `service/service_tier_billing.go` and billing parity test | 2 | +75 / -4 |
-| 19: Explicit Codex API entrypoints | Select public/native Responses and model catalogs by request path, never client metadata | Dedicated handler and handler/route tests | 3 | +11 / -11 |
+| 18: Codex API billing and entrypoints | Use the OAuth service-tier contract and select public/native Responses and model catalogs by request path, never client metadata | Service-tier billing and parity test, dedicated handler and handler/route tests | 5 | +86 / -15 |
 
 ## Behavior boundaries
 
@@ -86,7 +84,7 @@ Row 19 was added on 2026-09-21.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 19 patches.
+Apply patches in numerical order. The complete series contains all 18 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
@@ -99,8 +97,7 @@ For separate capabilities:
 - Patch 17 is authored after the full series and touches shared scheduler/routes
   context; apply it after patches 1-16. Its implementation is isolated from
   ordinary account request transformations.
-- Patch 18 follows patch 17 and only aligns its billing contract with OAuth.
-- Patch 19 depends on patch 17; apply it in series order to separate public and native paths.
+- Patch 18 follows patch 17, aligns its billing contract with OAuth, and separates public and native paths.
 
 Runtime verification and replay against the automatically selected upstream
 run in CI. Patch sizes and the manual review version are documentation only.
