@@ -90,13 +90,16 @@ func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
 		{"POST", "/backend-api/codex/responses", "/backend-api/codex/responses"},
 		{"POST", "/responses/compact", "/v1/responses/compact"},
 		{"GET", "/v1/models", "/v1/models"},
-		{"GET", "/models?client_version=any", "/backend-api/codex/models"},
+		{"GET", "/models?client_version=any", "/v1/models"},
+		{"GET", "/v1/models?client_version=any", "/v1/models"},
 		{"GET", "/backend-api/codex/models", "/backend-api/codex/models"},
 	} {
 		expectedPath = test.target
 		r := httptest.NewRequest(test.method, test.path, bytes.NewReader(wire.Bytes()))
 		r.Header.Set("Authorization", "Bearer local")
 		r.Header.Set("Content-Encoding", "gzip")
+		r.Header.Set("originator", "codex_cli_rs")
+		r.Header.Set("User-Agent", "codex_cli_rs/1.0")
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, r)
 		require.Equal(t, http.StatusUnprocessableEntity, w.Code, test.path+": "+w.Body.String())
