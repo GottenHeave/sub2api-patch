@@ -167,7 +167,7 @@ func duplicateAccountExtra(value map[string]any) (map[string]any, error) {
 
 func canDuplicateAccountType(accountType string) bool {
 	switch accountType {
-	case AccountTypeAPIKey, AccountTypeUpstream, AccountTypeBedrock, AccountTypeServiceAccount:
+	case AccountTypeAPIKey, AccountTypeCodexAPI, AccountTypeUpstream, AccountTypeBedrock, AccountTypeServiceAccount:
 		return true
 	default:
 		return false
@@ -411,6 +411,9 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
+	if err := ValidateCodexAPIAccount(input.Platform, input.Type, input.Credentials); err != nil {
+		return nil, err
+	}
 	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
@@ -530,15 +533,13 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := s.ValidateAccountGroupBindings(ctx, groupIDs); err != nil {
 		return nil, err
 	}
-	if err := s.accountRepo.Create(ctx, account); err != nil {
-		return nil, err
-	}
-
-	// 绑定分组
-	if len(groupIDs) > 0 {
-		if err := s.accountRepo.BindGroups(ctx, account.ID, groupIDs); err != nil {
+	if account.IsCodexAPI() {
+		if err := validateCodexAPIAccountGroups(ctx, s.accountRepo, s.groupRepo, account, groupIDs); err != nil {
 			return nil, err
 		}
+	}
+	if err := createAccountWithGroups(ctx, s.accountRepo, account, groupIDs); err != nil {
+		return nil, err
 	}
 
 	// OAuth 账号：创建后异步设置隐私。
@@ -837,6 +838,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 	}
 
+	if err := ValidateCodexAPIAccount(account.Platform, account.Type, account.Credentials); err != nil {
+		return nil, err
+	}
 	billingSettingsAppliedAtomically := false
 	updater := s.accountBillingRepo
 	if updater == nil {

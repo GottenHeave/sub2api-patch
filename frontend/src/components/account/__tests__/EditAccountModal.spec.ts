@@ -330,6 +330,22 @@ describe('EditAccountModal', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it('edits Codex API upstream settings without replacing an unchanged secret', async () => {
+    const account = { ...buildAccount(), type: 'codex-api', credentials: { base_url: 'https://gateway.example' } }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account)
+    expect(wrapper.findComponent(ModelWhitelistSelectorStub).exists()).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('#codex-api-base-url').element.value).toBe(account.credentials.base_url)
+    await wrapper.get('#codex-api-base-url').setValue('https://other-gateway.example')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const payload = updateAccountMock.mock.calls[0][1]
+    expect(payload.credentials.base_url).toBe('https://other-gateway.example')
+    expect(payload.credentials.api_key).toBeUndefined()
+    expect(payload.credentials.model_mapping).toBeUndefined()
+    expect(payload.extra).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('sets expiry presets from now instead of extending the saved expiry', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2028-02-29T12:34:00'))
