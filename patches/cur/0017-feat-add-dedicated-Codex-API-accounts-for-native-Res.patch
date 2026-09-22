@@ -1279,7 +1279,7 @@ index 8b2bbb827db4758042cd8f9a6ce84c8949861277..45d4c821684dba36e1203c015ca8648d
 +	}
  
 diff --git a/backend/internal/repository/http_upstream.go b/backend/internal/repository/http_upstream.go
-index f765d0f66e07a6e1c4cc26fabe798b546e339214..e30b482bf1ecc406e96252822373992f3d18ee3d 100644
+index b27f20ece3144df0516925985a02c8b1827a4ade..e0215308abab56256ecffc790d3e329dd899b654 100644
 --- a/backend/internal/repository/http_upstream.go
 +++ b/backend/internal/repository/http_upstream.go
 @@ -106,2 +106,3 @@ const (
@@ -1302,27 +1302,27 @@ index f765d0f66e07a6e1c4cc26fabe798b546e339214..e30b482bf1ecc406e96252822373992f
 +	if profile != service.HTTPUpstreamProfileRaw {
 +		client = httpClientWithGrokAccessDeniedFallback(client)
 +	}
- 	resp, err := servertiming.Do(client, req)
-@@ -232,3 +237,5 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
- 	// 如果上游返回了压缩内容，解压后再交给业务层
--	decompressResponseBody(resp)
-+	if profile != service.HTTPUpstreamProfileRaw {
-+		decompressResponseBody(resp)
-+	}
- 
-@@ -249,2 +256,5 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
+ 	resp, err := doUpstreamRequest(client, req)
+@@ -246,2 +251,5 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
  func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 +	if req != nil && service.HTTPUpstreamProfileFromContext(req.Context()) == service.HTTPUpstreamProfileRaw {
 +		return s.Do(req, proxyURL, accountID, accountConcurrency)
 +	}
  	if profile == nil {
-@@ -1013,2 +1023,5 @@ func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
+@@ -307,3 +315,5 @@ func doUpstreamRequest(client *http.Client, req *http.Request) (*http.Response,
+ 	}
+-	decompressResponseBody(resp)
++	if service.HTTPUpstreamProfileFromContext(req.Context()) != service.HTTPUpstreamProfileRaw {
++		decompressResponseBody(resp)
++	}
+ 	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+@@ -1058,2 +1068,5 @@ func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
  func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamProfile, proxyKey string, parsedProxy *url.URL) string {
 +	if profile == service.HTTPUpstreamProfileRaw {
 +		return upstreamProtocolModeRaw
 +	}
  	if profile == service.HTTPUpstreamProfileLongStream {
-@@ -1332,2 +1345,3 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
+@@ -1377,2 +1390,3 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
  	transport := &http.Transport{
 +		DisableCompression:    protocolMode == upstreamProtocolModeRaw,
  		DialContext:           newUpstreamDialer().DialContext,
