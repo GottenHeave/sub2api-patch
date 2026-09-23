@@ -13,6 +13,7 @@ Subject: [PATCH 17/17] feat: add dedicated Codex API accounts for native
  .../handler/codex_api_gateway_test.go         | 148 +++++++++++
  backend/internal/repository/account_repo.go   |  33 +++
  .../account_repo_ollama_cloud_usage_test.go   |  11 +-
+ .../account_repo_opencode_go_usage_test.go   |  20 +-
  ...repo_upstream_billing_probe_update_test.go |   3 +
  .../codex_api_credentials_integration_test.go |  50 ++++
  .../repository/codex_api_credentials_test.go  |  43 +++
@@ -59,7 +60,7 @@ Subject: [PATCH 17/17] feat: add dedicated Codex API accounts for native
  .../__tests__/AccountTestModal.spec.ts        |  34 +++
  .../components/common/PlatformTypeBadge.vue   |   2 +
  frontend/src/types/index.ts                   |   2 +-
- 54 files changed, 2433 insertions(+), 56 deletions(-)
+ 55 files changed, 2449 insertions(+), 60 deletions(-)
  create mode 100644 backend/internal/handler/admin/account_codex_api_test.go
  create mode 100644 backend/internal/handler/codex_api_gateway.go
  create mode 100644 backend/internal/handler/codex_api_gateway_test.go
@@ -625,13 +626,13 @@ index 8b8c82dd668fff6b17911d5cdc8166dc8352873d..05f7192fb3aeae4a90f555aa691b395c
 +		return err
 +	}
  	_, err = client.AccountGroup.Create().
-@@ -1862,2 +1882,5 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
+@@ -1862,5 +1882,13 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
  	}
 +	if err := lockCodexAPIAccounts(ctx, txClient, []int64{accountID}); err != nil {
 +		return err
 +	}
  	if err := lockLiveGroups(ctx, txClient, groupIDs); err != nil {
-@@ -1865,2 +1888,7 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
+ 		return err
  	}
 +	for _, groupID := range groupIDs {
 +		if err := validateCodexAPIGroup(ctx, txClient, groupID, nil, []int64{accountID}, nil); err != nil {
@@ -684,7 +685,7 @@ index 46d78ac5b72395335ccd2e77ad45c7263ee49659..b11e55627e7b0aea43bf8d36ebe4c8d4
 +	expectOrdinaryCredentialAccount(mock)
  	mock.ExpectExec(`(?s)UPDATE accounts.*credentials IS DISTINCT FROM \$1::jsonb.*- 'upstream_billing_probe'`).
 @@ -375,2 +376,3 @@ func TestUpdateWithAccountBillingSettingsRollsBackWhenOutboxFails(t *testing.T)
- 			AddRow(true, false, true, []byte(`true`), []byte(`true`), []byte(`{"status":"ok"}`), nil, nil, nil))
+ 			AddRow(true, false, true, []byte(`true`), []byte(`true`), []byte(`{"status":"ok"}`), nil, nil, nil, false, nil, nil))
 +	mock.ExpectQuery("SELECT ag.group_id").WillReturnRows(sqlmock.NewRows([]string{"group_id"}))
  	mock.ExpectExec(`(?s)UPDATE .*accounts.*SET.*WHERE .*id.*`).
 @@ -438,2 +440,3 @@ func TestUpdateCredentialsRollsBackWhenOutboxFails(t *testing.T) {
@@ -3164,3 +3165,71 @@ index 80cef707bd9113a59988db00183ad067aae4a7c8..34129be3ee4598dbbf8f4ec95d264ba6
 -export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 +export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'codex-api' | 'upstream' | 'bedrock' | 'service_account'
  export type OAuthAddMethod = 'oauth' | 'setup-token'
+diff --git a/backend/internal/repository/account_repo_opencode_go_usage_test.go b/backend/internal/repository/account_repo_opencode_go_usage_test.go
+index 8a5add8ffd60898a391ed58bdc4a83687e627e23..ced6c2c4ca5df150827131e87094089ed090869f 100644
+--- a/backend/internal/repository/account_repo_opencode_go_usage_test.go
++++ b/backend/internal/repository/account_repo_opencode_go_usage_test.go
+@@ -214,6 +214,7 @@ func TestLockAndMergeAccountProbeExtraPreservesOpenCodeGoManagedState(t *testing
+ func TestUpdateCredentialsOpenCodeGoIdentityChangeClearsManagedExtra(t *testing.T) {
+ 	client, mock := newOllamaCloudUsageRepositoryTestClient(t)
+ 	mock.ExpectBegin()
++	expectOrdinaryCredentialAccount(mock)
+ 	// opencode 清理分支必须文本上先于 ollama 分支出现，否则 opencode 行的
+ 	// api_key/base_url 变化会被先求值的 Ollama 分支遮蔽。
+ 	mock.ExpectExec(`(?s)UPDATE accounts.*- 'opencode_go_usage_auto_refresh'.*- 'opencode_go_usage_snapshot'.*- 'ollama_cloud_usage_session'`).
+@@ -237,6 +238,7 @@ func TestUpdateCredentialsOpenCodeGoIdentityChangeClearsManagedExtra(t *testing.
+ func TestUpdateCredentialsOpenCodeGoToOllamaCrossOverClearsManagedExtra(t *testing.T) {
+ 	client, mock := newOllamaCloudUsageRepositoryTestClient(t)
+ 	mock.ExpectBegin()
++	expectOrdinaryCredentialAccount(mock)
+ 	mock.ExpectExec(`(?s)UPDATE accounts.*opencode_go_usage_auto_refresh.*opencode_go_usage_snapshot`).
+ 		WithArgs(`{"api_key":"same-key","base_url":"https://ollama.com/v1"}`, int64(17)).
+ 		WillReturnResult(sqlmock.NewResult(0, 1))
+@@ -258,6 +260,7 @@ func TestUpdateCredentialsOpenCodeGoToOllamaCrossOverClearsManagedExtra(t *testi
+ func TestUpdateCredentialsOpenCodeGoCleanupRequiresChangedCredentials(t *testing.T) {
+ 	client, mock := newOllamaCloudUsageRepositoryTestClient(t)
+ 	mock.ExpectBegin()
++	expectOrdinaryCredentialAccount(mock)
+ 	mock.ExpectExec(`(?s)UPDATE accounts.*CASE.*AND credentials IS DISTINCT FROM \$1::jsonb`).
+ 		WithArgs(`{"api_key":"same-key","base_url":"https://relay.example.com/v1"}`, int64(17)).
+ 		WillReturnResult(sqlmock.NewResult(0, 1))
+@@ -277,9 +280,13 @@ func TestUpdateCredentialsOpenCodeGoCleanupRequiresChangedCredentials(t *testing
+ 
+ func TestBulkUpdateOpenCodeGoIdentityCleanupIsValueConditional(t *testing.T) {
+ 	exec := &recordingSQLExecutor{result: rowsAffectedResult(1)}
+-	repo := newAccountRepositoryWithSQL(nil, exec, nil)
++	db, mock, err := sqlmock.New()
++	require.NoError(t, err)
++	t.Cleanup(func() { _ = db.Close() })
++	expectOrdinaryCredentialAccount(mock)
++	repo := newAccountRepositoryWithSQL(nil, credentialRecordingSQL{recordingSQLExecutor: exec, db: db}, nil)
+ 
+-	_, err := repo.BulkUpdate(context.Background(), []int64{17}, service.AccountBulkUpdate{
++	_, err = repo.BulkUpdate(context.Background(), []int64{17}, service.AccountBulkUpdate{
+ 		Credentials: map[string]any{"api_key": "new-key"},
+ 	})
+ 
+@@ -334,9 +341,13 @@ func TestBulkUpdateOpenCodeGoEligiblePredicateIncludesBaseURL(t *testing.T) {
+ // OpenCode 状态；IS NOT TRUE 把 NULL 视为不匹配。
+ func TestBulkUpdateOpenCodeGoBaseURLClauseIsNullSafe(t *testing.T) {
+ 	exec := &recordingSQLExecutor{result: rowsAffectedResult(1)}
+-	repo := newAccountRepositoryWithSQL(nil, exec, nil)
++	db, mock, err := sqlmock.New()
++	require.NoError(t, err)
++	t.Cleanup(func() { _ = db.Close() })
++	expectOrdinaryCredentialAccount(mock)
++	repo := newAccountRepositoryWithSQL(nil, credentialRecordingSQL{recordingSQLExecutor: exec, db: db}, nil)
+ 
+-	_, err := repo.BulkUpdate(context.Background(), []int64{17}, service.AccountBulkUpdate{
++	_, err = repo.BulkUpdate(context.Background(), []int64{17}, service.AccountBulkUpdate{
+ 		Credentials: map[string]any{"base_url": nil},
+ 	})
+ 
+@@ -458,6 +469,7 @@ func TestInvalidateProxyProbeSnapshotsClearsOpenCodeGoSnapshot(t *testing.T) {
+ func TestUpdateCredentialsOpenCodeBranchPrecedesOllamaBranch(t *testing.T) {
+ 	client, mock := newOllamaCloudUsageRepositoryTestClient(t)
+ 	mock.ExpectBegin()
++	expectOrdinaryCredentialAccount(mock)
+ 	mock.ExpectExec(`(?s)UPDATE accounts.*platform = 'opencode_go'.*\[oO\]\[lL\]\[lL\]\[aA\]\[mM\]\[aA\]`).
+ 		WithArgs(`{"api_key":"new-key","base_url":"https://opencode.ai/zen/go/v1"}`, int64(17)).
+ 		WillReturnResult(sqlmock.NewResult(0, 1))
