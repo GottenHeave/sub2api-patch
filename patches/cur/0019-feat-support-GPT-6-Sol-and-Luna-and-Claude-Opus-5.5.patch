@@ -1,0 +1,1978 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 01:24:24 +0000
+Subject: [PATCH 19/19] feat: support GPT-6 Sol and Luna and Claude Opus 5.5
+
+---
+ .../internal/handler/gateway_models_test.go   |  31 ++++
+ .../pkg/apicompat/anthropic_responses_test.go |  66 ++++++++
+ .../pkg/apicompat/anthropic_to_responses.go   |   4 +-
+ .../anthropic_to_responses_response.go        |  53 ++++++-
+ .../apicompat/chatcompletions_to_responses.go |  40 +++--
+ ...esponses_to_anthropic_instructions_test.go |   6 +-
+ .../responses_to_anthropic_request.go         |  60 ++++++-
+ ...esponses_to_anthropic_tool_pairing_test.go |   2 +-
+ backend/internal/pkg/apicompat/types.go       |  19 ++-
+ backend/internal/pkg/claude/constants.go      |   6 +
+ .../pkg/claude/constants_model_test.go        |  12 ++
+ backend/internal/pkg/claude/effort_catalog.go |   6 +
+ backend/internal/pkg/openai/constants.go      |  20 +++
+ backend/internal/pkg/openai/constants_test.go |  10 ++
+ backend/internal/service/billing_service.go   |  65 +++++++-
+ .../internal/service/billing_service_test.go  | 106 +++++++++++++
+ ...teway_anthropic_apikey_passthrough_test.go |  42 +++++
+ .../service/gateway_claude_oauth_body.go      |   4 +-
+ .../internal/service/gateway_count_tokens.go  |  11 ++
+ backend/internal/service/gateway_forward.go   |  11 ++
+ .../gateway_forward_as_chat_completions.go    |  28 ++--
+ .../service/gateway_forward_as_responses.go   |  34 ++--
+ .../gateway_forward_as_responses_test.go      |  74 +++++++++
+ backend/internal/service/gateway_request.go   |  34 +++-
+ .../service/openai_codex_models_service.go    |  18 ++-
+ .../openai_codex_models_service_test.go       |  19 +++
+ .../service/openai_codex_transform.go         |   4 +
+ .../service/openai_compat_prompt_cache_key.go |   6 +-
+ .../openai_compat_prompt_cache_key_test.go    |   9 ++
+ .../openai_gateway_chat_completions.go        |   5 +
+ ...teway_chat_completions_anthropic_native.go |  15 +-
+ .../openai_gateway_chat_completions_raw.go    |   6 +
+ .../openai_gateway_chat_completions_test.go   | 113 +++++++++++++
+ .../service/openai_gateway_forward.go         |   2 +-
+ .../service/openai_gateway_messages.go        |   1 +
+ .../service/openai_gateway_request_body.go    |  57 ++++++-
+ ...enai_gateway_responses_anthropic_native.go |  22 ++-
+ .../internal/service/openai_model_alias.go    |  11 ++
+ .../openai_passthrough_normalization_test.go  |   6 +-
+ backend/internal/service/pricing_service.go   |  64 ++++++++
+ .../model_prices_and_context_window.json      | 148 ++++++++++++++++++
+ .../account/AccountStatusIndicator.vue        |   1 +
+ frontend/src/components/keys/UseKeyModal.vue  |  51 ++++++
+ .../keys/__tests__/UseKeyModal.spec.ts        |  20 ++-
+ .../__tests__/useModelWhitelist.spec.ts       |   4 +
+ frontend/src/composables/useModelWhitelist.ts |   6 +-
+ 46 files changed, 1223 insertions(+), 109 deletions(-)
+
+diff --git a/backend/internal/handler/gateway_models_test.go b/backend/internal/handler/gateway_models_test.go
+index 81df742e9b3f478753d1e1619a4444af75e61957..5231f4c095db2d12011ca2342e9408fa1ce86cbb 100644
+--- a/backend/internal/handler/gateway_models_test.go
++++ b/backend/internal/handler/gateway_models_test.go
+@@ -1481 +1481,32 @@ func TestGatewayModels_CodexGeminiGroupListsAntigravityGeminiMappings(t *testing
+ }
++
++func TestGatewayModels_GPT6SolLunaDiscoveryRespectsGroupAndAccountRestrictions(t *testing.T) {
++	for _, tc := range []struct {
++		name       string
++		selected   []string
++		restricted bool
++		want       []string
++	}{
++		{"selected and ordered", []string{"gpt-6-luna", "gpt-6-sol"}, false, []string{"gpt-6-luna", "gpt-6-sol"}},
++		{"group excludes new models", []string{"gpt-5.6-sol"}, false, []string{"gpt-5.6-sol"}},
++		{"account restricts new models", []string{"gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"}, true, []string{"gpt-5.6-sol"}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			groupID := int64(25)
++			account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
++			if tc.restricted {
++				account.Credentials = map[string]any{"model_mapping": map[string]any{"gpt-5.6-sol": "gpt-5.6-sol"}}
++			}
++			h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{groupID: {account}}})
++			rec := httptest.NewRecorder()
++			c, _ := gin.CreateTestContext(rec)
++			c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
++			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: tc.selected}}})
++			h.Models(c)
++			require.Equal(t, http.StatusOK, rec.Code)
++			var got gatewayModelsResponseForTest
++			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
++			require.Equal(t, tc.want, modelIDsForTest(got.Data))
++		})
++	}
++}
+diff --git a/backend/internal/pkg/apicompat/anthropic_responses_test.go b/backend/internal/pkg/apicompat/anthropic_responses_test.go
+index 539ccda0d7e841464e8baf6ad2528609226bd727..d823393cb2be81d032b414d940d2bf09e88a900b 100644
+--- a/backend/internal/pkg/apicompat/anthropic_responses_test.go
++++ b/backend/internal/pkg/apicompat/anthropic_responses_test.go
+@@ -1821,2 +1821,68 @@ func TestAnthropicEventToResponses_CacheTokensFromMessageDelta(t *testing.T) {
+ 
++func TestOpus55ResponsesAdaptiveThinkingAndToolChoice(t *testing.T) {
++	for _, effort := range []string{"", "low", "medium", "high", "xhigh", "max"} {
++		req := &ResponsesRequest{Model: "claude-opus-5-5", Input: json.RawMessage(`"hello"`), Reasoning: &ResponsesReasoning{Effort: effort}}
++		out, err := ResponsesToAnthropicRequest(req)
++		require.NoError(t, err)
++		require.Equal(t, "adaptive", out.Thinking.Type)
++		require.Zero(t, out.Thinking.BudgetTokens)
++		if effort == "" {
++			effort = "medium"
++		}
++		require.Equal(t, effort, out.OutputConfig.Effort)
++	}
++	for _, choice := range []string{`"required"`, `{"type":"function","name":"lookup"}`} {
++		_, err := ResponsesToAnthropicRequest(&ResponsesRequest{Model: "claude-opus-5-5", Input: json.RawMessage(`"hello"`), ToolChoice: json.RawMessage(choice)})
++		require.ErrorContains(t, err, "forced tool_choice")
++	}
++	_, err := ResponsesToAnthropicRequest(&ResponsesRequest{Model: "claude-opus-5-5", Input: json.RawMessage(`"hello"`), Reasoning: &ResponsesReasoning{Effort: "none"}})
++	require.ErrorContains(t, err, "reasoning effort")
++	old, err := ResponsesToAnthropicRequest(&ResponsesRequest{Model: "claude-opus-5", Input: json.RawMessage(`"hello"`), Reasoning: &ResponsesReasoning{Effort: "xhigh"}})
++	require.NoError(t, err)
++	require.Equal(t, "max", old.OutputConfig.Effort)
++	require.Equal(t, "enabled", old.Thinking.Type)
++}
++
++func TestOpus55SignedThinkingResponsesRoundTrip(t *testing.T) {
++	block := AnthropicContentBlock{Type: "thinking", Thinking: "", Signature: "upstream-signed-block"}
++	response := AnthropicToResponsesResponse(&AnthropicResponse{Model: "claude-opus-5-5", Content: []AnthropicContentBlock{block, {Type: "tool_use", ID: "toolu_1", Name: "lookup", Input: json.RawMessage(`{}`)}}})
++	require.Len(t, response.Output, 2)
++	require.NotEmpty(t, response.Output[0].EncryptedContent)
++	raw, err := json.Marshal(response.Output)
++	require.NoError(t, err)
++	var items []ResponsesInputItem
++	require.NoError(t, json.Unmarshal(raw, &items))
++	items = append(items, ResponsesInputItem{Type: "function_call_output", CallID: response.Output[1].CallID, Output: "ok"})
++	raw, err = json.Marshal(items)
++	require.NoError(t, err)
++	converted, err := ResponsesToAnthropicRequest(&ResponsesRequest{Model: "claude-opus-5-5", Input: raw})
++	require.NoError(t, err)
++	require.Len(t, converted.Messages, 2)
++	var blocks []AnthropicContentBlock
++	require.NoError(t, json.Unmarshal(converted.Messages[0].Content, &blocks))
++	require.Equal(t, block, blocks[0])
++	require.Equal(t, "tool_use", blocks[1].Type)
++	// Arbitrary OpenAI ciphertext must never be treated as an Anthropic signature.
++	_, _, err = convertResponsesInputToAnthropic("", json.RawMessage(`[{"type":"reasoning","encrypted_content":"anthropic-thinking-v1:!"}]`), true)
++	require.Error(t, err)
++}
++
++func TestGPT6ChatSamplingAndCacheFields(t *testing.T) {
++	temperature := 0.7
++	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
++		for _, effort := range []string{"", "none", "medium", "max"} {
++			out, err := ChatCompletionsToResponses(&ChatCompletionsRequest{Model: model, ReasoningEffort: effort, Temperature: &temperature, TopP: &temperature, PromptCacheOptions: json.RawMessage(`{"mode":"explicit","ttl":"30m"}`), Messages: []ChatMessage{{Role: "user", Content: json.RawMessage(`[{"type":"text","text":"hello","prompt_cache_breakpoint":{"mode":"explicit"}}]`)}}})
++			require.NoError(t, err)
++			if effort == "none" {
++				require.NotNil(t, out.Temperature)
++			} else {
++				require.Nil(t, out.Temperature)
++				require.Nil(t, out.TopP)
++			}
++			require.JSONEq(t, `{"mode":"explicit","ttl":"30m"}`, string(out.PromptCacheOptions))
++			require.Contains(t, string(out.Input), "prompt_cache_breakpoint")
++		}
++	}
++}
++
+ func TestMessageStartSSE_StopReasonIsJSONNull(t *testing.T) {
+diff --git a/backend/internal/pkg/apicompat/anthropic_to_responses.go b/backend/internal/pkg/apicompat/anthropic_to_responses.go
+index dfbe7b5e0523373a613976d64739ecd5ac57b3c3..23acc0bea8624ee151713b1c62387d9795e2a3ab 100644
+--- a/backend/internal/pkg/apicompat/anthropic_to_responses.go
++++ b/backend/internal/pkg/apicompat/anthropic_to_responses.go
+@@ -6,2 +6,4 @@ import (
+ 	"strings"
++
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+ )
+@@ -472,3 +474,3 @@ func boolPtr(v bool) *bool {
+ func isReasoningModel(model string) bool {
+-	return strings.HasPrefix(model, "gpt-5")
++	return strings.HasPrefix(model, "gpt-5") || openai.IsGPT6SolOrLunaModelSpelling(model)
+ }
+diff --git a/backend/internal/pkg/apicompat/anthropic_to_responses_response.go b/backend/internal/pkg/apicompat/anthropic_to_responses_response.go
+index f270050d43130969e08ca63a1d2fdbb8c3cc2157..f4c52fcef63947f2a512dfb835ded1396093520d 100644
+--- a/backend/internal/pkg/apicompat/anthropic_to_responses_response.go
++++ b/backend/internal/pkg/apicompat/anthropic_to_responses_response.go
+@@ -4,2 +4,3 @@ import (
+ 	"crypto/rand"
++	"encoding/base64"
+ 	"encoding/hex"
+@@ -8,2 +9,4 @@ import (
+ 	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+ )
+@@ -14,2 +17,15 @@ import (
+ 
++const anthropicThinkingEnvelopePrefix = "anthropic-thinking-v1:"
++
++func encodeAnthropicThinking(block AnthropicContentBlock) string {
++	// Only fields belonging to the signed thinking block are retained.
++	payload, _ := json.Marshal(struct {
++		Type      string `json:"type"`
++		Thinking  string `json:"thinking"`
++		Signature string `json:"signature,omitempty"`
++		Data      string `json:"data,omitempty"`
++	}{block.Type, block.Thinking, block.Signature, block.Data})
++	return anthropicThinkingEnvelopePrefix + base64.RawStdEncoding.EncodeToString(payload)
++}
++
+ // AnthropicToResponsesResponse converts an Anthropic Messages response into a
+@@ -37,3 +53,11 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
+ 		switch block.Type {
+-		case "thinking":
++		case "thinking", "redacted_thinking":
++			if claude.IsOpus55(resp.Model) && (block.Signature != "" || block.Data != "") {
++				item := ResponsesOutput{Type: "reasoning", ID: generateItemID(), EncryptedContent: encodeAnthropicThinking(block)}
++				if block.Thinking != "" {
++					item.Summary = []ResponsesSummary{{Type: "summary_text", Text: block.Thinking}}
++				}
++				outputs = append(outputs, item)
++				continue
++			}
+ 			if block.Thinking != "" {
+@@ -49,2 +73,6 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
+ 		case "text":
++			if claude.IsOpus55(resp.Model) && block.Text != "" {
++				outputs = append(outputs, ResponsesOutput{Type: "message", ID: generateItemID(), Role: "assistant", Status: "completed", Content: []ResponsesContentPart{{Type: "output_text", Text: block.Text}}})
++				continue
++			}
+ 			if block.Text != "" {
+@@ -166,5 +194,7 @@ type AnthropicEventToResponsesState struct {
+ 	// Content of the currently open item, folded into Outputs when it closes.
+-	CurrentContent []ResponsesContentPart // message
+-	CurrentArgs    string                 // function_call
+-	CurrentSummary string                 // reasoning
++	CurrentContent             []ResponsesContentPart // message
++	CurrentArgs                string                 // function_call
++	CurrentSummary             string                 // reasoning
++	CurrentThinking            AnthropicContentBlock
++	PreserveThinkingSignatures bool
+ 
+@@ -250,2 +280,3 @@ func anthToResHandleMessageStart(evt *AnthropicStreamEvent, state *AnthropicEven
+ 		state.ResponseID = evt.Message.ID
++		state.PreserveThinkingSignatures = state.PreserveThinkingSignatures || claude.IsOpus55(evt.Message.Model)
+ 		if state.Model == "" {
+@@ -281,3 +312,3 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
+ 	switch evt.ContentBlock.Type {
+-	case "thinking":
++	case "thinking", "redacted_thinking":
+ 		// 开新 item 前必须先关掉在开的那个，与下面的 tool_use 分支一致。
+@@ -294,2 +325,4 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
+ 		state.CurrentItemType = "reasoning"
++		state.CurrentThinking = *evt.ContentBlock
++		state.CurrentSummary = evt.ContentBlock.Thinking
+ 		state.ContentIndex = 0
+@@ -411,3 +444,6 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
+ 	case "signature_delta":
+-		// Anthropic signature deltas have no Responses equivalent; skip
++		// Keep signatures in the opaque bridge envelope, never in visible text.
++		if state.PreserveThinkingSignatures {
++			state.CurrentThinking.Signature += evt.Delta.Signature
++		}
+ 		return nil
+@@ -554,2 +590,6 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
+ 	case "reasoning":
++		if state.PreserveThinkingSignatures && (state.CurrentThinking.Signature != "" || state.CurrentThinking.Data != "") {
++			state.CurrentThinking.Thinking = state.CurrentSummary
++			item.EncryptedContent = encodeAnthropicThinking(state.CurrentThinking)
++		}
+ 		if state.CurrentSummary != "" {
+@@ -568,2 +608,3 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
+ 	state.CurrentSummary = ""
++	state.CurrentThinking = AnthropicContentBlock{}
+ 	state.TextAccum = ""
+diff --git a/backend/internal/pkg/apicompat/chatcompletions_to_responses.go b/backend/internal/pkg/apicompat/chatcompletions_to_responses.go
+index f72b5faf6d4c5584e276637366d128376f7d9c87..773b12b69aa92bef5e4b36cef4f7227e7c6651aa 100644
+--- a/backend/internal/pkg/apicompat/chatcompletions_to_responses.go
++++ b/backend/internal/pkg/apicompat/chatcompletions_to_responses.go
+@@ -6,2 +6,4 @@ import (
+ 	"strings"
++
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+ )
+@@ -29,9 +31,10 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
+ 	out := &ResponsesRequest{
+-		Model:             req.Model,
+-		Instructions:      req.Instructions,
+-		Input:             inputJSON,
+-		Stream:            true, // upstream always streams
+-		Include:           []string{"reasoning.encrypted_content"},
+-		ServiceTier:       req.ServiceTier,
+-		ParallelToolCalls: req.ParallelToolCalls,
++		Model:              req.Model,
++		Instructions:       req.Instructions,
++		Input:              inputJSON,
++		Stream:             true, // upstream always streams
++		Include:            []string{"reasoning.encrypted_content"},
++		ServiceTier:        req.ServiceTier,
++		PromptCacheOptions: req.PromptCacheOptions,
++		ParallelToolCalls:  req.ParallelToolCalls,
+ 	}
+@@ -40,3 +43,3 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
+ 	// See isReasoningModel in anthropic_to_responses.go.
+-	if !isReasoningModel(req.Model) {
++	if !isReasoningModel(req.Model) || (openai.IsGPT6SolOrLunaModelSpelling(req.Model) && req.ReasoningEffort == "none") {
+ 		out.Temperature = req.Temperature
+@@ -367,6 +370,7 @@ func convertChatContentPartsToResponses(parts []ChatContentPart) []ResponsesCont
+ 		case "text":
+-			if p.Text != "" {
++			if p.Text != "" || len(p.PromptCacheBreakpoint) > 0 {
+ 				responseParts = append(responseParts, ResponsesContentPart{
+-					Type: "input_text",
+-					Text: p.Text,
++					PromptCacheBreakpoint: p.PromptCacheBreakpoint,
++					Type:                  "input_text",
++					Text:                  p.Text,
+ 				})
+@@ -376,4 +380,5 @@ func convertChatContentPartsToResponses(parts []ChatContentPart) []ResponsesCont
+ 				responseParts = append(responseParts, ResponsesContentPart{
+-					Type:     "input_image",
+-					ImageURL: p.ImageURL.URL,
++					PromptCacheBreakpoint: p.PromptCacheBreakpoint,
++					Type:                  "input_image",
++					ImageURL:              p.ImageURL.URL,
+ 				})
+@@ -383,6 +388,7 @@ func convertChatContentPartsToResponses(parts []ChatContentPart) []ResponsesCont
+ 				responseParts = append(responseParts, ResponsesContentPart{
+-					Type:     "input_file",
+-					Filename: p.File.Filename,
+-					FileData: p.File.FileData,
+-					FileID:   p.File.FileID,
++					PromptCacheBreakpoint: p.PromptCacheBreakpoint,
++					Type:                  "input_file",
++					Filename:              p.File.Filename,
++					FileData:              p.File.FileData,
++					FileID:                p.File.FileID,
+ 				})
+diff --git a/backend/internal/pkg/apicompat/responses_to_anthropic_instructions_test.go b/backend/internal/pkg/apicompat/responses_to_anthropic_instructions_test.go
+index b63787cd44edc35a4894d9480956baa73afde91e..4c113fefb2acafb12b08fa3ba364bb281e2fd5a9 100644
+--- a/backend/internal/pkg/apicompat/responses_to_anthropic_instructions_test.go
++++ b/backend/internal/pkg/apicompat/responses_to_anthropic_instructions_test.go
+@@ -82,3 +82,3 @@ func TestConvertResponsesInputToAnthropic_DeveloperRole(t *testing.T) {
+ 
+-		system, messages, err := convertResponsesInputToAnthropic("", json.RawMessage(input))
++		system, messages, err := convertResponsesInputToAnthropic("", json.RawMessage(input), false)
+ 		require.NoError(t, err)
+@@ -99,3 +99,3 @@ func TestConvertResponsesInputToAnthropic_DeveloperRole(t *testing.T) {
+ 
+-		_, messages, err := convertResponsesInputToAnthropic("", json.RawMessage(input))
++		_, messages, err := convertResponsesInputToAnthropic("", json.RawMessage(input), false)
+ 		require.NoError(t, err)
+@@ -118,3 +118,3 @@ func TestConvertResponsesInputToAnthropic_DeveloperRole(t *testing.T) {
+ 
+-		system, _, err := convertResponsesInputToAnthropic("Main instruction.", json.RawMessage(input))
++		system, _, err := convertResponsesInputToAnthropic("Main instruction.", json.RawMessage(input), false)
+ 		require.NoError(t, err)
+diff --git a/backend/internal/pkg/apicompat/responses_to_anthropic_request.go b/backend/internal/pkg/apicompat/responses_to_anthropic_request.go
+index 484fa98dba4bcccb11dbcb8132ee6c8f501f9c68..06d9669d29c4b0944e38f6e4f370be26815ddc23 100644
+--- a/backend/internal/pkg/apicompat/responses_to_anthropic_request.go
++++ b/backend/internal/pkg/apicompat/responses_to_anthropic_request.go
+@@ -3,2 +3,3 @@ package apicompat
+ import (
++	"encoding/base64"
+ 	"encoding/json"
+@@ -6,2 +7,4 @@ import (
+ 	"strings"
++
++	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+ )
+@@ -13,3 +16,3 @@ import (
+ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, error) {
+-	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input)
++	system, messages, err := convertResponsesInputToAnthropic(req.Instructions, req.Input, claude.IsOpus55(req.Model))
+ 	if err != nil {
+@@ -53,2 +56,30 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
+ 
++	// Opus 5.5 always uses adaptive thinking. Resolve the upstream model before
++	// conversion, because client aliases need not identify a Claude model.
++	if claude.IsOpus55(req.Model) {
++		var choice struct {
++			Type string `json:"type"`
++		}
++		if len(out.ToolChoice) > 0 {
++			if err := json.Unmarshal(out.ToolChoice, &choice); err != nil {
++				return nil, fmt.Errorf("invalid tool_choice: %w", err)
++			}
++		}
++		if choice.Type == "any" || choice.Type == "tool" {
++			return nil, fmt.Errorf("claude-opus-5-5 does not support forced tool_choice; use auto or none")
++		}
++		effort := "medium"
++		if req.Reasoning != nil && req.Reasoning.Effort != "" {
++			effort = req.Reasoning.Effort
++		}
++		switch effort {
++		case "low", "medium", "high", "xhigh", "max":
++		default:
++			return nil, fmt.Errorf("claude-opus-5-5 does not support reasoning effort %q; use low, medium, high, xhigh or max", effort)
++		}
++		out.Thinking = &AnthropicThinking{Type: "adaptive"}
++		out.OutputConfig = &AnthropicOutputConfig{Effort: effort}
++		return out, nil
++	}
++
+ 	// reasoning.effort → output_config.effort + thinking
+@@ -102,3 +133,3 @@ func mapResponsesEffortToAnthropic(effort string) string {
+ // (for Anthropic's polymorphic system field) and a list of Anthropic messages.
+-func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMessage) (json.RawMessage, []AnthropicMessage, error) {
++func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMessage, preserveThinking bool) (json.RawMessage, []AnthropicMessage, error) {
+ 	var systemParts []string
+@@ -167,7 +198,22 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
+ 		case item.Type == "reasoning":
+-			// Anthropic 无法摄入 OpenAI 的 reasoning：encrypted_content 是不透明的，
+-			// 而 thinking 块的重放需要 Anthropic 自己签发的 signature，无法伪造。
+-			// Codex 常见形态（只带 summary + encrypted_content）本来就会被丢弃，
+-			// 这里让带 content 数组的形态保持同样行为——否则 reasoning_text 块会被
+-			// 原样塞进 Anthropic 请求体，上游直接回 400。
++			// Only decode marked Anthropic bridge envelopes, not arbitrary
++			// OpenAI ciphertext. The upstream remains responsible for signature validation.
++			if preserveThinking && strings.HasPrefix(item.EncryptedContent, anthropicThinkingEnvelopePrefix) {
++				raw, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(item.EncryptedContent, anthropicThinkingEnvelopePrefix))
++				if err != nil {
++					return nil, nil, fmt.Errorf("invalid Anthropic thinking envelope: %w", err)
++				}
++				var block AnthropicContentBlock
++				if err := json.Unmarshal(raw, &block); err != nil {
++					return nil, nil, fmt.Errorf("invalid Anthropic thinking block: %w", err)
++				}
++				if (block.Type != "thinking" || block.Signature == "") && (block.Type != "redacted_thinking" || block.Data == "") {
++					return nil, nil, fmt.Errorf("invalid Anthropic signed thinking block")
++				}
++				content, err := json.Marshal([]AnthropicContentBlock{block})
++				if err != nil {
++					return nil, nil, err
++				}
++				messages = append(messages, AnthropicMessage{Role: "assistant", Content: content})
++			}
+ 
+diff --git a/backend/internal/pkg/apicompat/responses_to_anthropic_tool_pairing_test.go b/backend/internal/pkg/apicompat/responses_to_anthropic_tool_pairing_test.go
+index 42dd2d0cc574b7c043ec5958cf239d5a8d50ed5b..db87f2058ca9c16012072ad0afe4fbdf8f5977cb 100644
+--- a/backend/internal/pkg/apicompat/responses_to_anthropic_tool_pairing_test.go
++++ b/backend/internal/pkg/apicompat/responses_to_anthropic_tool_pairing_test.go
+@@ -60,3 +60,3 @@ func convertAnthropic(t *testing.T, input string) []AnthropicMessage {
+ 	t.Helper()
+-	_, messages, err := convertResponsesInputToAnthropic("", json.RawMessage(input))
++	_, messages, err := convertResponsesInputToAnthropic("", json.RawMessage(input), false)
+ 	require.NoError(t, err)
+diff --git a/backend/internal/pkg/apicompat/types.go b/backend/internal/pkg/apicompat/types.go
+index 5d89769b156c0a15fbd62bb82d2210f55d1df2ee..44a5b4c79c9a58a22bc1593a5230433f57939051 100644
+--- a/backend/internal/pkg/apicompat/types.go
++++ b/backend/internal/pkg/apicompat/types.go
+@@ -68,2 +68,3 @@ type AnthropicContentBlock struct {
+ 	Signature string `json:"signature,omitempty"`
++	Data      string `json:"data,omitempty"` // redacted_thinking
+ 
+@@ -228,2 +229,3 @@ type AnthropicDelta struct {
+ type ResponsesRequest struct {
++	PromptCacheOptions json.RawMessage     `json:"prompt_cache_options,omitempty"`
+ 	Model              string              `json:"model"`
+@@ -311,5 +313,6 @@ func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
+ type ResponsesContentPart struct {
+-	Type     string `json:"type"` // "input_text" | "output_text" | "input_image" | "input_file"
+-	Text     string `json:"text,omitempty"`
+-	ImageURL string `json:"image_url,omitempty"` // data URI for input_image
++	PromptCacheBreakpoint json.RawMessage `json:"prompt_cache_breakpoint,omitempty"`
++	Type                  string          `json:"type"` // "input_text" | "output_text" | "input_image" | "input_file"
++	Text                  string          `json:"text,omitempty"`
++	ImageURL              string          `json:"image_url,omitempty"` // data URI for input_image
+ 
+@@ -657,2 +660,3 @@ type ResponsesStreamEvent struct {
+ type ChatCompletionsRequest struct {
++	PromptCacheOptions  json.RawMessage    `json:"prompt_cache_options,omitempty"`
+ 	Model               string             `json:"model"`
+@@ -700,6 +704,7 @@ type ChatMessage struct {
+ type ChatContentPart struct {
+-	Type     string        `json:"type"` // "text" | "image_url" | "file"
+-	Text     string        `json:"text,omitempty"`
+-	ImageURL *ChatImageURL `json:"image_url,omitempty"`
+-	File     *ChatFile     `json:"file,omitempty"`
++	PromptCacheBreakpoint json.RawMessage `json:"prompt_cache_breakpoint,omitempty"`
++	Type                  string          `json:"type"` // "text" | "image_url" | "file"
++	Text                  string          `json:"text,omitempty"`
++	ImageURL              *ChatImageURL   `json:"image_url,omitempty"`
++	File                  *ChatFile       `json:"file,omitempty"`
+ }
+diff --git a/backend/internal/pkg/claude/constants.go b/backend/internal/pkg/claude/constants.go
+index ee2efcd29fa8eb7a840237528e8b547e4112570d..aa97f07c570b08c5697a2ad7e2f8890ac482e51f 100644
+--- a/backend/internal/pkg/claude/constants.go
++++ b/backend/internal/pkg/claude/constants.go
+@@ -174,2 +174,8 @@ var DefaultModels = []Model{
+ 	{
++		ID:          "claude-opus-5-5",
++		Type:        "model",
++		DisplayName: "Claude Opus 5.5",
++		CreatedAt:   "2026-09-22T00:00:00Z",
++	},
++	{
+ 		ID:          "claude-opus-5",
+diff --git a/backend/internal/pkg/claude/constants_model_test.go b/backend/internal/pkg/claude/constants_model_test.go
+index 6cfa265bdc9800f0f08d35374cc7fb0baef662b4..941a72d4863db9fdef0e5f11c254f86ced3f5732 100644
+--- a/backend/internal/pkg/claude/constants_model_test.go
++++ b/backend/internal/pkg/claude/constants_model_test.go
+@@ -20 +20,13 @@ func TestDefaultModelsContainsClaudeFable51(t *testing.T) {
+ }
++
++func TestDefaultModelsContainsOpus55(t *testing.T) {
++	for _, model := range DefaultModels {
++		if model.ID == "claude-opus-5-5" {
++			if model.DisplayName != "Claude Opus 5.5" || model.CreatedAt != "2026-09-22T00:00:00Z" {
++				t.Fatalf("unexpected Opus 5.5 descriptor: %+v", model)
++			}
++			return
++		}
++	}
++	t.Fatal("claude-opus-5-5 missing")
++}
+diff --git a/backend/internal/pkg/claude/effort_catalog.go b/backend/internal/pkg/claude/effort_catalog.go
+index ab587a4c01f4a89ab352da246736dcac580ed60c..00fd337917f0ce675522ffc4ea44afca1dc56172 100644
+--- a/backend/internal/pkg/claude/effort_catalog.go
++++ b/backend/internal/pkg/claude/effort_catalog.go
+@@ -26,2 +26,3 @@ var effortFamilies = []struct {
+ 	{family: "claude-opus-4-5", levels: effortLowMediumHigh},
++	{family: "claude-opus-5-5", levels: effortLowMediumHighXHighMax},
+ 	{family: "claude-opus-5", levels: effortLowMediumHighXHighMax},
+@@ -41,2 +42,7 @@ func EffortLevelsForModel(model string) []string {
+ 
++// IsOpus55 identifies the fixed Opus 5.5 ID after provider/local suffix normalization.
++func IsOpus55(model string) bool {
++	return normalizeEffortModelID(model) == "claude-opus-5-5"
++}
++
+ func normalizeEffortModelID(model string) string {
+diff --git a/backend/internal/pkg/openai/constants.go b/backend/internal/pkg/openai/constants.go
+index 5c7cad3674a875d374000f7d3fe61d9cb4bb2803..01f244390d73fade773f333e94355b2ca541bdf2 100644
+--- a/backend/internal/pkg/openai/constants.go
++++ b/backend/internal/pkg/openai/constants.go
+@@ -25,2 +25,4 @@ var DefaultModels = []Model{
+ 	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
++	{ID: "gpt-6-sol", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Sol"},
++	{ID: "gpt-6-luna", Object: "model", Created: 1790035200, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Luna"},
+ 	{ID: "gpt-6-astra", Object: "model", Created: 1788480000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-6 Astra"},
+@@ -159 +161,19 @@ func CodexBaseInstructionsForModel(model string) string {
+ }
++
++// IsGPT6SolOrLunaModelSpelling recognizes official IDs and existing local effort/compact suffixes.
++func IsGPT6SolOrLunaModelSpelling(model string) bool {
++	canonical := CanonicalizeOpenAIModelAliasSpelling(model)
++	for _, base := range []string{"gpt-6-sol", "gpt-6-luna"} {
++		if canonical == base {
++			return true
++		}
++		suffix, ok := strings.CutPrefix(canonical, base+"-")
++		if ok {
++			switch suffix {
++			case "none", "low", "medium", "high", "xhigh", "max", "openai-compact":
++				return true
++			}
++		}
++	}
++	return false
++}
+diff --git a/backend/internal/pkg/openai/constants_test.go b/backend/internal/pkg/openai/constants_test.go
+index 1cc700308395e531f5d579d2b7d3580e252595f2..523202d8b3ae666b803c0a01c1a07d7a8efad91b 100644
+--- a/backend/internal/pkg/openai/constants_test.go
++++ b/backend/internal/pkg/openai/constants_test.go
+@@ -34 +34,11 @@ func TestDefaultModelsIncludeGPTImage25(t *testing.T) {
+ }
++
++func TestGPT6SolLunaModelIdentity(t *testing.T) {
++	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
++		require.Contains(t, DefaultModelIDs(), model)
++		require.True(t, IsGPT6SolOrLunaModelSpelling(model))
++	}
++	require.False(t, IsGPT6SolOrLunaModelSpelling("gpt-6-astra"))
++	require.False(t, IsGPT6SolOrLunaModelSpelling("gpt-6-solitude"))
++	require.False(t, IsGPT6SolOrLunaModelSpelling("gpt-6-luna-preview"))
++}
+diff --git a/backend/internal/service/billing_service.go b/backend/internal/service/billing_service.go
+index 1be36ba528357c4dcf634c4ee2ca4f4718e2532d..9011f1ce4cb094404b8799207fd3fec0b736feef 100644
+--- a/backend/internal/service/billing_service.go
++++ b/backend/internal/service/billing_service.go
+@@ -14,2 +14,4 @@ import (
+ 	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+ 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+@@ -421,2 +423,12 @@ func (s *BillingService) initFallbackPricing() {
+ 
++	s.fallbackPrices["claude-opus-5-5"] = &ModelPricing{
++		InputPricePerToken:         4e-6,
++		OutputPricePerToken:        20e-6,
++		CacheCreationPricePerToken: 5e-6,
++		CacheReadPricePerToken:     0.2e-6,
++		CacheCreation5mPrice:       5e-6,
++		CacheCreation1hPrice:       8e-6,
++		SupportsCacheBreakdown:     true,
++	}
++
+ 	// Claude Fable 5.x uses the same input/output and cache-write prices, while
+@@ -531,2 +543,31 @@ func (s *BillingService) initFallbackPricing() {
+ 
++	// GPT-6 Sol/Luna official rates, 2026-09-22.
++	s.fallbackPrices["gpt-6-sol"] = &ModelPricing{
++		InputPricePerToken:                 2e-6,
++		InputPricePerTokenPriority:         4e-6,
++		OutputPricePerToken:                10e-6,
++		OutputPricePerTokenPriority:        20e-6,
++		CacheCreationPricePerToken:         2.5e-6,
++		CacheCreationPricePerTokenPriority: 5e-6,
++		CacheReadPricePerToken:             0.2e-6,
++		CacheReadPricePerTokenPriority:     0.4e-6,
++		CacheCreationPriceExplicit:         true,
++		LongContextInputThreshold:          272_000,
++		LongContextInputMultiplier:         2,
++		LongContextOutputMultiplier:        1.5,
++	}
++	s.fallbackPrices["gpt-6-luna"] = &ModelPricing{
++		InputPricePerToken:                 0.1e-6,
++		InputPricePerTokenPriority:         0.2e-6,
++		OutputPricePerToken:                0.5e-6,
++		OutputPricePerTokenPriority:        1e-6,
++		CacheCreationPricePerToken:         0.125e-6,
++		CacheCreationPricePerTokenPriority: 0.25e-6,
++		CacheReadPricePerToken:             0.01e-6,
++		CacheReadPricePerTokenPriority:     0.02e-6,
++		CacheCreationPriceExplicit:         true,
++		LongContextInputThreshold:          272_000,
++		LongContextInputMultiplier:         2,
++		LongContextOutputMultiplier:        1.5,
++	}
+ 	// OpenAI GPT-5.6 官方价格（USD/token）。缓存写入为输入价的 1.25 倍。
+@@ -936,2 +977,5 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
+ 	}
++	if claude.IsOpus55(modelLower) {
++		return s.fallbackPrices["claude-opus-5-5"]
++	}
+ 	if strings.Contains(modelLower, "opus") {
+@@ -1115,2 +1159,4 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
+ 		switch normalized {
++		case "gpt-6-sol", "gpt-6-luna":
++			return s.fallbackPrices[normalized]
+ 		case "gpt-6-astra":
+@@ -1272,2 +1318,3 @@ func (s *BillingService) getModelPricingAt(model string, pricingAt time.Time) (*
+ 				OutputPricePerTokenPriority:        litellmPricing.OutputCostPerTokenPriority,
++				CacheCreationPriceExplicit:         openai.IsGPT6SolOrLunaModelSpelling(model) && litellmPricing.CacheCreationInputTokenCostExplicit,
+ 				CacheCreationPricePerToken:         litellmPricing.CacheCreationInputTokenCost,
+@@ -1795,7 +1842,8 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
+ 	normalized := normalizeKnownOpenAICodexModel(model)
+-	isGPT56 := isOpenAIGPT56Model(normalized)
+-	needsCacheCreationPolicy := isGPT56 && !pricing.CacheCreationPriceExplicit && (pricing.CacheCreationPricePerToken <= 0 ||
++	usesCacheWritePremium := isOpenAIGPT56Model(normalized) || openai.IsGPT6SolOrLunaModelSpelling(normalized)
++	needsCacheCreationPolicy := usesCacheWritePremium && !pricing.CacheCreationPriceExplicit && (pricing.CacheCreationPricePerToken <= 0 ||
+ 		(pricing.InputPricePerTokenPriority > 0 && pricing.CacheCreationPricePerTokenPriority <= 0))
+ 	fastRatio := openAIModelFastPricingRatio(normalized)
+-	if !needsCacheCreationPolicy && fastRatio <= 0 {
++	needsOpus55FastMultiplier := claude.IsOpus55(model) && pricing.FastMultiplier == nil
++	if !needsCacheCreationPolicy && fastRatio <= 0 && !needsOpus55FastMultiplier {
+ 		return pricing
+@@ -1803,3 +1851,7 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
+ 	cloned := *pricing
+-	if isGPT56 && !cloned.CacheCreationPriceExplicit {
++	if needsOpus55FastMultiplier {
++		multiplier := 2.0
++		cloned.FastMultiplier = &multiplier
++	}
++	if usesCacheWritePremium && !cloned.CacheCreationPriceExplicit {
+ 		if cloned.CacheCreationPricePerToken <= 0 {
+@@ -1813,2 +1865,5 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
+ 		enforceOpenAIFastPricingRatio(&cloned, fastRatio)
++		if openai.IsGPT6SolOrLunaModelSpelling(normalized) && cloned.CacheCreationPriceExplicit {
++			cloned.CacheCreationPricePerTokenPriority = cloned.CacheCreationPricePerToken * fastRatio
++		}
+ 	}
+@@ -1822,3 +1877,3 @@ func openAIModelFastPricingRatio(normalized string) float64 {
+ 	switch normalized {
+-	case "gpt-5.4", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra":
++	case "gpt-5.4", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna":
+ 		return 2.0
+diff --git a/backend/internal/service/billing_service_test.go b/backend/internal/service/billing_service_test.go
+index ed83a9730832aeefafb04924fa6a689c5c1bfcdb..12e133df794adf0db789cfccb127646d9dba0ea7 100644
+--- a/backend/internal/service/billing_service_test.go
++++ b/backend/internal/service/billing_service_test.go
+@@ -8,2 +8,3 @@ import (
+ 	"math"
++	"os"
+ 	"strings"
+@@ -1933 +1934,106 @@ func TestComputeTokenBreakdown_NonExplicitZeroImagePrice_FallsBackToOutput(t *te
+ }
++
++func TestNewModelPricingCatalogFallbackAndContext(t *testing.T) {
++	data, err := os.ReadFile("../../resources/model-pricing/model_prices_and_context_window.json")
++	require.NoError(t, err)
++	catalog := &PricingService{}
++	catalog.pricingData, err = catalog.parsePricingData(data)
++	require.NoError(t, err)
++	sources := map[string]*BillingService{
++		"billing fallback": newTestBillingService(),
++		"pricing fallback": NewBillingService(&config.Config{}, &PricingService{pricingData: map[string]*LiteLLMModelPricing{
++			"gpt-6":         {InputCostPerToken: 10e-6, OutputCostPerToken: 50e-6},
++			"claude-opus-5": {InputCostPerToken: 5e-6, OutputCostPerToken: 25e-6},
++		}}),
++		"catalog": NewBillingService(&config.Config{}, catalog),
++	}
++	for source, svc := range sources {
++		for _, tc := range []struct {
++			model                      string
++			input, output, write, read float64
++		}{
++			{"gpt-6-sol", 2e-6, 10e-6, 2.5e-6, 0.2e-6},
++			{"gpt-6-luna", 0.1e-6, 0.5e-6, 0.125e-6, 0.01e-6},
++		} {
++			t.Run(source+"/"+tc.model, func(t *testing.T) {
++				for _, n := range []int{271999, 272000, 272001} {
++					for tier, mult := range map[string]float64{"": 1, "priority": 2, "fast": 2, "flex": 0.5} {
++						tokens := UsageTokens{InputTokens: n - 3000, CacheReadTokens: 2000, CacheCreationTokens: 1000, OutputTokens: 500}
++						cost, err := svc.CalculateCostWithServiceTier(tc.model, tokens, 1, tier)
++						require.NoError(t, err)
++						im, om := 1.0, 1.0
++						if n > 272000 {
++							im = 2
++							om = 1.5
++						}
++						require.InDelta(t, float64(tokens.InputTokens)*tc.input*im*mult, cost.InputCost, 1e-10)
++						require.InDelta(t, 1000*tc.write*im*mult, cost.CacheCreationCost, 1e-10)
++						require.InDelta(t, 2000*tc.read*im*mult, cost.CacheReadCost, 1e-10)
++						require.InDelta(t, 500*tc.output*om*mult, cost.OutputCost, 1e-10)
++						require.InDelta(t, cost.InputCost+cost.OutputCost+cost.CacheCreationCost+cost.CacheReadCost, cost.TotalCost, 1e-10)
++						require.Equal(t, n > 272000, cost.LongContextBillingApplied)
++					}
++				}
++			})
++		}
++		t.Run(source+"/opus", func(t *testing.T) {
++			tokens := UsageTokens{InputTokens: 300000, OutputTokens: 500, CacheReadTokens: 1000, CacheCreationTokens: 1000, CacheCreation5mTokens: 400, CacheCreation1hTokens: 600}
++			for tier, mult := range map[string]float64{"": 1, "fast": 2} {
++				cost, err := svc.CalculateCostWithServiceTier("claude-opus-5-5", tokens, 1, tier)
++				require.NoError(t, err)
++				require.InDelta(t, 1.2*mult, cost.InputCost, 1e-10)
++				require.InDelta(t, (400*5e-6+600*8e-6)*mult, cost.CacheCreationCost, 1e-10)
++				require.InDelta(t, 1000*0.2e-6*mult, cost.CacheReadCost, 1e-10)
++				require.InDelta(t, 500*20e-6*mult, cost.OutputCost, 1e-10)
++				require.False(t, cost.LongContextBillingApplied)
++			}
++		})
++	}
++}
++
++func TestNewModelPricingChannelOverridesAndFamilyIsolation(t *testing.T) {
++	svc := newTestBillingService()
++	for _, model := range []string{"gpt-6-sol", "gpt-6-luna", "claude-opus-5-5"} {
++		t.Run(model, func(t *testing.T) {
++			zero := 0.0
++			prices, err := svc.GetModelPricingWithChannel(model, &ChannelModelPricing{InputPrice: &zero, OutputPrice: &zero, CacheWritePrice: &zero, CacheReadPrice: &zero})
++			require.NoError(t, err)
++			cost := svc.computeTokenBreakdown(prices, UsageTokens{InputTokens: 300000, CacheReadTokens: 1000, CacheCreationTokens: 1000, OutputTokens: 1000}, 1, "priority", true)
++			require.Zero(t, cost.TotalCost)
++			fresh, err := svc.GetModelPricing(model)
++			require.NoError(t, err)
++			require.Positive(t, fresh.InputPricePerToken)
++		})
++	}
++	prices, err := svc.GetModelPricing("claude-opus-5")
++	require.NoError(t, err)
++	require.Equal(t, 5e-6, prices.InputPricePerToken)
++	prices, err = svc.GetModelPricing("gpt-6")
++	require.NoError(t, err)
++	require.Equal(t, 10e-6, prices.InputPricePerToken)
++	require.Equal(t, "gpt-6-sol", normalizeKnownOpenAICodexModel("openai/gpt-6-sol-max"))
++	require.Equal(t, "gpt-6-luna", normalizeKnownOpenAICodexModel("gpt-6-luna-openai-compact"))
++}
++
++func TestNewModelPricingExplicitZeroCacheWrite(t *testing.T) {
++	svc := &PricingService{}
++	var err error
++	svc.pricingData, err = svc.parsePricingData([]byte(`{"gpt-6-sol":{"litellm_provider":"openai","input_cost_per_token":0.000002,"output_cost_per_token":0.00001,"input_cost_per_token_flex":0.000001,"cache_creation_input_token_cost":0}}`))
++	require.NoError(t, err)
++	billing := NewBillingService(&config.Config{}, svc)
++	for _, tier := range []string{"", "priority", "flex"} {
++		cost, err := billing.CalculateCostWithServiceTier("gpt-6-sol", UsageTokens{CacheCreationTokens: 1000}, 1, tier)
++		require.NoError(t, err)
++		require.Zero(t, cost.CacheCreationCost)
++	}
++}
++
++func TestNewModelPricingAliasesRetainExplicitOverrides(t *testing.T) {
++	zero := &LiteLLMModelPricing{}
++	svc := &PricingService{pricingData: map[string]*LiteLLMModelPricing{
++		"gpt-6-sol": zero, "gpt-6-luna": zero, "claude-opus-5-5": zero,
++	}}
++	for _, model := range []string{"gpt-6-sol-max", "openai/gpt-6-luna-openai-compact", "claude-opus-5-5-thinking"} {
++		require.Same(t, zero, svc.GetModelPricing(model))
++	}
++}
+diff --git a/backend/internal/service/gateway_anthropic_apikey_passthrough_test.go b/backend/internal/service/gateway_anthropic_apikey_passthrough_test.go
+index 34eb98d0b74b73be4a2ddf287a9634dbd8e71d7e..ff416f2c2179093165ce02b4af1e122625d22b53 100644
+--- a/backend/internal/service/gateway_anthropic_apikey_passthrough_test.go
++++ b/backend/internal/service/gateway_anthropic_apikey_passthrough_test.go
+@@ -1771 +1771,43 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_Non2xxRecordsOllamaActivity(t
+ }
++
++func TestOpus55RejectsUnsupportedParametersBeforeMimicry(t *testing.T) {
++	for _, typ := range []string{AccountTypeOAuth, AccountTypeAPIKey} {
++		for _, field := range []string{`"thinking":{"type":"disabled"}`, `"thinking":{"type":"enabled","budget_tokens":1024}`, `"tool_choice":{"type":"any"}`, `"tool_choice":{"type":"tool","name":"lookup"}`} {
++			for _, count := range []bool{false, true} {
++				rec := httptest.NewRecorder()
++				c, _ := gin.CreateTestContext(rec)
++				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
++				model := "claude-opus-5-5"
++				account := &Account{ID: 1, Platform: PlatformAnthropic, Type: typ}
++				if typ == AccountTypeAPIKey {
++					model = "public-opus"
++					account.Credentials = map[string]any{"model_mapping": map[string]any{model: "claude-opus-5-5"}}
++				}
++				body := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hello"}],` + field + `}`)
++				parsed := &ParsedRequest{Model: model, Body: NewRequestBodyRef(body)}
++				svc := &GatewayService{}
++				var err error
++				if count {
++					err = svc.ForwardCountTokens(context.Background(), c, account, parsed)
++				} else {
++					_, err = svc.Forward(context.Background(), c, account, parsed)
++				}
++				require.Error(t, err)
++				require.Equal(t, http.StatusBadRequest, rec.Code)
++				require.Contains(t, rec.Body.String(), "invalid_request_error")
++			}
++		}
++	}
++}
++
++func TestOpus55ThinkingDefaultPreservesSignedHistory(t *testing.T) {
++	body := []byte(`{"model":"claude-opus-5-5","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"signed"},{"type":"redacted_thinking","data":"encrypted"},{"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}],"tool_choice":{"type":"none"},"thinking":{"type":"adaptive","display":"omitted"}}`)
++	require.Equal(t, string(body), string(FilterThinkingBlocks(body, "claude-opus-5-5")))
++	withoutThinking, _ := deleteJSONPathBytes(body, "thinking")
++	require.Equal(t, string(withoutThinking), string(FilterThinkingBlocks(withoutThinking, "claude-opus-5-5")))
++	out, _ := normalizeClaudeOAuthRequestBody(body, "claude-opus-5-5", claudeOAuthNormalizeOptions{})
++	require.Equal(t, "none", gjson.GetBytes(out, "tool_choice.type").String())
++	require.False(t, gjson.GetBytes(out, "output_config.effort").Exists(), "omission uses the official medium default")
++	require.Equal(t, "omitted", gjson.GetBytes(out, "thinking.display").String())
++	require.JSONEq(t, gjson.GetBytes(body, "messages").Raw, gjson.GetBytes(out, "messages").Raw)
++}
+diff --git a/backend/internal/service/gateway_claude_oauth_body.go b/backend/internal/service/gateway_claude_oauth_body.go
+index fa90931588d8da2e15b024b1743841eaaec4050c..a4732267afc3d370db513f20660f03dabf09097d 100644
+--- a/backend/internal/service/gateway_claude_oauth_body.go
++++ b/backend/internal/service/gateway_claude_oauth_body.go
+@@ -265,3 +265,3 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
+ 	// 策略：客户端传了什么就透传；没传则补默认 1。
+-	if !gjson.GetBytes(out, "temperature").Exists() {
++	if !gjson.GetBytes(out, "temperature").Exists() && !claude.IsOpus55(modelID) {
+ 		if next, ok := setJSONValueBytes(out, "temperature", 1); ok {
+@@ -306,3 +306,3 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
+ 	if !gjson.GetBytes(out, "tools").IsArray() || len(gjson.GetBytes(out, "tools").Array()) == 0 {
+-		if gjson.GetBytes(out, "tool_choice").Exists() {
++		if !claude.IsOpus55(modelID) && gjson.GetBytes(out, "tool_choice").Exists() {
+ 			if next, ok := deleteJSONPathBytes(out, "tool_choice"); ok {
+diff --git a/backend/internal/service/gateway_count_tokens.go b/backend/internal/service/gateway_count_tokens.go
+index 6a17f50b17e9577f711ac129a4df3868e82f4f22..3cffa2201a55e568e557113061218e06492ff51b 100644
+--- a/backend/internal/service/gateway_count_tokens.go
++++ b/backend/internal/service/gateway_count_tokens.go
+@@ -25,2 +25,13 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
+ 
++	validationModel := parsed.Model
++	if account != nil && account.Type == AccountTypeAPIKey {
++		validationModel = account.GetMappedModel(validationModel)
++	}
++	if account != nil && account.Platform == PlatformAnthropic && !account.IsBedrock() && account.Type != AccountTypeServiceAccount {
++		if err := validateClaudeOpus55Request(parsed.Body.Bytes(), validationModel); err != nil {
++			s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
++			return err
++		}
++	}
++
+ 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
+diff --git a/backend/internal/service/gateway_forward.go b/backend/internal/service/gateway_forward.go
+index 3839198484b05faa197623ea028bb449fd110c33..f2927737659f8db9de306a08f88efd6b725570cb 100644
+--- a/backend/internal/service/gateway_forward.go
++++ b/backend/internal/service/gateway_forward.go
+@@ -95,2 +95,13 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
+ 	}
++	// API-key mappings and OAuth native IDs are resolved before mimicry.
++	validationModel := parsed.Model
++	if account != nil && account.Type == AccountTypeAPIKey {
++		validationModel = account.GetMappedModel(validationModel)
++	}
++	if account != nil && account.Platform == PlatformAnthropic && !account.IsBedrock() && account.Type != AccountTypeServiceAccount {
++		if err := validateClaudeOpus55Request(parsed.Body.Bytes(), validationModel); err != nil {
++			c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": err.Error()}})
++			return nil, err
++		}
++	}
+ 	// Anthropic Fast is requested with speed=fast rather than OpenAI's
+diff --git a/backend/internal/service/gateway_forward_as_chat_completions.go b/backend/internal/service/gateway_forward_as_chat_completions.go
+index f305146e58d1f3df0860a125f5e012b18ff0e9d2..ac1d3936021bb75d6c6312bd81e4ff1bf1f04406 100644
+--- a/backend/internal/service/gateway_forward_as_chat_completions.go
++++ b/backend/internal/service/gateway_forward_as_chat_completions.go
+@@ -52,12 +52,3 @@ func (s *GatewayService) ForwardAsChatCompletions(
+ 
+-	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(responsesReq)
+-	if err != nil {
+-		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
+-	}
+-
+-	// 3. Force upstream streaming
+-	anthropicReq.Stream = true
+-	reqStream := true
+-
+-	// 4. Model mapping
++	// Resolve the final upstream model before model-specific conversion.
+ 	mappedModel := originalModel
+@@ -77,3 +68,18 @@ func (s *GatewayService) ForwardAsChatCompletions(
+ 	}
+-	anthropicReq.Model = mappedModel
++	if err := validateClaudeOpus55Request(body, mappedModel); err != nil {
++		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
++		return nil, err
++	}
++	responsesReq.Model = mappedModel
++	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(responsesReq)
++	if err != nil {
++		if claude.IsOpus55(mappedModel) {
++			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
++		}
++		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
++	}
++
++	// 3. Force upstream streaming
++	anthropicReq.Stream = true
++	reqStream := true
+ 
+diff --git a/backend/internal/service/gateway_forward_as_responses.go b/backend/internal/service/gateway_forward_as_responses.go
+index 999b544adc4e0e7fafa4776b5fcc590e758f512f..44ed3329c4ffccbfed5039f8c347ef1b8681f098 100644
+--- a/backend/internal/service/gateway_forward_as_responses.go
++++ b/backend/internal/service/gateway_forward_as_responses.go
+@@ -62,12 +62,3 @@ func (s *GatewayService) ForwardAsResponses(
+ 	// 3. Convert Responses → Anthropic
+-	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
+-	if err != nil {
+-		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
+-	}
+-
+-	// 3. Force upstream streaming (Anthropic works best with streaming)
+-	anthropicReq.Stream = true
+-	reqStream := true
+-
+-	// 4. Model mapping
++	// Resolve the final upstream model before model-specific conversion.
+ 	mappedModel := originalModel
+@@ -87,3 +78,18 @@ func (s *GatewayService) ForwardAsResponses(
+ 	}
+-	anthropicReq.Model = mappedModel
++	if err := validateClaudeOpus55Request(body, mappedModel); err != nil {
++		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
++		return nil, err
++	}
++	responsesReq.Model = mappedModel
++	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
++	if err != nil {
++		if claude.IsOpus55(mappedModel) {
++			writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
++		}
++		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
++	}
++
++	// 3. Force upstream streaming (Anthropic works best with streaming)
++	anthropicReq.Stream = true
++	reqStream := true
+ 
+@@ -414,2 +420,4 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
+ 					finalResp.Content[idx].Thinking += event.Delta.Thinking
++				case "signature_delta":
++					finalResp.Content[idx].Signature += event.Delta.Signature
+ 				case "input_json_delta":
+@@ -446,2 +454,5 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
+ 	// Convert to Responses format
++	if claude.IsOpus55(mappedModel) {
++		finalResp.Model = mappedModel
++	}
+ 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
+@@ -505,2 +516,3 @@ func (s *GatewayService) handleResponsesStreamingResponse(
+ 	state.Model = originalModel
++	state.PreserveThinkingSignatures = claude.IsOpus55(mappedModel)
+ 	clientToolRestorer := apicompat.NewResponsesClientToolStreamRestorer(clientToolMapping)
+diff --git a/backend/internal/service/gateway_forward_as_responses_test.go b/backend/internal/service/gateway_forward_as_responses_test.go
+index 972c6bc1a60e9c79db91a345a9a67accdf9324bb..5f74dfac5978bc8ce47a61c27cd84c99aa418c0f 100644
+--- a/backend/internal/service/gateway_forward_as_responses_test.go
++++ b/backend/internal/service/gateway_forward_as_responses_test.go
+@@ -5,3 +5,6 @@ package service
+ import (
++	"context"
+ 	"encoding/json"
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/tidwall/gjson"
+ 	"io"
+@@ -451 +454,72 @@ func TestHandleResponsesStreamingResponse_CompactSSEFormat(t *testing.T) {
+ }
++
++func TestOpus55ResponsesSignedThinkingBufferedAndStreamed(t *testing.T) {
++	payload := strings.Join([]string{
++		"event: message_start\n" + `data: {"type":"message_start","message":{"id":"msg_1","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":10}}}`,
++		"event: content_block_start\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`,
++		"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed"}}`,
++		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}`,
++		"event: content_block_start\n" + `data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
++		"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ok"}}`,
++		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":1}`,
++		"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`,
++		"event: message_stop\n" + `data: {"type":"message_stop"}`,
++	}, "\n\n") + "\n\n"
++	for _, stream := range []bool{false, true} {
++		rec := httptest.NewRecorder()
++		c, _ := gin.CreateTestContext(rec)
++		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
++		resp := &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(payload))}
++		svc := &GatewayService{}
++		var err error
++		if stream {
++			_, err = svc.handleResponsesStreamingResponse(resp, c, "public-opus", "claude-opus-5-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
++		} else {
++			_, err = svc.handleResponsesBufferedStreamingResponse(resp, c, "public-opus", "claude-opus-5-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
++		}
++		require.NoError(t, err)
++		require.Contains(t, rec.Body.String(), "anthropic-thinking-v1:")
++		require.Contains(t, rec.Body.String(), "public-opus")
++		require.Contains(t, rec.Body.String(), `"text":"ok"`)
++	}
++}
++
++func TestOpus55BridgeUsesMappedModelBeforeThinkingConversion(t *testing.T) {
++	for _, chat := range []bool{false, true} {
++		for _, forced := range []bool{false, true} {
++			rec := httptest.NewRecorder()
++			c, _ := gin.CreateTestContext(rec)
++			body := `{"model":"public-opus","input":"hello","reasoning":{"effort":"xhigh"}}`
++			if chat {
++				body = `{"model":"public-opus","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"xhigh"}`
++			}
++			if forced {
++				body = body[:len(body)-1] + `,"tool_choice":"required","tools":[{"type":"function","name":"lookup","function":{"name":"lookup"}}]}`
++			}
++			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
++			upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(namespaceToolAnthropicStream()))}}
++			svc := &GatewayService{cfg: &config.Config{}, httpUpstream: upstream}
++			account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "fixture-key", "model_mapping": map[string]any{"public-opus": "claude-opus-5-5"}}}
++			var err error
++			var result *ForwardResult
++			if chat {
++				result, err = svc.ForwardAsChatCompletions(context.Background(), c, account, []byte(body), nil)
++			} else {
++				result, err = svc.ForwardAsResponses(context.Background(), c, account, []byte(body), nil)
++			}
++			if forced {
++				require.Error(t, err)
++				require.Equal(t, 400, rec.Code)
++				require.Nil(t, upstream.lastReq)
++			} else {
++				require.NoError(t, err)
++				require.NotNil(t, result)
++				require.NotNil(t, upstream.lastReq)
++				require.Equal(t, "claude-opus-5-5", gjson.GetBytes(upstream.lastBody, "model").String())
++				require.Equal(t, "adaptive", gjson.GetBytes(upstream.lastBody, "thinking.type").String())
++				require.Equal(t, "xhigh", gjson.GetBytes(upstream.lastBody, "output_config.effort").String())
++				require.False(t, gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Exists())
++			}
++		}
++	}
++}
+diff --git a/backend/internal/service/gateway_request.go b/backend/internal/service/gateway_request.go
+index 72f48ad40ab82084030d76d16290b52c8926e773..da4e5d601740e74cccd3b830e4d6189a5679a964 100644
+--- a/backend/internal/service/gateway_request.go
++++ b/backend/internal/service/gateway_request.go
+@@ -225,3 +225,3 @@ func parseGatewayRequestCurrentBody(parsed *ParsedRequest, protocol string) erro
+ 	thinkingType := gjson.Get(jsonStr, "thinking.type").String()
+-	parsed.ThinkingEnabled = thinkingType == "enabled" || thinkingType == "adaptive"
++	parsed.ThinkingEnabled = thinkingType == "enabled" || thinkingType == "adaptive" || (protocol == domain.PlatformAnthropic && claude.IsOpus55(parsed.Model))
+ 
+@@ -568,2 +568,22 @@ func StripEmptyTextBlocks(body []byte) []byte {
+ 
++// validateClaudeOpus55Request rejects settings that the upstream cannot honor.
++// Call before OAuth mimicry can remove tool_choice or alter thinking defaults.
++func validateClaudeOpus55Request(body []byte, model string) error {
++	if !claude.IsOpus55(model) {
++		return nil
++	}
++	switch gjson.GetBytes(body, "thinking.type").String() {
++	case "disabled", "enabled":
++		return fmt.Errorf("claude-opus-5-5 requires adaptive thinking; omit thinking or use thinking.type=adaptive and output_config.effort")
++	}
++	if gjson.GetBytes(body, "tool_choice").String() == "required" {
++		return fmt.Errorf("claude-opus-5-5 does not support forced tool_choice; use auto or none")
++	}
++	switch gjson.GetBytes(body, "tool_choice.type").String() {
++	case "any", "tool", "function", "custom", "namespace":
++		return fmt.Errorf("claude-opus-5-5 does not support forced tool_choice; use auto or none")
++	}
++	return nil
++}
++
+ // FilterThinkingBlocks removes thinking blocks from request body
+@@ -586,3 +606,3 @@ func FilterThinkingBlocks(body []byte, mappedModel string) []byte {
+ 	}
+-	return filterThinkingBlocksInternal(body, false)
++	return filterThinkingBlocksInternal(body, claude.IsOpus55(mappedModel))
+ }
+@@ -1323,3 +1343,3 @@ func FilterSignatureSensitiveBlocksForRetry(body []byte, mappedModel string) []b
+ //   - 当 thinking.type 是 "enabled"/"adaptive"：仅移除缺失/无效 signature 的 thinking 块
+-func filterThinkingBlocksInternal(body []byte, _ bool) []byte {
++func filterThinkingBlocksInternal(body []byte, alwaysThinking bool) []byte {
+ 	// Fast path: if body doesn't contain "thinking", skip parsing
+@@ -1340,3 +1360,3 @@ func filterThinkingBlocksInternal(body []byte, _ bool) []byte {
+ 	// Check if thinking is enabled
+-	thinkingEnabled := false
++	thinkingEnabled := alwaysThinking
+ 	if thinking, ok := req["thinking"].(map[string]any); ok {
+@@ -1381,2 +1401,8 @@ func filterThinkingBlocksInternal(body []byte, _ bool) []byte {
+ 				if thinkingEnabled && role == "assistant" {
++					if alwaysThinking && blockType == "redacted_thinking" {
++						if data, ok := blockMap["data"].(string); ok && data != "" {
++							newContent = append(newContent, block)
++							continue
++						}
++					}
+ 					signature, _ := blockMap["signature"].(string)
+diff --git a/backend/internal/service/openai_codex_models_service.go b/backend/internal/service/openai_codex_models_service.go
+index 71041e9e732f6bd990f40e03a047dbdde7cd5692..e462922543d3ef271938d4fc1ce0a6b6f6c0596b 100644
+--- a/backend/internal/service/openai_codex_models_service.go
++++ b/backend/internal/service/openai_codex_models_service.go
+@@ -487,2 +487,6 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
+ 	if isClaudeCodexModel(modelID) {
++		if claude.IsOpus55(modelID) {
++			descriptor.ContextWindow = 1_000_000
++			descriptor.MaxContextWindow = 1_000_000
++		}
+ 		descriptor.DisplayName = claudeCodexDisplayName(modelID)
+@@ -511,3 +515,5 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
+ 			descriptor.TruncationPolicy = configuredCodexTruncationPolicy{Mode: "tokens", Limit: configuredCodexToolOutputMaxTokens}
+-			if isOpenAIGPT56Model(modelID) {
++			// GPT-6 Sol/Luna retain the existing 5.6 Codex window as an offline
++			// compatibility template; live account metadata remains authoritative.
++			if isOpenAIGPT56Model(modelID) || openai.IsGPT6SolOrLunaModelSpelling(modelID) {
+ 				descriptor.MaxContextWindow = configuredCodexGPT56MaxContext
+@@ -560,4 +566,4 @@ func configuredCodexSupportsPriorityServiceTier(modelID string) bool {
+ 	}
+-	// GPT-6 Astra advertises Fast via service_tier=priority in public model metadata.
+-	return isOpenAIGPT6AstraModel(modelID)
++	// GPT-6 models advertise Fast via service_tier=priority in public model metadata.
++	return isOpenAIGPT6Model(modelID)
+ }
+@@ -624,3 +630,3 @@ func configuredCodexGPTReasoningLevels(modelID string) []configuredCodexReasonin
+ 	normalized := getNormalizedCodexModel(modelID)
+-	if isOpenAIGPT56Model(modelID) || isOpenAIGPT6AstraModel(modelID) {
++	if isOpenAIGPT56Model(modelID) || isOpenAIGPT6Model(modelID) {
+ 		levels = append(levels, configuredCodexReasoningLevel{
+@@ -649,3 +655,3 @@ func isOpenAICodexReasoningGPTModel(modelID string) bool {
+ 	normalized := canonicalizeOpenAIModelAliasSpelling(modelID)
+-	return isOpenAIGPT6AstraModel(normalized) || strings.HasPrefix(normalized, "gpt-5")
++	return isOpenAIGPT6Model(normalized) || strings.HasPrefix(normalized, "gpt-5")
+ }
+@@ -654,3 +660,3 @@ func isOpenAICodexImageInputModel(modelID string) bool {
+ 	normalized := canonicalizeOpenAIModelAliasSpelling(modelID)
+-	return isOpenAIGPT6AstraModel(normalized) ||
++	return isOpenAIGPT6Model(normalized) ||
+ 		strings.HasPrefix(normalized, "gpt-5") ||
+diff --git a/backend/internal/service/openai_codex_models_service_test.go b/backend/internal/service/openai_codex_models_service_test.go
+index ae0d1f0396d1f7bf62e2eb5cd19f005c14f6c1e0..b97c0ea1a9bdf1b2110acec0773f522c5fbaf1c3 100644
+--- a/backend/internal/service/openai_codex_models_service_test.go
++++ b/backend/internal/service/openai_codex_models_service_test.go
+@@ -3706 +3706,20 @@ func TestFetchCodexModelsManifestOAuthSharedAcrossGroupsWithIndependentFiltering
+ }
++
++func TestGPT6SolLunaCatalogKeepsAuthoritativeCapabilities(t *testing.T) {
++	for _, id := range []string{"gpt-6-sol", "gpt-6-luna"} {
++		svc := &OpenAIGatewayService{}
++		manifest := &OpenAIModelsResponse{Body: []byte(`{"models":[{"slug":"` + id + `","supported_reasoning_levels":[{"effort":"ultra"}],"default_reasoning_level":"ultra","multi_agent_reasoning_effort":"xhigh","service_tiers":[{"id":"ultrafast"}],"context_window":300000,"max_context_window":900000,"supports_search_tool":false,"apply_patch_tool_type":null}]}`)}
++		account := newCodexModelsAPIKeyTestAccount("https://api.openai.com/v1")
++		require.NoError(t, svc.CompleteAPIKeyCodexModelsManifestForClient(manifest, account))
++		models := decodeCodexManifestModels(t, manifest.Body)
++		require.Len(t, models, 1)
++		require.Equal(t, []string{"ultra"}, effortsFromManifestModel(t, models[0]))
++		require.Equal(t, "ultra", models[0]["default_reasoning_level"])
++		require.Equal(t, "xhigh", models[0]["multi_agent_reasoning_effort"])
++		require.Equal(t, float64(300000), models[0]["context_window"])
++		require.Equal(t, float64(900000), models[0]["max_context_window"])
++		require.Equal(t, []any{map[string]any{"id": "ultrafast"}}, models[0]["service_tiers"])
++		require.Equal(t, false, models[0]["supports_search_tool"])
++		require.Nil(t, models[0]["apply_patch_tool_type"])
++	}
++}
+diff --git a/backend/internal/service/openai_codex_transform.go b/backend/internal/service/openai_codex_transform.go
+index d72cc756fc1ccd1396d988d91518ab180e9d3d5d..1d2aa1e4c514df6078781ac2623a20c2e375fc77 100644
+--- a/backend/internal/service/openai_codex_transform.go
++++ b/backend/internal/service/openai_codex_transform.go
+@@ -13,2 +13,4 @@ import (
+ var codexModelMap = map[string]string{
++	"gpt-6-sol":            "gpt-6-sol",
++	"gpt-6-luna":           "gpt-6-luna",
+ 	"gpt-6-astra":          "gpt-6-astra",
+@@ -62,2 +64,4 @@ var codexVersionModelPrefixes = []struct {
+ }{
++	{prefix: "gpt-6-sol", target: "gpt-6-sol"},
++	{prefix: "gpt-6-luna", target: "gpt-6-luna"},
+ 	{prefix: "gpt-5.6-sol", target: "gpt-5.6-sol"},
+diff --git a/backend/internal/service/openai_compat_prompt_cache_key.go b/backend/internal/service/openai_compat_prompt_cache_key.go
+index 3d3595d3c2226b526bd7f7f9b1212ad35c83d48d..99ae309f9a7a6f3e82d0eb4ba9878c7fda6271f3 100644
+--- a/backend/internal/service/openai_compat_prompt_cache_key.go
++++ b/backend/internal/service/openai_compat_prompt_cache_key.go
+@@ -9,2 +9,3 @@ import (
+ 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+ )
+@@ -16,5 +17,4 @@ func shouldAutoInjectPromptCacheKeyForCompat(model string) bool {
+ 	canonical := canonicalizeOpenAIModelAliasSpelling(trimmed)
+-	// GPT-6 is the public alias for Astra. Keep this deliberately scoped to
+-	// Astra so other GPT-6 families do not inherit Messages compatibility state.
+-	if canonical == "gpt-6" || canonical == "gpt-6-astra" {
++	// GPT-6 Sol/Luna share the supported Responses cache identity contract.
++	if canonical == "gpt-6" || canonical == "gpt-6-astra" || openai.IsGPT6SolOrLunaModelSpelling(canonical) {
+ 		return true
+diff --git a/backend/internal/service/openai_compat_prompt_cache_key_test.go b/backend/internal/service/openai_compat_prompt_cache_key_test.go
+index d4868576622d558873df2459f1bf36eb557b6243..776c68f6add713c1ddc61be8c9cc265c69bc0ffa 100644
+--- a/backend/internal/service/openai_compat_prompt_cache_key_test.go
++++ b/backend/internal/service/openai_compat_prompt_cache_key_test.go
+@@ -166 +166,10 @@ func TestDeriveAnthropicCompatPromptCacheKey_UsesCacheControlAnchors(t *testing.
+ }
++
++func TestGPT6SolLunaCompatCacheIdentity(t *testing.T) {
++	for _, model := range []string{"gpt-6-sol", "openai/gpt-6-luna", "gpt-6-sol-max"} {
++		require.True(t, shouldAutoInjectPromptCacheKeyForCompat(model), model)
++	}
++	for _, model := range []string{"gpt-6-sol-preview", "gpt-6-solitude", "gpt-6-luna-preview"} {
++		require.False(t, shouldAutoInjectPromptCacheKeyForCompat(model), model)
++	}
++}
+diff --git a/backend/internal/service/openai_gateway_chat_completions.go b/backend/internal/service/openai_gateway_chat_completions.go
+index cd043db85d8d71f6ff400fd2c8e272d836994810..db249da4871c16ee5c09e60c742c1dcf19f289e5 100644
+--- a/backend/internal/service/openai_gateway_chat_completions.go
++++ b/backend/internal/service/openai_gateway_chat_completions.go
+@@ -268,2 +268,3 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
+ 		// ChatCompletionsToResponses always sets Stream=true (upstream always streams).
++		chatReq.Model = upstreamModel
+ 		responsesReq, err = apicompat.ChatCompletionsToResponses(&chatReq)
+@@ -349,2 +350,6 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
+ 	// 4b. Apply OpenAI fast policy (may filter service_tier or block the request).
++	responsesBody, _, err = normalizeGPT6ResponsesSampling(responsesBody, upstreamModel)
++	if err != nil {
++		return nil, err
++	}
+ 	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, responsesBody)
+diff --git a/backend/internal/service/openai_gateway_chat_completions_anthropic_native.go b/backend/internal/service/openai_gateway_chat_completions_anthropic_native.go
+index bc029bf48082c00522f6a6f11f695efaa6511840..4019530426b3a64d51d649242dab2f3a4691cd70 100644
+--- a/backend/internal/service/openai_gateway_chat_completions_anthropic_native.go
++++ b/backend/internal/service/openai_gateway_chat_completions_anthropic_native.go
+@@ -65,5 +65,13 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
+ 	}
++	// Resolve the mapped model before choosing its thinking/tool protocol.
++	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
++	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
++	if err := validateClaudeOpus55Request(body, upstreamModel); err != nil {
++		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
++		return nil, err
++	}
++	responsesReq.Model = upstreamModel
+ 	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(responsesReq)
+ 	if err != nil {
+-		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", "Failed to convert request")
++		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+ 		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
+@@ -71,7 +79,2 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
+ 
+-	// 3. Model mapping（OpenAI 网关统一入口的映射语义）
+-	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
+-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+-	anthropicReq.Model = upstreamModel
+-
+ 	// 4. Force upstream streaming（客户端原始终决定响应格式；
+diff --git a/backend/internal/service/openai_gateway_chat_completions_raw.go b/backend/internal/service/openai_gateway_chat_completions_raw.go
+index c92528f2d730cdfbf416d92ec4af4686e831f380..ba5f7e7c7a1652ebf26b4b0e483cae2814185000 100644
+--- a/backend/internal/service/openai_gateway_chat_completions_raw.go
++++ b/backend/internal/service/openai_gateway_chat_completions_raw.go
+@@ -11,2 +11,3 @@ import (
+ 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+ 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
+@@ -82,2 +83,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
+ 	}
++	if openai.IsGPT6SolOrLunaModelSpelling(upstreamModel) && (len(gjson.GetBytes(body, "tools").Array()) > 0 || len(gjson.GetBytes(body, "functions").Array()) > 0) && gjson.GetBytes(body, "reasoning_effort").String() != "none" {
++		err := fmt.Errorf("%s requires Responses for tool calls with reasoning; this account only supports Chat Completions. Use reasoning_effort=none or a Responses-capable account", upstreamModel)
++		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
++		return nil, err
++	}
+ 	// 3. Rewrite model in body (no protocol conversion)
+diff --git a/backend/internal/service/openai_gateway_chat_completions_test.go b/backend/internal/service/openai_gateway_chat_completions_test.go
+index 35f6de0ed1be69ca3782898436df296a88c76563..e26306a900771673863550f2bbdd2e26f82d3286 100644
+--- a/backend/internal/service/openai_gateway_chat_completions_test.go
++++ b/backend/internal/service/openai_gateway_chat_completions_test.go
+@@ -1138 +1138,114 @@ func TestBuildChatStreamErrorSSE(t *testing.T) {
+ }
++
++func TestGPT6RawChatRejectsReasoningToolCalls(t *testing.T) {
++	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
++		rec := httptest.NewRecorder()
++		c, _ := gin.CreateTestContext(rec)
++		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
++		account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"model_mapping": map[string]any{"public": model}}}
++		svc := &OpenAIGatewayService{}
++		_, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, []byte(`{"model":"public","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`), "")
++		require.ErrorContains(t, err, "requires Responses")
++		require.Equal(t, 400, rec.Code)
++	}
++}
++
++func TestGPT6ReasoningModeAndSamplingCompatibility(t *testing.T) {
++	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
++		body := []byte(`{"model":"` + model + `","reasoning":{"mode":"pro","effort":"max"},"temperature":0.7,"top_p":0.9,"top_logprobs":2,"include":["reasoning.encrypted_content","message.output_text.logprobs"],"prompt_cache_options":{"ttl":"30m"}}`)
++		out, changed, err := normalizeOpenAIResponsesReasoningMode(body, "")
++		require.NoError(t, err)
++		require.True(t, changed)
++		require.Equal(t, "pro", gjson.GetBytes(out, "reasoning.mode").String())
++		require.Equal(t, "max", gjson.GetBytes(out, "reasoning.effort").String())
++		require.False(t, gjson.GetBytes(out, "temperature").Exists())
++		require.False(t, gjson.GetBytes(out, "top_p").Exists())
++		require.False(t, gjson.GetBytes(out, "top_logprobs").Exists())
++		require.Equal(t, "reasoning.encrypted_content", gjson.GetBytes(out, "include.0").String())
++		require.Equal(t, "30m", gjson.GetBytes(out, "prompt_cache_options.ttl").String())
++		require.Equal(t, "max", normalizeOpenAIReasoningEffortForModel("max", model))
++		d := newConfiguredCodexModelDescriptor(model)
++		require.NotNil(t, d.DefaultReasoningLevel)
++		require.Equal(t, "medium", *d.DefaultReasoningLevel)
++		require.EqualValues(t, 872000, d.MaxContextWindow)
++		require.Len(t, d.SupportedReasoningLevels, 5)
++		require.Len(t, d.ServiceTiers, 1)
++	}
++}
++
++func TestGPT6RawChatNoneToolsAreForwarded(t *testing.T) {
++	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
++		rec := httptest.NewRecorder()
++		c, _ := gin.CreateTestContext(rec)
++		body := []byte(`{"model":"` + model + `","reasoning_effort":"none","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
++		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
++		upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"chat_1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":200,"cache_write_tokens":300}}}`))}}
++		svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
++		account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "fixture-key", "base_url": "https://api.openai.com"}}
++		result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
++		require.NoError(t, err)
++		require.NotNil(t, result)
++		require.Equal(t, "none", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
++		require.Len(t, gjson.GetBytes(upstream.lastBody, "tools").Array(), 1)
++		require.Equal(t, 1000, result.Usage.InputTokens)
++		require.Equal(t, 300, result.Usage.CacheCreationInputTokens)
++	}
++}
++
++func TestGPT6UsageHTTPAndWSHaveSameCacheBreakdown(t *testing.T) {
++	response := []byte(`{"model":"gpt-6-sol","usage":{"input_tokens":1000,"output_tokens":10,"input_tokens_details":{"cached_tokens":200,"cache_write_tokens":300}}}`)
++	httpUsage, ok := extractOpenAIUsageFromJSONBytes(response)
++	require.True(t, ok)
++	var wsUsage OpenAIUsage
++	parseOpenAIWSResponseUsageFromCompletedEvent(append(append([]byte(`{"type":"response.completed","response":`), response...), '}'), &wsUsage)
++	require.Equal(t, httpUsage, wsUsage)
++	require.Equal(t, 500, httpUsage.InputTokens-httpUsage.CacheReadInputTokens-httpUsage.CacheCreationInputTokens)
++}
++
++func TestGPT6ReasoningModeUsesMappedUpstream(t *testing.T) {
++	body := []byte(`{"model":"public-model","reasoning":{"mode":"pro","effort":"max"},"temperature":0.5}`)
++	out, _, err := normalizeOpenAIResponsesReasoningMode(body, "gpt-6-sol")
++	require.NoError(t, err)
++	require.Equal(t, "public-model", gjson.GetBytes(out, "model").String())
++	require.Equal(t, "pro", gjson.GetBytes(out, "reasoning.mode").String())
++	require.Equal(t, "max", gjson.GetBytes(out, "reasoning.effort").String())
++	require.False(t, gjson.GetBytes(out, "temperature").Exists())
++}
++
++func TestGPT6MappedCompatibilityBridgesKeepReasoningAndTools(t *testing.T) {
++	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
++		for _, messages := range []bool{false, true} {
++			body := []byte(`{"model":"public","reasoning_effort":"max","temperature":0.7,"top_p":0.9,"prompt_cache_options":{"ttl":"30m"},"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"hello"}]}`)
++			if messages {
++				body = []byte(`{"model":"public","max_tokens":1000,"output_config":{"effort":"max"},"temperature":0.7,"top_p":0.9,"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hello"}]}`)
++			}
++			response := `data: {"type":"response.completed","response":{"id":"resp_1","model":"` + model + `","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1000,"output_tokens":10,"input_tokens_details":{"cached_tokens":200,"cache_write_tokens":300}}}}` + "\n\n"
++			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(response))}}
++			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
++			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "fixture-key", "base_url": "https://api.openai.com", "model_mapping": map[string]any{"public": model}}}
++			rec := httptest.NewRecorder()
++			c, _ := gin.CreateTestContext(rec)
++			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
++			var result *OpenAIForwardResult
++			var err error
++			if messages {
++				result, err = svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
++			} else {
++				result, err = svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
++			}
++			require.NoError(t, err)
++			require.NotNil(t, result)
++			require.NotNil(t, upstream.lastReq)
++			require.Equal(t, "/v1/responses", upstream.lastReq.URL.Path)
++			require.Equal(t, model, gjson.GetBytes(upstream.lastBody, "model").String())
++			require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
++			require.Len(t, gjson.GetBytes(upstream.lastBody, "tools").Array(), 1)
++			require.False(t, gjson.GetBytes(upstream.lastBody, "temperature").Exists())
++			require.False(t, gjson.GetBytes(upstream.lastBody, "top_p").Exists())
++			if !messages {
++				require.Equal(t, "30m", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
++			}
++			require.Equal(t, 300, result.Usage.CacheCreationInputTokens)
++		}
++	}
++}
+diff --git a/backend/internal/service/openai_gateway_forward.go b/backend/internal/service/openai_gateway_forward.go
+index 0234a77b8e087f906ee2317e3f69c3285f10c1c0..dafa84dfaa8cf382da619577296338808c3a3668 100644
+--- a/backend/internal/service/openai_gateway_forward.go
++++ b/backend/internal/service/openai_gateway_forward.go
+@@ -83,3 +83,3 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
+ 	if account.IsOpenAIOAuthLike() {
+-		reasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningMode(body)
++		reasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningMode(body, account.GetMappedModel(gjson.GetBytes(body, "model").String()))
+ 		if reasoningErr != nil {
+diff --git a/backend/internal/service/openai_gateway_messages.go b/backend/internal/service/openai_gateway_messages.go
+index cbc5de9d288a93c085959dda6c5f8468d9414297..4f206244e8ca3cb4c5709c3bac94c8eb2af700d9 100644
+--- a/backend/internal/service/openai_gateway_messages.go
++++ b/backend/internal/service/openai_gateway_messages.go
+@@ -140,2 +140,3 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
+ 	// 3. Convert Anthropic → Responses after compatibility-only replay guard.
++	anthropicReq.Model = upstreamModel
+ 	responsesReq, err := apicompat.AnthropicToResponses(&anthropicReq)
+diff --git a/backend/internal/service/openai_gateway_request_body.go b/backend/internal/service/openai_gateway_request_body.go
+index 67c74cc2f84b2d3b44fcbf018727b7dda32ca05b..aead03fa6455de287d8674c7bce7fe7f1b9d70fa 100644
+--- a/backend/internal/service/openai_gateway_request_body.go
++++ b/backend/internal/service/openai_gateway_request_body.go
+@@ -8,2 +8,3 @@ import (
+ 	"fmt"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+ 	"net/http"
+@@ -1333,10 +1334,49 @@ func normalizeOpenAIOAuthResponsesCompatibilityBody(body []byte) ([]byte, bool,
+ 
+-func normalizeOpenAIResponsesReasoningMode(body []byte) ([]byte, bool, error) {
+-	if len(body) == 0 {
++func normalizeGPT6ResponsesSampling(body []byte, model string) ([]byte, bool, error) {
++	if !openai.IsGPT6SolOrLunaModelSpelling(model) || gjson.GetBytes(body, "reasoning.effort").String() == "none" {
+ 		return body, false, nil
+ 	}
+-	// Astra 的 reasoning.mode 与 reasoning.effort 是独立参数，不做兼容替换；非 Astra 维持旧 strip-mode/pro->max 行为。
+-	if isOpenAIGPT6AstraModel(gjson.GetBytes(body, "model").String()) {
++	out := body
++	changed := false
++	for _, key := range []string{"temperature", "top_p", "top_logprobs", "logprobs"} {
++		if !gjson.GetBytes(out, key).Exists() {
++			continue
++		}
++		var err error
++		out, err = sjson.DeleteBytes(out, key)
++		if err != nil {
++			return body, false, fmt.Errorf("remove GPT-6 sampling parameter %s: %w", key, err)
++		}
++		changed = true
++	}
++	if include := gjson.GetBytes(out, "include"); include.IsArray() {
++		items := include.Array()
++		for i := len(items) - 1; i >= 0; i-- {
++			if items[i].String() != "message.output_text.logprobs" {
++				continue
++			}
++			var err error
++			out, err = sjson.DeleteBytes(out, fmt.Sprintf("include.%d", i))
++			if err != nil {
++				return body, false, fmt.Errorf("remove GPT-6 logprobs include: %w", err)
++			}
++			changed = true
++		}
++	}
++	return out, changed, nil
++}
++
++func normalizeOpenAIResponsesReasoningMode(body []byte, model string) ([]byte, bool, error) {
++	if len(body) == 0 {
+ 		return body, false, nil
+ 	}
++	// GPT-6 treats reasoning.mode and reasoning.effort as independent
++	// official fields. Preserve both verbatim; earlier models retain the
++	// established mode stripping and pro-to-max compatibility behavior.
++	if model == "" {
++		model = gjson.GetBytes(body, "model").String()
++	}
++	if isOpenAIGPT6Model(model) {
++		return normalizeGPT6ResponsesSampling(body, model)
++	}
+ 	mode := gjson.GetBytes(body, "reasoning.mode")
+@@ -1431,3 +1471,3 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
+ 	if account != nil && account.IsOpenAI() && account.IsOAuth() {
+-		if reasoningBody, reasoningChanged, err := normalizeOpenAIResponsesReasoningMode(normalized); err != nil {
++		if reasoningBody, reasoningChanged, err := normalizeOpenAIResponsesReasoningMode(normalized, account.GetMappedModel(gjson.GetBytes(normalized, "model").String())); err != nil {
+ 			return body, false, err
+@@ -1537,3 +1577,3 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
+ 	}
+-	if reasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningMode(normalized); reasoningErr != nil {
++	if reasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningMode(normalized, ""); reasoningErr != nil {
+ 		return body, false, reasoningErr
+@@ -2548,2 +2588,5 @@ func normalizeOpenAIReasoningEffort(raw string) string {
+ func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
++	if strings.EqualFold(strings.TrimSpace(raw), "none") && openai.IsGPT6SolOrLunaModelSpelling(model) {
++		return "none"
++	}
+ 	if strings.EqualFold(strings.TrimSpace(raw), "max") && supportsOpenAIReasoningEffortMax(model) {
+@@ -2557,3 +2600,3 @@ func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
+ func supportsOpenAIReasoningEffortMax(model string) bool {
+-	if isOpenAIGPT6AstraModel(model) || isOpenAIGPT56Model(model) {
++	if isOpenAIGPT6Model(model) || isOpenAIGPT56Model(model) {
+ 		return true
+diff --git a/backend/internal/service/openai_gateway_responses_anthropic_native.go b/backend/internal/service/openai_gateway_responses_anthropic_native.go
+index 4295fa9544c16d77116773a4ce6827bf392cde5c..dba295ad63813bdb2bf29d3cf9ab368b13578ec4 100644
+--- a/backend/internal/service/openai_gateway_responses_anthropic_native.go
++++ b/backend/internal/service/openai_gateway_responses_anthropic_native.go
+@@ -22,2 +22,3 @@ import (
+ 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+ 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+@@ -66,5 +67,13 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
+ 	// 3. Convert Responses → Anthropic
++	// Resolve the mapped model before choosing its thinking/tool protocol.
++	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
++	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
++	if err := validateClaudeOpus55Request(body, upstreamModel); err != nil {
++		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
++		return nil, err
++	}
++	responsesReq.Model = upstreamModel
+ 	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
+ 	if err != nil {
+-		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", "Failed to convert request")
++		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+ 		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
+@@ -72,7 +81,2 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
+ 
+-	// 4. Model mapping（OpenAI 网关统一入口的映射语义）
+-	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
+-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+-	anthropicReq.Model = upstreamModel
+-
+ 	// 5. Force upstream streaming（客户端原始终决定响应格式；
+@@ -247,2 +251,4 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
+ 					finalResp.Content[idx].Thinking += event.Delta.Thinking
++				case "signature_delta":
++					finalResp.Content[idx].Signature += event.Delta.Signature
+ 				case "input_json_delta":
+@@ -268,2 +274,5 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
+ 
++	if claude.IsOpus55(upstreamModel) {
++		finalResp.Model = upstreamModel
++	}
+ 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
+@@ -326,2 +335,3 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
+ 	state.Model = originalModel
++	state.PreserveThinkingSignatures = claude.IsOpus55(upstreamModel)
+ 	clientToolRestorer := apicompat.NewResponsesClientToolStreamRestorer(clientToolMapping)
+diff --git a/backend/internal/service/openai_model_alias.go b/backend/internal/service/openai_model_alias.go
+index f34a28abac9fdf37d852740934113c79d905e98f..b7c4e32ef014dfe664d19ad7259c66b9d2bc5e3d 100644
+--- a/backend/internal/service/openai_model_alias.go
++++ b/backend/internal/service/openai_model_alias.go
+@@ -39,2 +39,9 @@ func normalizeKnownOpenAICodexModel(model string) string {
+ 
++	if openai.IsGPT6SolOrLunaModelSpelling(normalized) {
++		if strings.HasPrefix(normalized, "gpt-6-sol") {
++			return "gpt-6-sol"
++		}
++		return "gpt-6-luna"
++	}
++
+ 	switch {
+@@ -153 +160,5 @@ func firstUsageBillingModel(candidates []string) string {
+ }
++
++func isOpenAIGPT6Model(model string) bool {
++	return isOpenAIGPT6AstraModel(model) || openai.IsGPT6SolOrLunaModelSpelling(model)
++}
+diff --git a/backend/internal/service/openai_passthrough_normalization_test.go b/backend/internal/service/openai_passthrough_normalization_test.go
+index a05bee25ad1a2c8d7f2780faf536f017461633dc..f2071443ad4831a7b8e684c9b4456d7fb165c2ea 100644
+--- a/backend/internal/service/openai_passthrough_normalization_test.go
++++ b/backend/internal/service/openai_passthrough_normalization_test.go
+@@ -131,3 +131,3 @@ func TestNormalizeOpenAIResponsesReasoningMode(t *testing.T) {
+ 		t.Run(tt.name, func(t *testing.T) {
+-			normalized, changed, err := normalizeOpenAIResponsesReasoningMode([]byte(tt.body))
++			normalized, changed, err := normalizeOpenAIResponsesReasoningMode([]byte(tt.body), "")
+ 			require.NoError(t, err)
+@@ -155,3 +155,3 @@ func TestNormalizeOpenAIResponsesReasoningMode_AstraPreservesBody(t *testing.T)
+ 		t.Run(tt.name, func(t *testing.T) {
+-			normalized, changed, err := normalizeOpenAIResponsesReasoningMode([]byte(tt.body))
++			normalized, changed, err := normalizeOpenAIResponsesReasoningMode([]byte(tt.body), "")
+ 			require.NoError(t, err)
+@@ -175,3 +175,3 @@ func TestNormalizeOpenAIResponsesReasoningMode_NonAstraKeepsLegacyBehavior(t *te
+ 		t.Run(tt.name, func(t *testing.T) {
+-			normalized, changed, err := normalizeOpenAIResponsesReasoningMode([]byte(tt.body))
++			normalized, changed, err := normalizeOpenAIResponsesReasoningMode([]byte(tt.body), "")
+ 			require.NoError(t, err)
+diff --git a/backend/internal/service/pricing_service.go b/backend/internal/service/pricing_service.go
+index 701526252b4155f1b9db7df6a0d12fa45785c3b1..0b873a698b956a583e3f4959bea98247a51688e2 100644
+--- a/backend/internal/service/pricing_service.go
++++ b/backend/internal/service/pricing_service.go
+@@ -21,2 +21,3 @@ import (
+ 	"github.com/Wei-Shaw/sub2api/internal/config"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+ 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+@@ -75,2 +76,44 @@ var (
+ 	}
++	openAIGPT6SolFallbackPricing = &LiteLLMModelPricing{
++		InputCostPerToken:                   2e-6,
++		InputCostPerTokenPriority:           4e-6,
++		OutputCostPerToken:                  10e-6,
++		OutputCostPerTokenPriority:          20e-6,
++		CacheCreationInputTokenCost:         2.5e-6,
++		CacheCreationInputTokenCostPriority: 5e-6,
++		CacheReadInputTokenCost:             0.2e-6,
++		CacheReadInputTokenCostPriority:     0.4e-6,
++		LongContextInputTokenThreshold:      272_000,
++		LongContextInputCostMultiplier:      2,
++		LongContextOutputCostMultiplier:     1.5,
++		SupportsServiceTier:                 true,
++		LiteLLMProvider:                     "openai",
++		Mode:                                "chat",
++		SupportsPromptCaching:               true,
++	}
++	openAIGPT6LunaFallbackPricing = &LiteLLMModelPricing{
++		InputCostPerToken:                   0.1e-6,
++		InputCostPerTokenPriority:           0.2e-6,
++		OutputCostPerToken:                  0.5e-6,
++		OutputCostPerTokenPriority:          1e-6,
++		CacheCreationInputTokenCost:         0.125e-6,
++		CacheCreationInputTokenCostPriority: 0.25e-6,
++		CacheReadInputTokenCost:             0.01e-6,
++		CacheReadInputTokenCostPriority:     0.02e-6,
++		LongContextInputTokenThreshold:      272_000,
++		LongContextInputCostMultiplier:      2,
++		LongContextOutputCostMultiplier:     1.5,
++		SupportsServiceTier:                 true,
++		LiteLLMProvider:                     "openai",
++		Mode:                                "chat",
++		SupportsPromptCaching:               true,
++	}
++	claudeOpus55FallbackPricing = &LiteLLMModelPricing{
++		InputCostPerToken: 4e-6, OutputCostPerToken: 20e-6,
++		CacheCreationInputTokenCost: 5e-6, CacheCreationInputTokenCostAbove1hr: 8e-6,
++		CacheReadInputTokenCost:   0.2e-6,
++		InputCostPerTokenPriority: 8e-6, OutputCostPerTokenPriority: 40e-6,
++		CacheCreationInputTokenCostPriority: 10e-6, CacheReadInputTokenCostPriority: 0.4e-6,
++		SupportsServiceTier: true, LiteLLMProvider: "anthropic", Mode: "chat", SupportsPromptCaching: true,
++	}
+ 	openAIGPT56SolFallbackPricing = &LiteLLMModelPricing{
+@@ -138,2 +181,3 @@ var (
+ type LiteLLMModelPricing struct {
++	CacheCreationInputTokenCostExplicit bool    `json:"-"`
+ 	InputCostPerToken                   float64 `json:"input_cost_per_token"`
+@@ -630,2 +674,3 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
+ 			pricing.CacheCreationInputTokenCost = *entry.CacheCreationInputTokenCost
++			pricing.CacheCreationInputTokenCostExplicit = true
+ 		}
+@@ -1330,2 +1375,8 @@ func (s *PricingService) extractBaseName(model string) string {
+ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
++	if claude.IsOpus55(model) {
++		if pricing, ok := s.pricingData["claude-opus-5-5"]; ok {
++			return pricing
++		}
++		return claudeOpus55FallbackPricing
++	}
+ 	// modelFamily 定义一个模型系列的匹配和定价查找规则。
+@@ -1430,2 +1481,5 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
+ 			keyLower := strings.ToLower(key)
++			if matched.name == "opus-5" && claude.IsOpus55(keyLower) {
++				continue
++			}
+ 			if strings.Contains(keyLower, pattern) {
+@@ -1458,2 +1512,12 @@ func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
+ 
++	if openai.IsGPT6SolOrLunaModelSpelling(model) {
++		if pricing, ok := s.pricingData[normalizeKnownOpenAICodexModel(model)]; ok {
++			return pricing
++		}
++		if strings.HasPrefix(model, "gpt-6-sol") {
++			return openAIGPT6SolFallbackPricing
++		}
++		return openAIGPT6LunaFallbackPricing
++	}
++
+ 	// 尝试的回退变体
+diff --git a/backend/resources/model-pricing/model_prices_and_context_window.json b/backend/resources/model-pricing/model_prices_and_context_window.json
+index bab05e418800c6eb82802ede88f5d296d21f50f9..2ba65b23c25add73742b064e59739319971d7d73 100644
+--- a/backend/resources/model-pricing/model_prices_and_context_window.json
++++ b/backend/resources/model-pricing/model_prices_and_context_window.json
+@@ -12,2 +12,150 @@
+   },
++  "gpt-6-sol": {
++    "cache_creation_input_token_cost": 2.5e-06,
++    "cache_creation_input_token_cost_batches": 1.25e-06,
++    "cache_creation_input_token_cost_flex": 1.25e-06,
++    "cache_creation_input_token_cost_priority": 5e-06,
++    "cache_read_input_token_cost": 2e-07,
++    "cache_read_input_token_cost_flex": 1e-07,
++    "cache_read_input_token_cost_priority": 4e-07,
++    "input_cost_per_token": 2e-06,
++    "input_cost_per_token_batches": 1e-06,
++    "input_cost_per_token_flex": 1e-06,
++    "input_cost_per_token_priority": 4e-06,
++    "long_context_input_token_threshold": 272000,
++    "long_context_input_cost_multiplier": 2.0,
++    "long_context_output_cost_multiplier": 1.5,
++    "litellm_provider": "openai",
++    "max_input_tokens": 922000,
++    "max_output_tokens": 128000,
++    "max_tokens": 128000,
++    "mode": "chat",
++    "output_cost_per_token": 1e-05,
++    "output_cost_per_token_batches": 5e-06,
++    "output_cost_per_token_flex": 5e-06,
++    "output_cost_per_token_priority": 2e-05,
++    "supported_endpoints": [
++      "/v1/chat/completions",
++      "/v1/batch",
++      "/v1/responses"
++    ],
++    "supported_modalities": [
++      "text",
++      "image"
++    ],
++    "supported_output_modalities": [
++      "text"
++    ],
++    "supports_function_calling": true,
++    "supports_minimal_reasoning_effort": false,
++    "supports_native_streaming": true,
++    "supports_none_reasoning_effort": true,
++    "supports_parallel_function_calling": true,
++    "supports_pdf_input": true,
++    "supports_prompt_caching": true,
++    "supports_reasoning": true,
++    "supports_response_schema": true,
++    "supports_service_tier": true,
++    "supports_system_messages": true,
++    "supports_tool_choice": true,
++    "supports_vision": true,
++    "supports_web_search": true,
++    "supports_xhigh_reasoning_effort": true,
++    "cache_read_input_token_cost_batches": 1e-07,
++    "context_window": 1050000
++  },
++  "gpt-6-luna": {
++    "cache_creation_input_token_cost": 1.25e-07,
++    "cache_creation_input_token_cost_batches": 6.25e-08,
++    "cache_creation_input_token_cost_flex": 6.25e-08,
++    "cache_creation_input_token_cost_priority": 2.5e-07,
++    "cache_read_input_token_cost": 1e-08,
++    "cache_read_input_token_cost_flex": 5e-09,
++    "cache_read_input_token_cost_priority": 2e-08,
++    "input_cost_per_token": 1e-07,
++    "input_cost_per_token_batches": 5e-08,
++    "input_cost_per_token_flex": 5e-08,
++    "input_cost_per_token_priority": 2e-07,
++    "long_context_input_token_threshold": 272000,
++    "long_context_input_cost_multiplier": 2.0,
++    "long_context_output_cost_multiplier": 1.5,
++    "litellm_provider": "openai",
++    "max_input_tokens": 922000,
++    "max_output_tokens": 128000,
++    "max_tokens": 128000,
++    "mode": "chat",
++    "output_cost_per_token": 5e-07,
++    "output_cost_per_token_batches": 2.5e-07,
++    "output_cost_per_token_flex": 2.5e-07,
++    "output_cost_per_token_priority": 1e-06,
++    "supported_endpoints": [
++      "/v1/chat/completions",
++      "/v1/batch",
++      "/v1/responses"
++    ],
++    "supported_modalities": [
++      "text",
++      "image"
++    ],
++    "supported_output_modalities": [
++      "text"
++    ],
++    "supports_function_calling": true,
++    "supports_minimal_reasoning_effort": false,
++    "supports_native_streaming": true,
++    "supports_none_reasoning_effort": true,
++    "supports_parallel_function_calling": true,
++    "supports_pdf_input": true,
++    "supports_prompt_caching": true,
++    "supports_reasoning": true,
++    "supports_response_schema": true,
++    "supports_service_tier": true,
++    "supports_system_messages": true,
++    "supports_tool_choice": true,
++    "supports_vision": true,
++    "supports_web_search": true,
++    "supports_xhigh_reasoning_effort": true,
++    "cache_read_input_token_cost_batches": 5e-09,
++    "context_window": 1050000
++  },
++  "claude-opus-5-5": {
++    "cache_creation_input_token_cost": 5e-06,
++    "cache_creation_input_token_cost_above_1hr": 8e-06,
++    "cache_read_input_token_cost": 2e-07,
++    "input_cost_per_token": 4e-06,
++    "litellm_provider": "anthropic",
++    "max_input_tokens": 1000000,
++    "max_output_tokens": 128000,
++    "max_tokens": 128000,
++    "mode": "chat",
++    "output_cost_per_token": 2e-05,
++    "provider_specific_entry": {
++      "fast": 2.0
++    },
++    "search_context_cost_per_query": {
++      "search_context_size_high": 0.01,
++      "search_context_size_low": 0.01,
++      "search_context_size_medium": 0.01
++    },
++    "supports_adaptive_thinking": true,
++    "supports_assistant_prefill": false,
++    "supports_computer_use": true,
++    "supports_function_calling": true,
++    "supports_max_reasoning_effort": true,
++    "supports_minimal_reasoning_effort": false,
++    "supports_output_config": true,
++    "supports_pdf_input": true,
++    "supports_prompt_caching": true,
++    "supports_reasoning": true,
++    "supports_response_schema": true,
++    "supports_tool_choice": true,
++    "supports_vision": true,
++    "supports_xhigh_reasoning_effort": true,
++    "input_cost_per_token_priority": 8e-06,
++    "output_cost_per_token_priority": 4e-05,
++    "cache_creation_input_token_cost_priority": 1e-05,
++    "cache_read_input_token_cost_priority": 4e-07,
++    "input_cost_per_token_batches": 2e-06,
++    "output_cost_per_token_batches": 1e-05
++  },
+   "claude-3-7-sonnet-20250219": {
+diff --git a/frontend/src/components/account/AccountStatusIndicator.vue b/frontend/src/components/account/AccountStatusIndicator.vue
+index 64bcfbf59467711e64691534b8fa634fe433b57e..2130e257ac0f55bf7883b3b60352d3cb406f576b 100644
+--- a/frontend/src/components/account/AccountStatusIndicator.vue
++++ b/frontend/src/components/account/AccountStatusIndicator.vue
+@@ -232,2 +232,3 @@ const formatScopeName = (scope: string): string => {
+     'claude-opus-4-8': 'COpus48',
++    'claude-opus-5-5': 'COpus55',
+     'claude-opus-5': 'COpus5',
+diff --git a/frontend/src/components/keys/UseKeyModal.vue b/frontend/src/components/keys/UseKeyModal.vue
+index 03544573b7a529431e522fac779d030c5c931614..d008fddbbd928f79bfc49c8d69aa5a01bbe62b5b 100644
+--- a/frontend/src/components/keys/UseKeyModal.vue
++++ b/frontend/src/components/keys/UseKeyModal.vue
+@@ -1398,2 +1398,20 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
+     },
++    'gpt-6-sol': {
++      name: 'GPT-6 Sol',
++      limit: {
++        context: 1050000,
++        output: 128000
++      },
++      options: {
++        store: false
++      },
++      variants: {
++        none: {},
++        low: {},
++        medium: {},
++        high: {},
++        xhigh: {},
++        max: {}
++      }
++    },
+     'gpt-5.6-sol': {
+@@ -1432,2 +1450,20 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
+     },
++    'gpt-6-luna': {
++      name: 'GPT-6 Luna',
++      limit: {
++        context: 1050000,
++        output: 128000
++      },
++      options: {
++        store: false
++      },
++      variants: {
++        none: {},
++        low: {},
++        medium: {},
++        high: {},
++        xhigh: {},
++        max: {}
++      }
++    },
+     'gpt-5.6-luna': {
+@@ -1863,2 +1899,17 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
+     provider[platform].npm = '@ai-sdk/anthropic'
++    provider[platform].models = {
++      'claude-opus-5-5': {
++        name: 'Claude Opus 5.5',
++        limit: { context: 1000000, output: 128000 },
++        modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
++        options: { thinking: { type: 'adaptive' }, effort: 'medium' },
++        variants: {
++          low: { effort: 'low' },
++          medium: { effort: 'medium' },
++          high: { effort: 'high' },
++          xhigh: { effort: 'xhigh' },
++          max: { effort: 'max' }
++        }
++      }
++    }
+   } else if (platform === 'antigravity-claude') {
+diff --git a/frontend/src/components/keys/__tests__/UseKeyModal.spec.ts b/frontend/src/components/keys/__tests__/UseKeyModal.spec.ts
+index 12b6c47888897b6bf99e205359ed456a08446ead..efc32a0f57bd6e5de88e56a2ad42c28616d0c6f0 100644
+--- a/frontend/src/components/keys/__tests__/UseKeyModal.spec.ts
++++ b/frontend/src/components/keys/__tests__/UseKeyModal.spec.ts
+@@ -670,3 +670,3 @@ describe('UseKeyModal', () => {
+     const models = parsed.provider.openai.models
+-    for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
++    for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-sol', 'gpt-6-luna']) {
+       expect(models[model]).toBeDefined()
+@@ -676,2 +676,4 @@ describe('UseKeyModal', () => {
+     expect(models['gpt-5.6'].name).toBe('GPT-5.6 (Sol)')
++    expect(models['gpt-6-sol'].variants).toHaveProperty('none')
++    expect(models['gpt-6-luna'].limit).toEqual({ context: 1050000, output: 128000 })
+     expect(models['gpt-6']).toEqual({
+@@ -690,2 +692,18 @@ describe('UseKeyModal', () => {
+ 
++  it('exports Opus 5.5 only on the Anthropic provider with adaptive defaults', async () => {
++    const wrapper = mount(UseKeyModal, {
++      props: { show: true, apiKey: 'sk-test', baseUrl: 'https://example.com/v1', platform: 'anthropic' },
++      global: { stubs: { BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: { template: '<span />' } } }
++    })
++    const tab = wrapper.findAll('button').find(button => button.text().includes('keys.useKeyModal.cliTabs.opencode'))
++    expect(tab).toBeDefined()
++    await tab!.trigger('click')
++    await nextTick()
++    const model = JSON.parse(wrapper.find('pre code').text()).provider.anthropic.models['claude-opus-5-5']
++    expect(model.limit).toEqual({ context: 1000000, output: 128000 })
++    expect(model.options).toEqual({ thinking: { type: 'adaptive' }, effort: 'medium' })
++    expect(model.variants.xhigh.effort).toBe('xhigh')
++    expect(model.variants).not.toHaveProperty('none')
++  })
++
+   it('renders Claude Fable 5 OpenCode config with adaptive thinking', async () => {
+diff --git a/frontend/src/composables/__tests__/useModelWhitelist.spec.ts b/frontend/src/composables/__tests__/useModelWhitelist.spec.ts
+index df9f347d5aa4ca8bf3ee319fade8eb2445ba794e..bb73136e0a4b147e3a4cc0e00888c64619db99a9 100644
+--- a/frontend/src/composables/__tests__/useModelWhitelist.spec.ts
++++ b/frontend/src/composables/__tests__/useModelWhitelist.spec.ts
+@@ -19,2 +19,4 @@ describe('useModelWhitelist', () => {
+     expect(models).toContain('gpt-6-astra')
++    expect(models).toContain('gpt-6-sol')
++    expect(models).toContain('gpt-6-luna')
+   })
+@@ -52,2 +54,4 @@ describe('useModelWhitelist', () => {
+     expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
++    expect(getModelsByPlatform('claude')).toContain('claude-opus-5-5')
++    expect(getModelsByPlatform('antigravity')).not.toContain('claude-opus-5-5')
+     expect(getModelsByPlatform('claude')).toContain('claude-opus-4-8')
+diff --git a/frontend/src/composables/useModelWhitelist.ts b/frontend/src/composables/useModelWhitelist.ts
+index 0b312d21bfe47fac13f473c2922df0757ebb695c..e99695652ee4dbab79344dadf2e2f8dd3f5a4819 100644
+--- a/frontend/src/composables/useModelWhitelist.ts
++++ b/frontend/src/composables/useModelWhitelist.ts
+@@ -12,3 +12,3 @@ const openaiModels = [
+   // GPT-6 系列
+-  'gpt-6', 'gpt-6-astra',
++  'gpt-6', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna',
+   // GPT-5.5 系列
+@@ -36,2 +36,3 @@ export const claudeModels = [
+   'claude-opus-4-8',
++  'claude-opus-5-5',
+   'claude-opus-5',
+@@ -292,2 +293,3 @@ const anthropicPresetMappings = [
+   { label: 'Opus 4.8', from: 'claude-opus-4-8', to: 'claude-opus-4-8', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
++  { label: 'Opus 5.5', from: 'claude-opus-5-5', to: 'claude-opus-5-5', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
+   { label: 'Opus 5', from: 'claude-opus-5', to: 'claude-opus-5', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
+@@ -308,4 +310,6 @@ const openaiPresetMappings = [
+   { label: 'GPT-5.6', from: 'gpt-5.6', to: 'gpt-5.6', color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400' },
++  { label: 'GPT-6 Sol', from: 'gpt-6-sol', to: 'gpt-6-sol', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400' },
+   { label: 'GPT-5.6 Sol', from: 'gpt-5.6-sol', to: 'gpt-5.6-sol', color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400' },
+   { label: 'GPT-5.6 Terra', from: 'gpt-5.6-terra', to: 'gpt-5.6-terra', color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400' },
++  { label: 'GPT-6 Luna', from: 'gpt-6-luna', to: 'gpt-6-luna', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },
+   { label: 'GPT-5.6 Luna', from: 'gpt-5.6-luna', to: 'gpt-5.6-luna', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },

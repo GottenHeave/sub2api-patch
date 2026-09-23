@@ -19,6 +19,7 @@ Rows 5, 6, and 12-16 were updated on 2026-09-19.
 Rows 9 and 15 were refreshed on 2026-09-21.
 Row 17 was added on 2026-09-21.
 Row 18 was added on 2026-09-21.
+Row 19 was added on 2026-09-23.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -40,6 +41,7 @@ Row 18 was added on 2026-09-21.
 | 16: Behavior-focused tests | Remove incidental request ordering, internal encoding and wording constraints while retaining routing, isolation and data-preservation checks | Eight audio, realtime and identity test files only | 8 | +67 / -42 |
 | 17: Dedicated Codex API accounts | Forward native/public Responses and model catalogs without local protocol transforms; enforce dedicated groups and credential validity | New handler/service/repository helpers and tests, guarded account/group/transport/routes/billing changes, account UI | 54 | +2433 / -56 |
 | 18: Codex API billing and entrypoints | Use the OAuth service-tier contract and select public/native Responses and model catalogs by request path, never client metadata | Service-tier billing and parity test, dedicated handler and handler/route tests | 5 | +86 / -15 |
+| 19: New model support | Add GPT-6 Sol/Luna and Claude Opus 5.5 discovery, pricing, reasoning and protocol compatibility | Backend model catalogs, pricing and converters with source tests; frontend presets and model exports | 46 | +1223 / -109 |
 
 ## Behavior boundaries
 
@@ -84,7 +86,7 @@ Row 18 was added on 2026-09-21.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 18 patches.
+Apply patches in numerical order. The complete series contains all 19 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
@@ -98,6 +100,9 @@ For separate capabilities:
   context; apply it after patches 1-16. Its implementation is isolated from
   ordinary account request transformations.
 - Patch 18 follows patch 17, aligns its billing contract with OAuth, and separates public and native paths.
+- Patch 19 imports new-model runtime changes and tests ahead of upstream main.
+  Apply it after patch 18; reconcile or remove it when an eligible upstream base
+  includes the same implementation. The demonstration screenshot is excluded.
 
 Runtime verification and replay against the automatically selected upstream
 run in CI. Patch sizes and the manual review version are documentation only.
