@@ -315,8 +315,8 @@ let codexModelManifestRequestID = 0
 
 const showCodexModelCatalog = computed(() =>
   props.show &&
-  (activeClientTab.value === 'codex' ||
-    (props.platform === 'openai' && activeClientTab.value === 'codex-ws'))
+  props.platform !== 'openai' &&
+  activeClientTab.value === 'codex'
 )
 
 const codexModelCatalogPath = computed(() => {
@@ -956,7 +956,6 @@ function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
 model = "${model}"
 review_model = "${model}"
 ${reasoningEffortLine}disable_response_storage = true
-model_catalog_json = "${CODEX_MODEL_CATALOG_CONFIG_PATH}"
 network_access = "enabled"
 windows_wsl_setup_acknowledged = true
 
@@ -1305,7 +1304,6 @@ function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
 model = "${model}"
 review_model = "${model}"
 ${reasoningEffortLine}disable_response_storage = true
-model_catalog_json = "${CODEX_MODEL_CATALOG_CONFIG_PATH}"
 network_access = "enabled"
 windows_wsl_setup_acknowledged = true
 
@@ -1907,6 +1905,19 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         limit: { context: 1000000, output: 128000 },
         modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
         options: { thinking: { type: 'adaptive' }, effort: 'medium' },
+        variants: {
+          low: { effort: 'low' },
+          medium: { effort: 'medium' },
+          high: { effort: 'high' },
+          xhigh: { effort: 'xhigh' },
+          max: { effort: 'max' }
+        }
+      },
+      'claude-sonnet-5-5': {
+        name: 'Claude Sonnet 5.5',
+        limit: { context: 1000000, output: 128000 },
+        modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+        options: { thinking: { type: 'adaptive' }, effort: 'high' },
         variants: {
           low: { effort: 'low' },
           medium: { effort: 'medium' },
