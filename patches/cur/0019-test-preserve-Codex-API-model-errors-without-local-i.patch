@@ -1,0 +1,126 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 18:49:26 +0000
+Subject: [PATCH] test: preserve Codex API model errors without local
+ interception
+
+---
+ .../server/routes/codex_api_gateway_test.go   | 71 +++++++++++++++----
+ 1 file changed, 57 insertions(+), 14 deletions(-)
+
+diff --git a/backend/internal/server/routes/codex_api_gateway_test.go b/backend/internal/server/routes/codex_api_gateway_test.go
+index 6b737501a89b27e9325bfa346ea8d4888bc3ef9c..ff5746579ccaafa06706d75bf011bf5cb3ceb48e 100644
+--- a/backend/internal/server/routes/codex_api_gateway_test.go
++++ b/backend/internal/server/routes/codex_api_gateway_test.go
+@@ -41,6 +41,19 @@ type codexAPIRoutesUpstream struct {
+ 	do func(*http.Request) (*http.Response, error)
+ }
+ 
++type codexAPIRoutesResponse struct {
++	name        string
++	status      int
++	contentType string
++	body        string
++}
++
++type codexAPIRoutesRequest struct {
++	method string
++	path   string
++	target string
++}
++
+ func (u codexAPIRoutesUpstream) Do(r *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+ 	return u.do(r)
+ }
+@@ -52,10 +65,11 @@ func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
+ 	repo := codexAPIRoutesRepository{members: []service.Account{account}}
+ 	wire := new(bytes.Buffer)
+ 	encoder := gzip.NewWriter(wire)
+-	_, err := encoder.Write([]byte(`{ "model": "upstream-only-model", "future_field": true }`))
++	_, err := encoder.Write([]byte(`{ "model": "gpt-6.1-sol", "future_field": true }`))
+ 	require.NoError(t, err)
+ 	require.NoError(t, encoder.Close())
+ 	var expectedPath string
++	var response codexAPIRoutesResponse
+ 	calls := 0
+ 	upstream := codexAPIRoutesUpstream{do: func(r *http.Request) (*http.Response, error) {
+ 		calls++
+@@ -67,9 +81,12 @@ func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
+ 			require.Equal(t, wire.Bytes(), body)
+ 			require.Equal(t, "gzip", r.Header.Get("Content-Encoding"))
+ 		}
+-		return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: http.Header{"Etag": {"original"}}, Body: io.NopCloser(strings.NewReader("upstream owns this decision"))}, nil
++		return &http.Response{StatusCode: response.status, Header: http.Header{"Etag": {"original"}, "Content-Type": {response.contentType}}, Body: io.NopCloser(strings.NewReader(response.body))}, nil
+ 	}}
+-	s := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
++	// Keep shared error handling available: unintended state writes must reach
++	// the repository stub rather than being skipped for a nil rate-limit service.
++	rateLimits := service.NewRateLimitService(repo, nil, cfg, nil, nil)
++	s := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, rateLimits, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+ 	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+ 	t.Cleanup(billing.Stop)
+ 	h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: handler.NewOpenAIGatewayHandler(s, service.NewConcurrencyService(nil), billing, nil, nil, nil, nil, nil, cfg), AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
+@@ -84,26 +101,52 @@ func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
+ 		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{})
+ 		c.Next()
+ 	}), nil, nil, nil, nil, nil, cfg)
+-	for _, test := range []struct{ method, path, target string }{
++	routes := []codexAPIRoutesRequest{
+ 		{"POST", "/v1/responses", "/v1/responses"},
+ 		{"POST", "/responses", "/v1/responses"},
+ 		{"POST", "/backend-api/codex/responses", "/backend-api/codex/responses"},
+ 		{"POST", "/responses/compact", "/v1/responses/compact"},
++		{"POST", "/v1/responses/compact", "/v1/responses/compact"},
++		{"POST", "/backend-api/codex/responses/compact", "/v1/responses/compact"},
+ 		{"GET", "/v1/models", "/v1/models"},
+ 		{"GET", "/models?client_version=any", "/v1/models"},
+ 		{"GET", "/v1/models?client_version=any", "/v1/models"},
+ 		{"GET", "/backend-api/codex/models", "/backend-api/codex/models"},
++	}
++	for _, result := range []codexAPIRoutesResponse{
++		{"plan gated", http.StatusBadRequest, "application/json", `{"detail":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}`},
++		{"nested plan gated", http.StatusBadRequest, "application/json", `{"error":{"message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}`},
++		{"invalid parameter", http.StatusBadRequest, "application/json", `{"error":{"type":"invalid_request_error","message":"Unsupported parameter: future_field"}}`},
++		{"unknown model", http.StatusNotFound, "application/json", `{"error":{"code":"model_not_found","message":"Model not found"}}`},
++		{"rate limited", http.StatusTooManyRequests, "application/json", `{"error":{"type":"rate_limit_error","message":"Try again later"}}`},
++		{"unavailable", http.StatusServiceUnavailable, "application/json", `{"error":{"type":"server_error","message":"Temporarily unavailable"}}`},
++		{"validation", http.StatusUnprocessableEntity, "text/plain", "upstream owns this decision"},
++		{"stream failure", http.StatusOK, "text/event-stream", ": original comment\n\nevent: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\"}}}\n\n"},
++		{"success after errors", http.StatusOK, "application/json", `{"id":"upstream-response","status":"completed","output":[]}`},
+ 	} {
+-		expectedPath = test.target
+-		r := httptest.NewRequest(test.method, test.path, bytes.NewReader(wire.Bytes()))
+-		r.Header.Set("Authorization", "Bearer local")
+-		r.Header.Set("Content-Encoding", "gzip")
+-		r.Header.Set("originator", "codex_cli_rs")
+-		r.Header.Set("User-Agent", "codex_cli_rs/1.0")
+-		w := httptest.NewRecorder()
+-		router.ServeHTTP(w, r)
+-		require.Equal(t, http.StatusUnprocessableEntity, w.Code, test.path+": "+w.Body.String())
+-		require.Equal(t, "upstream owns this decision", w.Body.String())
++		t.Run(result.name, func(t *testing.T) {
++			response = result
++			for _, route := range routes {
++				t.Run(route.method+route.path, func(t *testing.T) {
++					expectedPath = route.target
++					for range 2 {
++						before := calls
++						r := httptest.NewRequest(route.method, route.path, bytes.NewReader(wire.Bytes()))
++						r.Header.Set("Authorization", "Bearer local")
++						r.Header.Set("Content-Encoding", "gzip")
++						r.Header.Set("originator", "codex_cli_rs")
++						r.Header.Set("User-Agent", "codex_cli_rs/1.0")
++						w := httptest.NewRecorder()
++						router.ServeHTTP(w, r)
++						require.Equal(t, result.status, w.Code, w.Body.String())
++						require.Equal(t, result.body, w.Body.String())
++						require.Equal(t, result.contentType, w.Header().Get("Content-Type"))
++						require.Equal(t, "original", w.Header().Get("ETag"))
++						require.Equal(t, before+1, calls, "each request must reach upstream exactly once, including after an error")
++					}
++				})
++			}
++		})
+ 	}
+ 	before := calls
+ 	for _, path := range []string{"/v1/responses", "/responses", "/backend-api/codex/responses", "/antigravity/models", "/antigravity/v1/models"} {

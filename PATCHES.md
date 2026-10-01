@@ -1,7 +1,8 @@
 # Patchset
 
-Last manually checked release: `v0.2.4-patch.1` on 2026-09-09. That review
-checked CI and publication results, not a live Codex/OpenAI session. Automation
+Last manually checked release: `v0.2.11-patch.2` on 2026-10-01. That review
+checked CI, publication and local Codex API passthrough tests, not a live
+Codex/OpenAI session or a deployed instance. Automation
 continues selecting CI-eligible upstream commits; this page is a manual
 snapshot and does not need updating for every automated release.
 
@@ -20,6 +21,7 @@ Rows 9 and 15 were refreshed on 2026-09-21.
 Row 17 was added on 2026-09-21.
 Row 18 was added on 2026-09-21.
 The early new-model import was removed on 2026-09-23 after upstream included it.
+Row 19 was added on 2026-10-01.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -41,6 +43,7 @@ The early new-model import was removed on 2026-09-23 after upstream included it.
 | 16: Behavior-focused tests | Remove incidental request ordering, internal encoding and wording constraints while retaining routing, isolation and data-preservation checks | Eight audio, realtime and identity test files only | 8 | +67 / -42 |
 | 17: Dedicated Codex API accounts | Forward native/public Responses and model catalogs without local protocol transforms; enforce dedicated groups and credential validity | New handler/service/repository helpers and tests, guarded account/group/transport/routes/billing changes, account UI | 55 | +2449 / -60 |
 | 18: Codex API billing and entrypoints | Use the OAuth service-tier contract and select public/native Responses and model catalogs by request path, never client metadata | Service-tier billing and parity test, dedicated handler and handler/route tests | 5 | +86 / -15 |
+| 19: Codex API error passthrough tests | Preserve plan/model/parameter errors, rate limits and SSE failures without local retries or cooldowns; allow subsequent requests | `server/routes/codex_api_gateway_test.go` only | 1 | +57 / -14 |
 
 ## Behavior boundaries
 
@@ -85,7 +88,7 @@ The early new-model import was removed on 2026-09-23 after upstream included it.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 18 patches.
+Apply patches in numerical order. The complete series contains all 19 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
@@ -99,6 +102,9 @@ For separate capabilities:
   context; apply it after patches 1-16. Its implementation is isolated from
   ordinary account request transformations.
 - Patch 18 follows patch 17, aligns its billing contract with OAuth, and separates public and native paths.
+- Patch 19 follows patch 18 and verifies the existing dedicated passthrough
+  contract across public/native routes. It changes tests only; upstream errors
+  remain visible to clients with their original status and body.
 - GPT-6 Sol/Luna and Claude Opus 5.5 support now comes from upstream; the early
   downstream import is no longer needed.
 
