@@ -1752,8 +1752,11 @@ diff --git a/backend/internal/service/account_service.go b/backend/internal/serv
 index 205907abc1cdd6c7ef51665b71b5b74f1500bc35..f8b1d4dbd45cd966948fa67956352cd039e383ab 100644
 --- a/backend/internal/service/account_service.go
 +++ b/backend/internal/service/account_service.go
-@@ -225,2 +225,5 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
+@@ -236,5 +236,8 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
  func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
+ 	if req.Platform == PlatformTypeSafe && req.Type != AccountTypeAPIKey {
+ 		return nil, errors.New("typesafe accounts only support apikey credentials")
+ 	}
 +	if err := ValidateCodexAPIAccount(req.Platform, req.Type, req.Credentials); err != nil {
 +		return nil, err
 +	}
@@ -1994,8 +1997,11 @@ index 5d778b75ce8396f94e73431d94cb1ef1c9d57b82..c5b428f00cfb4d1733406f481ed52d85
 -	case AccountTypeAPIKey, AccountTypeUpstream, AccountTypeBedrock, AccountTypeServiceAccount:
 +	case AccountTypeAPIKey, AccountTypeCodexAPI, AccountTypeUpstream, AccountTypeBedrock, AccountTypeServiceAccount:
  		return true
-@@ -413,2 +413,5 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
+@@ -414,5 +414,8 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
  func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
+ 	if input.Platform == PlatformTypeSafe && input.Type != AccountTypeAPIKey {
+ 		return nil, errors.New("typesafe accounts only support apikey credentials")
+ 	}
 +	if err := ValidateCodexAPIAccount(input.Platform, input.Type, input.Credentials); err != nil {
 +		return nil, err
 +	}
@@ -3160,8 +3166,7 @@ diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
 index 80cef707bd9113a59988db00183ad067aae4a7c8..34129be3ee4598dbbf8f4ec95d264ba6135b6226 100644
 --- a/frontend/src/types/index.ts
 +++ b/frontend/src/types/index.ts
-@@ -921,3 +921,3 @@ export interface UpdateGroupRequest {
- export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go'
+@@ -922,2 +922,2 @@ export interface UpdateGroupRequest {
 -export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 +export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'codex-api' | 'upstream' | 'bedrock' | 'service_account'
  export type OAuthAddMethod = 'oauth' | 'setup-token'
