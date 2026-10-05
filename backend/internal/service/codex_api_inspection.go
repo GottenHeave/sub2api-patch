@@ -18,16 +18,15 @@ type CodexAPIInspection struct {
 }
 
 func InspectCodexAPIRequest(target, contentType string, body []byte) (CodexAPIInspection, error) {
-	result := CodexAPIInspection{Body: body, Model: gjson.GetBytes(body, "model").String(), Protocol: ContentModerationProtocolOpenAIResponses}
-	images := strings.HasSuffix(target, "/images/generations") || strings.HasSuffix(target, "/images/edits")
-	if images {
-		result.Protocol = ContentModerationProtocolOpenAIImages
+	result := CodexAPIInspection{Body: body, Model: gjson.GetBytes(body, "model").String(), Protocol: CodexAPIInspectionProtocol(target)}
+	if result.Model == "" {
+		result.Model = gjson.GetBytes(body, "session.model").String()
 	}
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil || mediaType != "multipart/form-data" {
 		return result, nil
 	}
-	if images {
+	if result.Protocol == ContentModerationProtocolOpenAIImages {
 		parsed := &OpenAIImagesRequest{}
 		if err := parseOpenAIImagesMultipartRequest(body, contentType, parsed); err != nil {
 			return result, err
@@ -71,4 +70,14 @@ func InspectCodexAPIRequest(target, contentType string, body []byte) (CodexAPIIn
 		result.Model = gjson.GetBytes(result.Body, "session.model").String()
 	}
 	return result, err
+}
+
+func CodexAPIInspectionProtocol(target string) string {
+	if strings.HasSuffix(target, "/images/generations") || strings.HasSuffix(target, "/images/edits") {
+		return ContentModerationProtocolOpenAIImages
+	}
+	if strings.HasSuffix(target, "/realtime/calls") || strings.HasSuffix(target, "/realtime") || strings.HasSuffix(target, "/live") || strings.Contains(target, "/live/") {
+		return ContentModerationProtocolOpenAIRealtime
+	}
+	return ContentModerationProtocolOpenAIResponses
 }
