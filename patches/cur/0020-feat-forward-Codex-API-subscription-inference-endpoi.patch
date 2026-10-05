@@ -1,0 +1,1432 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Mon, 5 Oct 2026 09:02:21 +0000
+Subject: [PATCH 1/1] feat: forward Codex API subscription inference endpoints
+
+---
+ backend/internal/handler/codex_api_gateway.go | 103 +++++---
+ .../handler/codex_api_gateway_test.go         |  51 ++++
+ .../internal/handler/codex_api_websocket.go   | 179 +++++++++++++
+ .../server/routes/codex_api_gateway_test.go   | 239 ++++++++++++++++--
+ backend/internal/server/routes/gateway.go     |  12 +
+ .../internal/service/codex_api_endpoints.go   | 133 ++++++++++
+ .../service/codex_api_endpoints_test.go       | 175 +++++++++++++
+ .../internal/service/codex_api_inspection.go  |  74 ++++++
+ .../internal/service/codex_api_resources.go   |  67 +++++
+ .../internal/service/codex_api_transport.go   |  24 +-
+ backend/internal/service/codex_api_usage.go   |  59 ++++-
+ .../internal/service/codex_api_usage_test.go  |  48 ++++
+ .../internal/service/codex_api_websocket.go   |  81 ++++++
+ 13 files changed, 1171 insertions(+), 74 deletions(-)
+
+diff --git a/backend/internal/handler/codex_api_gateway.go b/backend/internal/handler/codex_api_gateway.go
+index 9dfd10a8633d47d4c9d562060976086c96dce8ac..369aa65f46e1d14adc435c848431c4820f2bf922 100644
+--- a/backend/internal/handler/codex_api_gateway.go
++++ b/backend/internal/handler/codex_api_gateway.go
+@@ -22,22 +22,3 @@ import (
+ func codexAPITarget(r *http.Request) string {
+-	path := r.URL.Path
+-	if r.Method == http.MethodGet {
+-		switch path {
+-		case "/backend-api/codex/models":
+-			return path
+-		case "/models", "/v1/models":
+-			return "/v1/models"
+-		}
+-	}
+-	if r.Method == http.MethodPost {
+-		switch path {
+-		case "/responses/compact", "/v1/responses/compact", "/backend-api/codex/responses/compact":
+-			return "/v1/responses/compact"
+-		case "/backend-api/codex/responses":
+-			return path
+-		case "/responses", "/v1/responses":
+-			return "/v1/responses"
+-		}
+-	}
+-	return ""
++	return service.CodexAPITarget(r)
+ }
+@@ -86,3 +67,3 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+-	if c.Request.Method == http.MethodPost {
++	if c.Request.Method == http.MethodPost || service.CodexAPIWebSocketRequest(c.Request) {
+ 		if err := h.billingCacheService.CheckBillingEligibility(ctx, key.User, key, key.Group, subscription, service.QuotaPlatform(ctx, key)); err != nil {
+@@ -94,5 +75,6 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 	var body []byte
++	requestModel := c.Query("model")
+ 	if c.Request.Method == http.MethodPost {
+-		raw, err := io.ReadAll(c.Request.Body)
+-		if err != nil {
++		raw, err := io.ReadAll(io.LimitReader(c.Request.Body, (16<<20)+1))
++		if err != nil || len(raw) > 16<<20 {
+ 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Unable to read request body")
+@@ -108,3 +90,3 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 		inspectionTruncated := encoding != "" && encoding != "identity" && len(body) >= 64<<20
+-		if err != nil || inspectionTruncated {
++		if err != nil || inspectionTruncated || len(body) > 16<<20 {
+ 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Unable to inspect request body")
+@@ -113,3 +95,9 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 		c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+-		model := gjson.GetBytes(body, "model").String()
++		inspected, err := service.InspectCodexAPIRequest(target, c.GetHeader("Content-Type"), body)
++		if err != nil {
++			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Unable to inspect request body")
++			return
++		}
++		body, requestModel = inspected.Body, inspected.Model
++		model := requestModel
+ 		if h.rejectIfCyberSessionBlocked(c, key, body, model, cyberBlockFormatResponses) {
+@@ -117,3 +105,3 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 		}
+-		if decision := h.checkSecurityAudit(c, requestLogger(c, "handler.codex_api"), key, subject, service.ContentModerationProtocolOpenAIResponses, model, body); decision != nil && !decision.AllowNextStage {
++		if decision := h.checkSecurityAudit(c, requestLogger(c, "handler.codex_api"), key, subject, inspected.Protocol, model, body); decision != nil && !decision.AllowNextStage {
+ 			h.openAISecurityAuditError(c, decision)
+@@ -121,3 +109,7 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 		}
+-		if service.IsExplicitImageGenerationIntent("/v1/responses", model, body) {
++		imageEndpoint := target
++		if strings.Contains(target, "/images/") {
++			imageEndpoint = "/v1/images/" + target[strings.LastIndex(target, "/")+1:]
++		}
++		if service.IsExplicitImageGenerationIntent(imageEndpoint, model, body) {
+ 			if !service.GroupAllowsImageGeneration(key.Group) {
+@@ -135,2 +127,7 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 	}
++	pinnedAccount, err := h.gatewayService.CodexAPIResourceAccount(ctx, key, body, service.CodexAPICallID(c.Request))
++	if err != nil {
++		h.errorResponse(c, http.StatusConflict, "invalid_request_error", "Codex API resource unavailable for this key")
++		return
++	}
+ 	var account *service.Account
+@@ -138,2 +135,5 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 		candidate := &accounts[i]
++		if pinnedAccount != 0 && candidate.ID != pinnedAccount {
++			continue
++		}
+ 		if !candidate.IsSchedulable() || candidate.IsQuotaExceeded() {
+@@ -156,2 +156,6 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 	}
++	if service.CodexAPIWebSocketRequest(c.Request) {
++		h.forwardCodexAPIWebSocket(c, key, subject, account, target, start)
++		return
++	}
+ 	response, err := h.gatewayService.RoundTripCodexAPI(ctx, account, c.Request, target)
+@@ -170,3 +174,31 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 	}()
++	if response.StatusCode >= 200 && response.StatusCode < 300 && (strings.HasSuffix(target, "/realtime/calls") || strings.HasSuffix(target, "/live")) {
++		callID, parseErr := service.OpenAIRealtimeCallIDFromLocation(response.Header.Get("Location"))
++		if parseErr != nil || h.gatewayService.BindCodexAPIResource(ctx, key, callID, account.ID) != nil {
++			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Unable to retain Codex API call ownership")
++			return
++		}
++	}
+ 	observer := service.NewCodexAPIUsageObserver(response.Header.Get("Content-Type"), response.Header.Get("Content-Encoding"))
++	if strings.HasSuffix(target, "/responses") && response.StatusCode >= 200 && response.StatusCode < 300 {
++		observer.OnResource(func(id string) {
++			if err := h.gatewayService.BindCodexAPIResource(ctx, key, id, account.ID); err != nil {
++				logger.L().Warn("codex_api.resource_binding_failed", zap.Int64("account_id", account.ID), zap.Error(err))
++			}
++		})
++	}
++	if response.StatusCode >= 200 && response.StatusCode < 300 && strings.HasSuffix(target, "/files") {
++		data, readErr := io.ReadAll(io.LimitReader(response.Body, (8<<20)+1))
++		if readErr != nil || len(data) > 8<<20 {
++			h.errorResponse(c, http.StatusBadGateway, "api_error", "Unable to inspect Codex API file response")
++			return
++		}
++		_, _ = observer.Write(data)
++		id := observer.ResourceID()
++		if id == "" || h.gatewayService.BindCodexAPIResource(ctx, key, id, account.ID) != nil {
++			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Unable to retain Codex API file ownership")
++			return
++		}
++		response.Body = io.NopCloser(bytes.NewReader(data))
++	}
+ 	response.Body = codexAPIObservedBody{Reader: io.TeeReader(response.Body, observer), Closer: response.Body}
+@@ -176,3 +208,3 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 	}
+-	result, observed := observer.Result()
++	result, observed := observer.ResultForEndpoint(target, relayErr == nil)
+ 	if !observed {
+@@ -181,3 +213,9 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 	}
+-	result.Model = gjson.GetBytes(body, "model").String()
++	result.Model = requestModel
++	h.recordCodexAPIUsage(c, key, account, target, body, response.Header, start, relayErr != nil, result)
++}
++
++func (h *OpenAIGatewayHandler) recordCodexAPIUsage(c *gin.Context, key *service.APIKey, account *service.Account, target string, body []byte, headers http.Header, start time.Time, disconnected bool, result *service.OpenAIForwardResult) {
++	ctx := c.Request.Context()
++	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+ 	if tier := gjson.GetBytes(body, "service_tier"); tier.Type == gjson.String {
+@@ -192,6 +230,7 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 	result.Duration = time.Since(start)
+-	result.ClientDisconnect = relayErr != nil
++	result.ClientDisconnect = disconnected
+ 	result.UpstreamEndpoint = target
+-	result.UpstreamHeaders = response.Header.Clone()
+-	result.Stream = strings.Contains(response.Header.Get("Content-Type"), "text/event-stream")
++	result.UpstreamHeaders = headers.Clone()
++	result.Stream = service.CodexAPIWebSocketRequest(c.Request) || strings.Contains(headers.Get("Content-Type"), "text/event-stream")
++	result.OpenAIWSMode = service.CodexAPIWebSocketRequest(c.Request)
+ 	quotaPlatform := service.QuotaPlatform(ctx, key)
+diff --git a/backend/internal/handler/codex_api_gateway_test.go b/backend/internal/handler/codex_api_gateway_test.go
+index 2c7eed3ed2c4561a8347040d257e0e7a978e0356..493d09423fca9c65f472b5d20b2f034ea95c6887 100644
+--- a/backend/internal/handler/codex_api_gateway_test.go
++++ b/backend/internal/handler/codex_api_gateway_test.go
+@@ -151 +151,52 @@ func TestRelayCodexAPIResponsePreservesUpstream(t *testing.T) {
+ }
++
++type codexAPIEndpointCase struct {
++	method    string
++	path      string
++	websocket bool
++	target    string
++}
++
++func TestCodexAPISubscriptionEndpoints(t *testing.T) {
++	for _, test := range []codexAPIEndpointCase{
++		{"POST", "/v1/images/generations", false, "/v1/images/generations"},
++		{"POST", "/codex/images/edits", false, "/backend-api/codex/images/edits"},
++		{"POST", "/v1/files", false, "/v1/files"},
++		{"POST", "/v1/audio/transcriptions", false, "/v1/audio/transcriptions"},
++		{"POST", "/transcribe", false, "/v1/audio/transcriptions"},
++		{"POST", "/backend-api/transcribe", false, "/v1/audio/transcriptions"},
++		{"POST", "/v1/alpha/search", false, "/v1/alpha/search"},
++		{"POST", "/backend-api/codex/memories/trace_summarize", false, "/backend-api/codex/memories/trace_summarize"},
++		{"POST", "/codex/guardian", false, "/backend-api/codex/guardian"},
++		{"GET", "/codex/guardian-classifier", true, "/backend-api/codex/guardian-classifier"},
++		{"GET", "/v1/responses", true, "/v1/responses"},
++		{"GET", "/codex/models", false, "/backend-api/codex/models"},
++		{"POST", "/codex/responses/compact", false, "/v1/responses/compact"},
++		{"POST", "/v1/realtime/calls", false, "/v1/realtime/calls"},
++		{"POST", "/backend-api/codex/live", false, "/backend-api/codex/live"},
++		{"GET", "/v1/realtime?call_id=call_example", true, "/v1/realtime"},
++		{"GET", "/codex/live/call_example", true, "/backend-api/codex/live/call_example"},
++		{"GET", "/v1/realtime", true, ""},
++		{"GET", "/v1/live", true, ""},
++		{"POST", "/v1/live/sessions", false, ""},
++		{"GET", "/v1/live/sessions/session_example/attach", true, ""},
++		{"POST", "/platform/files", false, ""},
++		{"POST", "/auth/oauth/token", false, ""},
++		{"GET", "/backend-api/wham/usage", false, ""},
++		{"POST", "/codex/alpha/notes/v2/write_file", false, ""},
++		{"GET", "/backend-api/ps/plugins/list", false, ""},
++		{"GET", "/v1/files/file_example", false, ""},
++		{"DELETE", "/v1/files/file_example", false, ""},
++		{"POST", "/v1/images/edits/async", false, ""},
++		{"POST", "/v1/realtime/client_secrets", false, ""},
++	} {
++		t.Run(test.method+test.path, func(t *testing.T) {
++			r := httptest.NewRequest(test.method, test.path, nil)
++			if test.websocket {
++				r.Header.Set("Connection", "Upgrade")
++				r.Header.Set("Upgrade", "websocket")
++			}
++			require.Equal(t, test.target, codexAPITarget(r))
++		})
++	}
++}
+diff --git a/backend/internal/handler/codex_api_websocket.go b/backend/internal/handler/codex_api_websocket.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..5de7bcf866d90eb02786d0ccb68f38e71d731369
+--- /dev/null
++++ b/backend/internal/handler/codex_api_websocket.go
+@@ -0,0 +1,179 @@
++package handler
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"strings"
++	"sync"
++	"time"
++
++	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
++	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
++	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
++	"github.com/Wei-Shaw/sub2api/internal/service"
++	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
++	coderws "github.com/coder/websocket"
++	"github.com/gin-gonic/gin"
++	"github.com/tidwall/gjson"
++	"go.uber.org/zap"
++)
++
++type codexAPIWSFrameConn struct {
++	conn *coderws.Conn
++}
++
++func (c codexAPIWSFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
++	return c.conn.Read(ctx)
++}
++
++func (c codexAPIWSFrameConn) WriteFrame(ctx context.Context, kind coderws.MessageType, body []byte) error {
++	return c.conn.Write(ctx, kind, body)
++}
++
++func (c codexAPIWSFrameConn) Close() error { return c.conn.CloseNow() }
++
++func (h *OpenAIGatewayHandler) forwardCodexAPIWebSocket(c *gin.Context, key *service.APIKey, subject middleware2.AuthSubject, account *service.Account, target string, start time.Time) {
++	ctx := c.Request.Context()
++	maxIngress := 0
++	if h.cfg != nil {
++		maxIngress = h.cfg.Gateway.OpenAIWS.MaxIngressConnectionsPerAPIKey
++	}
++	lease, acquired, err := h.concurrencyHelper.AcquireOpenAIWSIngressLease(ctx, key.ID, maxIngress)
++	if err != nil || !acquired {
++		h.errorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "WebSocket ingress capacity unavailable")
++		return
++	}
++	if lease != nil {
++		defer lease.Release()
++		ctx = lease.Context()
++	}
++	upstream, response, err := h.gatewayService.DialCodexAPI(ctx, account, c.Request, target)
++	if err != nil {
++		if response != nil && response.Body != nil {
++			defer func() { _ = response.Body.Close() }()
++			_ = relayCodexAPIResponse(c, response)
++		} else if ctx.Err() == nil {
++			h.errorResponse(c, http.StatusBadGateway, "api_error", "Codex API WebSocket connection failed")
++		}
++		return
++	}
++	defer func() { _ = upstream.CloseNow() }()
++	headers := response.Header.Clone()
++	service.StripCodexAPIHopHeaders(headers)
++	for name, values := range headers {
++		if !strings.HasPrefix(strings.ToLower(name), "sec-websocket-") && !strings.EqualFold(name, "Content-Length") {
++			c.Writer.Header()[name] = values
++		}
++	}
++	protocols := []string(nil)
++	if protocol := upstream.Subprotocol(); protocol != "" {
++		protocols = []string{protocol}
++	}
++	client, err := coderws.Accept(c.Writer, c.Request, &coderws.AcceptOptions{Subprotocols: protocols})
++	if err != nil {
++		return
++	}
++	defer func() { _ = client.CloseNow() }()
++	client.SetReadLimit(min(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg), 16<<20))
++	setOpenAIClientTransportWS(c)
++	readContext := c.Copy()
++	recordContext := c.Copy()
++	var imageRelease func()
++	var imageMu sync.Mutex
++	imageClosed := false
++	defer func() {
++		imageMu.Lock()
++		defer imageMu.Unlock()
++		imageClosed = true
++		if imageRelease != nil {
++			imageRelease()
++		}
++	}()
++	lastBilledID := ""
++	_, _ = openaiwsv2.Relay(ctx, codexAPIWSFrameConn{client}, codexAPIWSFrameConn{upstream}, nil, openaiwsv2.RelayOptions{
++		FirstMessageSent: true,
++		IdleTimeout:      5 * time.Minute,
++		ReadClientFrame: func(frameCtx context.Context, conn openaiwsv2.FrameConn) (coderws.MessageType, []byte, error) {
++			kind, payload, err := conn.ReadFrame(frameCtx)
++			if err != nil {
++				return kind, payload, err
++			}
++			inspection := c.Request.Clone(frameCtx)
++			inspection.Body = io.NopCloser(bytes.NewReader(payload))
++			body, err := pkghttputil.ReadRequestBodyWithPrealloc(inspection)
++			if err != nil || len(body) >= 64<<20 {
++				_ = client.Close(coderws.StatusPolicyViolation, "Unable to inspect request frame")
++				return kind, nil, fmt.Errorf("unable to inspect Codex API frame")
++			}
++			model := gjson.GetBytes(body, "model").String()
++			if h.findBlockedCyberSessionForAPIKey(readContext, key, body) != "" {
++				writeCyberSessionBlockedWSError(frameCtx, client)
++				_ = client.Close(coderws.StatusPolicyViolation, "session blocked by cyber-security policy")
++				return kind, nil, fmt.Errorf("blocked Codex API session")
++			}
++			if decision := h.checkSecurityAuditStage(readContext, requestLogger(readContext, "handler.codex_api.websocket"), key, subject, service.ContentModerationProtocolOpenAIResponses, model, body, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
++				writeSecurityAuditWSError(frameCtx, client, decision)
++				_ = client.Close(securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
++				return kind, nil, fmt.Errorf("codex API frame rejected by security audit")
++			}
++			resourceAccount, err := h.gatewayService.CodexAPIResourceAccount(frameCtx, key, body, "")
++			if err != nil || resourceAccount != 0 && resourceAccount != account.ID {
++				_ = client.Close(coderws.StatusPolicyViolation, "Resource unavailable on this connection")
++				return kind, nil, fmt.Errorf("codex API frame resource identity mismatch")
++			}
++			if service.IsExplicitImageGenerationIntent("/v1/responses", model, body) {
++				if !service.GroupAllowsImageGeneration(key.Group) {
++					_ = client.Close(coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
++					return kind, nil, fmt.Errorf("codex API image permission denied")
++				}
++				imageMu.Lock()
++				defer imageMu.Unlock()
++				if imageClosed {
++					return kind, nil, context.Canceled
++				}
++				if imageRelease == nil && h.cfg != nil && h.imageLimiter != nil {
++					cfg := h.cfg.Gateway.ImageConcurrency
++					release, acquired := h.imageLimiter.TryAcquire(cfg.Enabled, cfg.MaxConcurrentRequests)
++					if !acquired {
++						_ = client.Close(coderws.StatusTryAgainLater, "Image concurrency limit reached")
++						return kind, nil, fmt.Errorf("codex API image concurrency full")
++					}
++					imageRelease = release
++				}
++			}
++			return kind, payload, nil
++		},
++		BeforeClientWrite: func(_ coderws.MessageType, payload []byte) {
++			switch gjson.GetBytes(payload, "type").String() {
++			case "response.completed", "response.done", "response.incomplete":
++			default:
++				return
++			}
++			observer := service.NewCodexAPIUsageObserver("application/json", "")
++			_, _ = observer.Write(payload)
++			result, observed := observer.Result()
++			if id := observer.ResourceID(); id != "" {
++				if err := h.gatewayService.BindCodexAPIResource(ctx, key, id, account.ID); err != nil {
++					logger.L().Warn("codex_api.resource_binding_failed", zap.Error(err))
++				}
++			}
++			if !observed || result.ResponseID != "" && result.ResponseID == lastBilledID {
++				return
++			}
++			lastBilledID = result.ResponseID
++			result.UpstreamTerminalEvent = gjson.GetBytes(payload, "type").String()
++			result.Model = result.UpstreamResponseModel
++			h.recordCodexAPIUsage(recordContext, key, account, target, nil, response.Header, start, false, result)
++		},
++		BeforeRelayCancel: func(exit openaiwsv2.RelayExit) {
++			var closeError coderws.CloseError
++			if errors.As(exit.Err, &closeError) {
++				_ = client.Close(closeError.Code, closeError.Reason)
++			}
++		},
++	})
++}
+diff --git a/backend/internal/server/routes/codex_api_gateway_test.go b/backend/internal/server/routes/codex_api_gateway_test.go
+index ff5746579ccaafa06706d75bf011bf5cb3ceb48e..4405e88eee5c5cbd58471fb5cc4dfb04f99d4662 100644
+--- a/backend/internal/server/routes/codex_api_gateway_test.go
++++ b/backend/internal/server/routes/codex_api_gateway_test.go
+@@ -10,3 +10,5 @@ import (
+ 	"strings"
++	"sync"
+ 	"testing"
++	"time"
+ 
+@@ -16,2 +18,3 @@ import (
+ 	"github.com/Wei-Shaw/sub2api/internal/service"
++	coderws "github.com/coder/websocket"
+ 	"github.com/gin-gonic/gin"
+@@ -60,7 +63,79 @@ func (u codexAPIRoutesUpstream) Do(r *http.Request, _ string, _ int64, _ int) (*
+ 
+-func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
++type codexAPIRouteCache struct {
++	service.GatewayCache
++	mu        sync.Mutex
++	resources map[string]int64
++}
++
++type codexAPIRouteConcurrency struct {
++	service.ConcurrencyCache
++	mu     sync.Mutex
++	active int
++}
++
++func (s *codexAPIRouteConcurrency) AcquireAccountSlot(_ context.Context, _ int64, limit int, _ string) (bool, error) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.active >= limit {
++		return false, nil
++	}
++	s.active++
++	return true, nil
++}
++
++func (s *codexAPIRouteConcurrency) ReleaseAccountSlot(_ context.Context, _ int64, _ string) error {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.active--
++	return nil
++}
++
++func (s *codexAPIRouteCache) GetSessionAccountID(_ context.Context, _ int64, key string) (int64, error) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if id := s.resources[key]; id != 0 {
++		return id, nil
++	}
++	return 0, service.ErrStickySessionNotFound
++}
++
++func (s *codexAPIRouteCache) SetSessionAccountID(_ context.Context, _ int64, key string, id int64, _ time.Duration) error {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.resources[key] = id
++	return nil
++}
++
++func newCodexAPIRoutesFixture(t *testing.T, accounts []service.Account, upstream service.HTTPUpstream, cache service.GatewayCache) (*gin.Engine, *service.Group) {
++	t.Helper()
+ 	gin.SetMode(gin.TestMode)
+ 	cfg := &config.Config{RunMode: config.RunModeSimple, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
++	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
++	repo := codexAPIRoutesRepository{members: accounts}
++	rateLimits := service.NewRateLimitService(repo, nil, cfg, nil, nil)
++	s := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, cache, cfg, nil, nil, nil, rateLimits, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
++	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
++	t.Cleanup(billing.Stop)
++	slots := &codexAPIRouteConcurrency{}
++	t.Cleanup(func() {
++		require.Eventually(t, func() bool { slots.mu.Lock(); defer slots.mu.Unlock(); return slots.active == 0 }, 5*time.Second, 10*time.Millisecond)
++	})
++	h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: handler.NewOpenAIGatewayHandler(s, service.NewConcurrencyService(slots), billing, nil, nil, nil, nil, nil, cfg), AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
++	group := &service.Group{ID: 1, Platform: service.PlatformOpenAI, AllowImageGeneration: true, ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: []string{"different-local-model"}}}
++	router := gin.New()
++	RegisterGatewayRoutes(router, h, servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
++		if c.GetHeader("Authorization") != "Bearer local" {
++			c.AbortWithStatus(http.StatusUnauthorized)
++			return
++		}
++		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{ID: 1, GroupID: &group.ID, Group: group})
++		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{})
++		c.Next()
++	}), nil, nil, nil, nil, nil, cfg)
++	return router, group
++}
++
++func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
++	gin.SetMode(gin.TestMode)
+ 	account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "upstream", "base_url": "https://codex.example"}}
+-	repo := codexAPIRoutesRepository{members: []service.Account{account}}
+ 	wire := new(bytes.Buffer)
+@@ -85,20 +160,3 @@ func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
+ 	}}
+-	// Keep shared error handling available: unintended state writes must reach
+-	// the repository stub rather than being skipped for a nil rate-limit service.
+-	rateLimits := service.NewRateLimitService(repo, nil, cfg, nil, nil)
+-	s := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, rateLimits, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+-	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+-	t.Cleanup(billing.Stop)
+-	h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: handler.NewOpenAIGatewayHandler(s, service.NewConcurrencyService(nil), billing, nil, nil, nil, nil, nil, cfg), AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
+-	group := &service.Group{ID: 1, Platform: service.PlatformOpenAI, ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: []string{"different-local-model"}}}
+-	router := gin.New()
+-	RegisterGatewayRoutes(router, h, servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+-		if c.GetHeader("Authorization") != "Bearer local" {
+-			c.AbortWithStatus(http.StatusUnauthorized)
+-			return
+-		}
+-		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{GroupID: &group.ID, Group: group})
+-		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{})
+-		c.Next()
+-	}), nil, nil, nil, nil, nil, cfg)
++	router, _ := newCodexAPIRoutesFixture(t, []service.Account{account}, upstream, nil)
+ 	routes := []codexAPIRoutesRequest{
+@@ -154,4 +212,2 @@ func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
+ 		r.Header.Set("Authorization", "Bearer local")
+-		r.Header.Set("Connection", "Upgrade")
+-		r.Header.Set("Upgrade", "websocket")
+ 		w := httptest.NewRecorder()
+@@ -165 +221,140 @@ func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
+ }
++
++func TestCodexAPISubscriptionRouteInventory(t *testing.T) {
++	account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "upstream", "base_url": "https://codex.example"}}
++	upstream := codexAPIRoutesUpstream{do: func(r *http.Request) (*http.Response, error) {
++		require.Equal(t, "Bearer upstream", r.Header.Get("Authorization"))
++		return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("provider-owned error"))}, nil
++	}}
++	router, group := newCodexAPIRoutesFixture(t, []service.Account{account}, upstream, nil)
++	for _, route := range service.CodexAPIEndpointRoutes() {
++		if route.Method != http.MethodPost {
++			continue
++		}
++		t.Run(route.Method+route.Path, func(t *testing.T) {
++			r := httptest.NewRequest(route.Method, route.Path, strings.NewReader(`{"model":"future-model","future_field":true}`))
++			r.Header.Set("Authorization", "Bearer local")
++			r.Header.Set("Content-Type", "application/json")
++			w := httptest.NewRecorder()
++			router.ServeHTTP(w, r)
++			require.Equal(t, http.StatusUnprocessableEntity, w.Code, w.Body.String())
++			require.Equal(t, "provider-owned error", w.Body.String())
++		})
++	}
++	group.AllowImageGeneration = false
++	r := httptest.NewRequest("POST", "/codex/images/generations", strings.NewReader(`{"model":"future-model"}`))
++	r.Header.Set("Authorization", "Bearer local")
++	w := httptest.NewRecorder()
++	router.ServeHTTP(w, r)
++	require.Equal(t, http.StatusForbidden, w.Code)
++	for _, path := range []string{"/v1/files", "/codex/guardian", "/backend-api/codex/images/edits"} {
++		w := httptest.NewRecorder()
++		router.ServeHTTP(w, httptest.NewRequest("POST", path, nil))
++		require.Equal(t, http.StatusUnauthorized, w.Code)
++	}
++	ordinary, _ := newCodexAPIRoutesFixture(t, []service.Account{{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}}, nil, nil)
++	w = httptest.NewRecorder()
++	r = httptest.NewRequest("POST", "/codex/guardian", nil)
++	r.Header.Set("Authorization", "Bearer local")
++	ordinary.ServeHTTP(w, r)
++	require.Equal(t, http.StatusNotFound, w.Code)
++}
++
++func TestCodexAPIRoutesWebSocketRelay(t *testing.T) {
++	seen := make(chan string, 1)
++	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		seen <- r.URL.Path + "?" + r.URL.RawQuery + "|" + r.Header.Get("Authorization")
++		conn, err := coderws.Accept(w, r, nil)
++		if err != nil {
++			return
++		}
++		defer func() { _ = conn.CloseNow() }()
++		for range 2 {
++			kind, body, err := conn.Read(r.Context())
++			if err != nil {
++				return
++			}
++			if err := conn.Write(r.Context(), kind, body); err != nil {
++				return
++			}
++		}
++		_ = conn.Close(coderws.StatusNormalClosure, "complete")
++	}))
++	defer provider.Close()
++	account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"api_key": "upstream", "base_url": provider.URL}}
++	router, _ := newCodexAPIRoutesFixture(t, []service.Account{account}, nil, nil)
++	server := httptest.NewServer(router)
++	defer server.Close()
++	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
++	defer cancel()
++	conn, _, err := coderws.Dial(ctx, server.URL+"/codex/responses?future=a%20b&api_key=local", &coderws.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer local"}}})
++	require.NoError(t, err)
++	defer func() { _ = conn.CloseNow() }()
++	require.Equal(t, "/backend-api/codex/responses?future=a%20b|Bearer upstream", <-seen)
++	blocked := httptest.NewRecorder()
++	request := httptest.NewRequest("GET", "/v1/models", nil)
++	request.Header.Set("Authorization", "Bearer local")
++	router.ServeHTTP(blocked, request)
++	require.Equal(t, http.StatusServiceUnavailable, blocked.Code)
++	for _, kind := range []coderws.MessageType{coderws.MessageText, coderws.MessageBinary} {
++		payload := []byte(`{ "type":"response.create", "model":"future-model", "namespace":"original" }`)
++		require.NoError(t, conn.Write(ctx, kind, payload))
++		gotKind, got, err := conn.Read(ctx)
++		require.NoError(t, err)
++		require.Equal(t, kind, gotKind)
++		require.Equal(t, payload, got)
++	}
++}
++
++func TestCodexAPICallSidebandKeepsAccountAndOwner(t *testing.T) {
++	cache := &codexAPIRouteCache{resources: make(map[string]int64)}
++	account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "upstream", "base_url": "https://codex.example"}}
++	calls := 0
++	upstream := codexAPIRoutesUpstream{do: func(r *http.Request) (*http.Response, error) {
++		calls++
++		return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"Location": {"/v1/live/call_created"}}, Body: io.NopCloser(strings.NewReader("sdp-answer"))}, nil
++	}}
++	router, _ := newCodexAPIRoutesFixture(t, []service.Account{account}, upstream, cache)
++	r := httptest.NewRequest("POST", "/v1/realtime/calls", strings.NewReader(`{"sdp":"offer","session":{"model":"future-model"}}`))
++	r.Header.Set("Authorization", "Bearer local")
++	w := httptest.NewRecorder()
++	router.ServeHTTP(w, r)
++	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
++	require.Equal(t, "sdp-answer", w.Body.String())
++	require.Equal(t, "/v1/live/call_created", w.Header().Get("Location"))
++	require.Len(t, cache.resources, 1)
++	r = httptest.NewRequest("GET", "/v1/realtime?call_id=unowned", nil)
++	r.Header.Set("Authorization", "Bearer local")
++	r.Header.Set("Connection", "Upgrade")
++	r.Header.Set("Upgrade", "websocket")
++	w = httptest.NewRecorder()
++	router.ServeHTTP(w, r)
++	require.Equal(t, http.StatusConflict, w.Code)
++	require.Equal(t, 1, calls)
++}
++
++func TestCodexAPIFileReferenceKeepsUploadAccount(t *testing.T) {
++	cache := &codexAPIRouteCache{resources: make(map[string]int64)}
++	account := service.Account{ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "file-owner", "base_url": "https://codex.example"}}
++	upstream := codexAPIRoutesUpstream{do: func(r *http.Request) (*http.Response, error) {
++		require.Equal(t, "Bearer file-owner", r.Header.Get("Authorization"))
++		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"file-uploaded"}`))}, nil
++	}}
++	router, _ := newCodexAPIRoutesFixture(t, []service.Account{account}, upstream, cache)
++	r := httptest.NewRequest("POST", "/v1/files", strings.NewReader("original multipart bytes"))
++	r.Header.Set("Authorization", "Bearer local")
++	w := httptest.NewRecorder()
++	router.ServeHTTP(w, r)
++	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
++	require.Equal(t, `{"id":"file-uploaded"}`, w.Body.String())
++	require.Len(t, cache.resources, 1)
++	other := account
++	other.ID = 1
++	other.Credentials = map[string]any{"api_key": "wrong-owner", "base_url": "https://codex.example"}
++	router, _ = newCodexAPIRoutesFixture(t, []service.Account{other, account}, upstream, cache)
++	r = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"future-model","input":[{"file_id":"file-uploaded"}]}`))
++	r.Header.Set("Authorization", "Bearer local")
++	w = httptest.NewRecorder()
++	router.ServeHTTP(w, r)
++	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
++}
+diff --git a/backend/internal/server/routes/gateway.go b/backend/internal/server/routes/gateway.go
+index 75f35d067dbbd41d071075085d19cb4eb4d9cb54..86fa328ae90e0d4904d3842b6b7a4b0da73f43ff 100644
+--- a/backend/internal/server/routes/gateway.go
++++ b/backend/internal/server/routes/gateway.go
+@@ -593,2 +593,14 @@ func RegisterGatewayRoutes(
+ 
++	registered := make(map[string]bool)
++	for _, route := range r.Routes() {
++		registered[route.Method+" "+route.Path] = true
++	}
++	for _, route := range service.CodexAPIEndpointRoutes() {
++		if registered[route.Method+" "+route.Path] {
++			continue
++		}
++		// These additions are private to dedicated groups. Ordinary groups retain
++		// their existing endpoints and receive 404 for newly registered paths.
++		rootRoute(route.Method, route.Path, bodyLimit, func(c *gin.Context) { c.AbortWithStatus(http.StatusNotFound) })
++	}
+ }
+diff --git a/backend/internal/service/codex_api_endpoints.go b/backend/internal/service/codex_api_endpoints.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..3aea2b6aa0df241d4335dd5ebf85e6112158b8b1
+--- /dev/null
++++ b/backend/internal/service/codex_api_endpoints.go
+@@ -0,0 +1,133 @@
++package service
++
++import (
++	"net/http"
++	"strings"
++)
++
++type CodexAPIEndpointRoute struct {
++	Method string
++	Path   string
++}
++
++// Only inference and subscription resource adapters belong to dedicated groups.
++// Account management and caller-owned upstream credentials are never forwarded.
++func CodexAPITarget(r *http.Request) string {
++	if r == nil || r.URL == nil {
++		return ""
++	}
++	path := r.URL.Path
++	native := false
++	for _, prefix := range []string{"/backend-api/codex", "/codex"} {
++		if strings.HasPrefix(path, prefix+"/") {
++			path = strings.TrimPrefix(path, prefix)
++			native = true
++			break
++		}
++	}
++	if !native {
++		path = strings.TrimPrefix(path, "/v1")
++	}
++	target := "/v1" + path
++	if native {
++		target = "/backend-api/codex" + path
++	}
++	switch r.Method {
++	case http.MethodPost:
++		switch path {
++		case "/responses", "/images/generations", "/images/edits", "/alpha/search", "/realtime/calls", "/live":
++			return target
++		case "/responses/compact":
++			return "/v1/responses/compact"
++		case "/guardian", "/guardian-classifier", "/memories/trace_summarize":
++			if native {
++				return target
++			}
++		case "/files", "/audio/transcriptions":
++			if !native {
++				return target
++			}
++		case "/transcribe", "/backend-api/transcribe":
++			if !native {
++				return "/v1/audio/transcriptions"
++			}
++		}
++	case http.MethodGet:
++		if path == "/models" {
++			return target
++		}
++		if !CodexAPIWebSocketRequest(r) {
++			return ""
++		}
++		switch path {
++		case "/responses":
++			return target
++		case "/guardian", "/guardian-classifier":
++			if native {
++				return target
++			}
++		case "/realtime", "/live":
++			if validCodexAPICallID(r.URL.Query().Get("call_id")) {
++				return target
++			}
++		default:
++			if strings.HasPrefix(path, "/live/") && validCodexAPICallID(strings.TrimPrefix(path, "/live/")) {
++				return target
++			}
++		}
++	}
++	return ""
++}
++
++func CodexAPIWebSocketRequest(r *http.Request) bool {
++	if r == nil || r.Method != http.MethodGet || !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
++		return false
++	}
++	for _, token := range strings.Split(r.Header.Get("Connection"), ",") {
++		if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
++			return true
++		}
++	}
++	return false
++}
++
++func validCodexAPICallID(id string) bool {
++	return len(id) > 0 && len(id) <= 256 && id != "sessions" && !strings.ContainsAny(id, "/\\?#\x00 \t\r\n") && id != "." && id != ".."
++}
++
++func CodexAPICallID(r *http.Request) string {
++	if r == nil || r.URL == nil || !CodexAPIWebSocketRequest(r) {
++		return ""
++	}
++	if i := strings.Index(r.URL.Path, "/live/"); i >= 0 {
++		return strings.TrimPrefix(r.URL.Path[i:], "/live/")
++	}
++	return r.URL.Query().Get("call_id")
++}
++
++// The router uses the same inventory; existing ordinary routes keep their handlers.
++func CodexAPIEndpointRoutes() []CodexAPIEndpointRoute {
++	var routes []CodexAPIEndpointRoute
++	for _, prefix := range []string{"", "/v1", "/codex", "/backend-api/codex"} {
++		for _, path := range []string{"/responses", "/images/generations", "/images/edits", "/alpha/search", "/realtime/calls", "/live"} {
++			routes = append(routes, CodexAPIEndpointRoute{http.MethodPost, prefix + path})
++		}
++		for _, path := range []string{"/responses", "/models", "/realtime", "/live", "/live/:call_id"} {
++			routes = append(routes, CodexAPIEndpointRoute{http.MethodGet, prefix + path})
++		}
++		if prefix == "/codex" || prefix == "/backend-api/codex" {
++			for _, path := range []string{"/guardian", "/guardian-classifier", "/memories/trace_summarize"} {
++				routes = append(routes, CodexAPIEndpointRoute{http.MethodPost, prefix + path})
++				if path != "/memories/trace_summarize" {
++					routes = append(routes, CodexAPIEndpointRoute{http.MethodGet, prefix + path})
++				}
++			}
++			if prefix == "/codex" {
++				routes = append(routes, CodexAPIEndpointRoute{http.MethodPost, prefix + "/responses/compact"})
++			}
++		} else {
++			routes = append(routes, CodexAPIEndpointRoute{http.MethodPost, prefix + "/files"}, CodexAPIEndpointRoute{http.MethodPost, prefix + "/audio/transcriptions"})
++		}
++	}
++	return append(routes, CodexAPIEndpointRoute{http.MethodPost, "/transcribe"}, CodexAPIEndpointRoute{http.MethodPost, "/backend-api/transcribe"})
++}
+diff --git a/backend/internal/service/codex_api_endpoints_test.go b/backend/internal/service/codex_api_endpoints_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f896be019674a4128573637969095fbcc0e58705
+--- /dev/null
++++ b/backend/internal/service/codex_api_endpoints_test.go
+@@ -0,0 +1,175 @@
++package service
++
++import (
++	"bytes"
++	"context"
++	"io"
++	"mime/multipart"
++	"net/http"
++	"net/http/httptest"
++	"net/textproto"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	coderws "github.com/coder/websocket"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++type codexAPIResourceCache struct {
++	GatewayCache
++	values map[string]int64
++	err    error
++}
++
++func (c *codexAPIResourceCache) GetSessionAccountID(_ context.Context, _ int64, key string) (int64, error) {
++	if c.err != nil {
++		return 0, c.err
++	}
++	if id := c.values[key]; id > 0 {
++		return id, nil
++	}
++	return 0, ErrStickySessionNotFound
++}
++
++func (c *codexAPIResourceCache) SetSessionAccountID(_ context.Context, _ int64, key string, id int64, _ time.Duration) error {
++	c.values[key] = id
++	return c.err
++}
++
++func TestCodexAPIResourceOwnership(t *testing.T) {
++	cache := &codexAPIResourceCache{values: make(map[string]int64)}
++	svc := &OpenAIGatewayService{cache: cache}
++	group := int64(9)
++	key := &APIKey{ID: 1, GroupID: &group}
++	require.NoError(t, svc.BindCodexAPIResource(t.Context(), key, "file_document", 20))
++	require.NoError(t, svc.BindCodexAPIResource(t.Context(), key, "call_realtime", 20))
++	body := []byte(`{"input":[{"content":[{"type":"input_file","file_id":"file_document"}]}]}`)
++	id, err := svc.CodexAPIResourceAccount(t.Context(), key, body, "call_realtime")
++	require.NoError(t, err)
++	require.Equal(t, int64(20), id)
++	_, err = svc.CodexAPIResourceAccount(t.Context(), &APIKey{ID: 2, GroupID: &group}, body, "")
++	require.Error(t, err)
++	require.NoError(t, svc.BindCodexAPIResource(t.Context(), key, "response_other", 21))
++	_, err = svc.CodexAPIResourceAccount(t.Context(), key, []byte(`{"previous_response_id":"response_other","file_id":"file_document"}`), "")
++	require.Error(t, err)
++	_, err = svc.CodexAPIResourceAccount(t.Context(), key, nil, "unowned_call")
++	require.Error(t, err)
++	cache.err = context.DeadlineExceeded
++	_, err = svc.CodexAPIResourceAccount(t.Context(), key, body, "")
++	require.ErrorIs(t, err, context.DeadlineExceeded)
++}
++
++func TestCodexAPIImageMultipartInspectionKeepsWireBytes(t *testing.T) {
++	var wire bytes.Buffer
++	writer := multipart.NewWriter(&wire)
++	require.NoError(t, writer.WriteField("model", "future-image-model"))
++	require.NoError(t, writer.WriteField("prompt", "a red square"))
++	part, err := writer.CreatePart(textproto.MIMEHeader{"Content-Disposition": {`form-data; name="image"; filename="source.png"`}, "Content-Type": {"image/png"}})
++	require.NoError(t, err)
++	_, err = part.Write([]byte("image-bytes"))
++	require.NoError(t, err)
++	require.NoError(t, writer.Close())
++	original := bytes.Clone(wire.Bytes())
++	inspection, err := InspectCodexAPIRequest("/v1/images/edits", writer.FormDataContentType(), wire.Bytes())
++	require.NoError(t, err)
++	require.Equal(t, "future-image-model", inspection.Model)
++	require.Equal(t, ContentModerationProtocolOpenAIImages, inspection.Protocol)
++	require.Equal(t, "a red square", gjson.GetBytes(inspection.Body, "prompt").String())
++	require.Contains(t, string(inspection.Body), "aW1hZ2UtYnl0ZXM=")
++	require.Equal(t, original, wire.Bytes())
++	upstream := &codexAPITransportCapture{}
++	svc := &OpenAIGatewayService{httpUpstream: upstream}
++	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeCodexAPI, Credentials: map[string]any{"base_url": "https://gateway.example", "api_key": "gateway"}}
++	request := httptest.NewRequest("POST", "/v1/images/edits?business=original%20query", bytes.NewReader(wire.Bytes()))
++	request.Header.Set("Content-Type", writer.FormDataContentType())
++	response, err := svc.RoundTripCodexAPI(t.Context(), account, request, "/v1/images/edits")
++	require.NoError(t, err)
++	require.NoError(t, response.Body.Close())
++	body, err := io.ReadAll(upstream.request.Body)
++	require.NoError(t, err)
++	require.Equal(t, original, body)
++	require.Equal(t, writer.FormDataContentType(), upstream.request.Header.Get("Content-Type"))
++	require.Equal(t, "business=original%20query", upstream.request.URL.RawQuery)
++}
++
++func TestCodexAPIWebSocketHandshakeAndRedirects(t *testing.T) {
++	for _, status := range []int{http.StatusForbidden, http.StatusTemporaryRedirect} {
++		t.Run(http.StatusText(status), func(t *testing.T) {
++			body := strings.Repeat("provider-owned-error ", 400)
++			calls := 0
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				calls++
++				require.Equal(t, "Bearer gateway", r.Header.Get("Authorization"))
++				require.Empty(t, r.Header.Get("X-Codex-Gateway-Authorization"))
++				w.Header().Set("Location", "/redirected")
++				w.WriteHeader(status)
++				_, _ = io.WriteString(w, body)
++			}))
++			defer server.Close()
++			cfg := &config.Config{}
++			cfg.Security.URLAllowlist.AllowInsecureHTTP = true
++			svc := &OpenAIGatewayService{cfg: cfg}
++			account := &Account{Platform: PlatformOpenAI, Type: AccountTypeCodexAPI, Credentials: map[string]any{"base_url": server.URL, "api_key": "gateway"}}
++			request := httptest.NewRequest("GET", "/v1/responses", nil)
++			request.Header.Set("Upgrade", "websocket")
++			request.Header.Set("Connection", "Upgrade")
++			request.Header.Set("Authorization", "Bearer downstream")
++			request.Header.Set("X-Codex-Gateway-Authorization", "Bearer unrelated-key")
++			conn, response, err := svc.DialCodexAPI(t.Context(), account, request, "/v1/responses")
++			require.Error(t, err)
++			require.Nil(t, conn)
++			require.Equal(t, status, response.StatusCode)
++			got, err := io.ReadAll(response.Body)
++			require.NoError(t, err)
++			require.NoError(t, response.Body.Close())
++			require.Equal(t, body, string(got))
++			require.Equal(t, 1, calls)
++		})
++	}
++}
++
++func TestCodexAPIWebSocketPreservesFramesAndQuery(t *testing.T) {
++	seen := make(chan string, 1)
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		seen <- r.URL.RawQuery + "|" + r.Header.Get("Authorization") + "|" + r.Header.Get("Sec-WebSocket-Protocol")
++		conn, err := coderws.Accept(w, r, &coderws.AcceptOptions{Subprotocols: []string{"responses"}})
++		if err != nil {
++			return
++		}
++		defer func() { _ = conn.CloseNow() }()
++		for range 2 {
++			kind, body, err := conn.Read(r.Context())
++			if err != nil {
++				return
++			}
++			if err := conn.Write(r.Context(), kind, body); err != nil {
++				return
++			}
++		}
++		_ = conn.Close(coderws.StatusNormalClosure, "finished")
++	}))
++	defer server.Close()
++	cfg := &config.Config{}
++	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
++	svc := &OpenAIGatewayService{cfg: cfg}
++	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeCodexAPI, Credentials: map[string]any{"base_url": server.URL, "api_key": "gateway"}}
++	request := httptest.NewRequest("GET", "/v1/responses?business=a%20b&api_key=downstream", nil)
++	request.Header.Set("Upgrade", "websocket")
++	request.Header.Set("Connection", "Upgrade")
++	request.Header.Set("Sec-WebSocket-Protocol", "responses, openai-insecure-api-key.downstream")
++	conn, _, err := svc.DialCodexAPI(t.Context(), account, request, "/v1/responses")
++	require.NoError(t, err)
++	defer func() { _ = conn.CloseNow() }()
++	require.Equal(t, "business=a%20b|Bearer gateway|responses", <-seen)
++	for _, kind := range []coderws.MessageType{coderws.MessageText, coderws.MessageBinary} {
++		payload := []byte("original-payload")
++		require.NoError(t, conn.Write(t.Context(), kind, payload))
++		gotKind, got, err := conn.Read(t.Context())
++		require.NoError(t, err)
++		require.Equal(t, kind, gotKind)
++		require.Equal(t, payload, got)
++	}
++}
+diff --git a/backend/internal/service/codex_api_inspection.go b/backend/internal/service/codex_api_inspection.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..bec92a20de8d8e683cfd6ac75e46ae4393fcd94b
+--- /dev/null
++++ b/backend/internal/service/codex_api_inspection.go
+@@ -0,0 +1,74 @@
++package service
++
++import (
++	"bytes"
++	"encoding/json"
++	"io"
++	"mime"
++	"mime/multipart"
++	"strings"
++
++	"github.com/tidwall/gjson"
++)
++
++type CodexAPIInspection struct {
++	Body     []byte
++	Model    string
++	Protocol string
++}
++
++func InspectCodexAPIRequest(target, contentType string, body []byte) (CodexAPIInspection, error) {
++	result := CodexAPIInspection{Body: body, Model: gjson.GetBytes(body, "model").String(), Protocol: ContentModerationProtocolOpenAIResponses}
++	images := strings.HasSuffix(target, "/images/generations") || strings.HasSuffix(target, "/images/edits")
++	if images {
++		result.Protocol = ContentModerationProtocolOpenAIImages
++	}
++	mediaType, params, err := mime.ParseMediaType(contentType)
++	if err != nil || mediaType != "multipart/form-data" {
++		return result, nil
++	}
++	if images {
++		parsed := &OpenAIImagesRequest{}
++		if err := parseOpenAIImagesMultipartRequest(body, contentType, parsed); err != nil {
++			return result, err
++		}
++		result.Body, result.Model = parsed.ModerationBody(), parsed.Model
++		return result, nil
++	}
++	fields := make(map[string]json.RawMessage)
++	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
++	for {
++		part, err := reader.NextRawPart()
++		if err == io.EOF {
++			break
++		}
++		if err != nil {
++			return result, err
++		}
++		value, err := io.ReadAll(part)
++		_ = part.Close()
++		if err != nil {
++			return result, err
++		}
++		if part.FileName() != "" {
++			continue
++		}
++		switch part.FormName() {
++		case "model", "prompt":
++			fields[part.FormName()], err = json.Marshal(string(value))
++		case "session":
++			if json.Valid(value) {
++				fields["session"] = value
++			}
++		}
++		if err != nil {
++			return result, err
++		}
++	}
++	result.Body, err = json.Marshal(fields)
++	result.Model = gjson.GetBytes(result.Body, "model").String()
++	if result.Model == "" {
++		result.Model = gjson.GetBytes(result.Body, "session.model").String()
++	}
++	return result, err
++}
+diff --git a/backend/internal/service/codex_api_resources.go b/backend/internal/service/codex_api_resources.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb18eab09dd0a11b98e5d288746a6b0e6d71938e
+--- /dev/null
++++ b/backend/internal/service/codex_api_resources.go
+@@ -0,0 +1,67 @@
++package service
++
++import (
++	"context"
++	"crypto/sha256"
++	"errors"
++	"fmt"
++	"time"
++
++	"github.com/tidwall/gjson"
++)
++
++func codexAPIResourceKey(apiKeyID int64, resource string) string {
++	return fmt.Sprintf("codex-api-resource:%d:%x", apiKeyID, sha256.Sum256([]byte(resource)))
++}
++
++func (s *OpenAIGatewayService) BindCodexAPIResource(ctx context.Context, key *APIKey, resource string, accountID int64) error {
++	if resource == "" {
++		return nil
++	}
++	if s.cache == nil {
++		return fmt.Errorf("codex API resource cache unavailable")
++	}
++	return s.cache.SetSessionAccountID(ctx, derefGroupID(key.GroupID), codexAPIResourceKey(key.ID, resource), accountID, 30*24*time.Hour)
++}
++
++// File and call references cannot fail over to another subscription identity.
++func (s *OpenAIGatewayService) CodexAPIResourceAccount(ctx context.Context, key *APIKey, body []byte, callID string) (int64, error) {
++	resources := codexAPIReferencedResources(gjson.ParseBytes(body))
++	if callID != "" {
++		resources = append(resources, callID)
++	}
++	var accountID int64
++	for _, resource := range resources {
++		if s.cache == nil {
++			return 0, fmt.Errorf("codex API resource cache unavailable")
++		}
++		id, err := s.cache.GetSessionAccountID(ctx, derefGroupID(key.GroupID), codexAPIResourceKey(key.ID, resource))
++		if err != nil || id <= 0 {
++			if err == nil || errors.Is(err, ErrStickySessionNotFound) {
++				return 0, fmt.Errorf("codex API resource not owned by this key")
++			}
++			return 0, err
++		}
++		if accountID != 0 && accountID != id {
++			return 0, fmt.Errorf("codex API resources belong to different accounts")
++		}
++		accountID = id
++	}
++	return accountID, nil
++}
++
++func codexAPIReferencedResources(root gjson.Result) []string {
++	var resources []string
++	if !root.IsObject() && !root.IsArray() {
++		return resources
++	}
++	root.ForEach(func(key, value gjson.Result) bool {
++		if value.Type == gjson.String && (key.String() == "file_id" || key.String() == "previous_response_id") && value.String() != "" {
++			resources = append(resources, value.String())
++		} else if value.IsObject() || value.IsArray() {
++			resources = append(resources, codexAPIReferencedResources(value)...)
++		}
++		return true
++	})
++	return resources
++}
+diff --git a/backend/internal/service/codex_api_transport.go b/backend/internal/service/codex_api_transport.go
+index c942ed2127ee0826ded410990ce1177070f0d8a8..0fbe43a99751841c22bc64b5d1a7e3a952097793 100644
+--- a/backend/internal/service/codex_api_transport.go
++++ b/backend/internal/service/codex_api_transport.go
+@@ -12,2 +12,14 @@ import (
+ func (s *OpenAIGatewayService) RoundTripCodexAPI(ctx context.Context, account *Account, incoming *http.Request, targetPath string) (*http.Response, error) {
++	req, err := s.buildCodexAPIRequest(ctx, account, incoming, targetPath)
++	if err != nil {
++		return nil, err
++	}
++	proxyURL := ""
++	if account.Proxy != nil {
++		proxyURL = account.Proxy.URL()
++	}
++	return s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
++}
++
++func (s *OpenAIGatewayService) buildCodexAPIRequest(ctx context.Context, account *Account, incoming *http.Request, targetPath string) (*http.Request, error) {
+ 	if account == nil || !account.IsCodexAPI() || incoming == nil || incoming.URL == nil {
+@@ -15,5 +27,5 @@ func (s *OpenAIGatewayService) RoundTripCodexAPI(ctx context.Context, account *A
+ 	}
+-	switch targetPath {
+-	case "/v1/responses", "/backend-api/codex/responses", "/v1/responses/compact", "/v1/models", "/backend-api/codex/models":
+-	default:
++	policyRequest := incoming.Clone(ctx)
++	policyRequest.URL.Path = targetPath
++	if targetPath == "" || CodexAPITarget(policyRequest) != targetPath {
+ 		return nil, fmt.Errorf("unsupported Codex API endpoint")
+@@ -55,7 +67,3 @@ func (s *OpenAIGatewayService) RoundTripCodexAPI(ctx context.Context, account *A
+ 	}
+-	proxyURL := ""
+-	if account.Proxy != nil {
+-		proxyURL = account.Proxy.URL()
+-	}
+-	return s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
++	return req, nil
+ }
+diff --git a/backend/internal/service/codex_api_usage.go b/backend/internal/service/codex_api_usage.go
+index 8878da87a9fa8f638fabbef1cb507b927b018e92..c91bc1889fc561a3f6ff57dcd8444d9048cc635e 100644
+--- a/backend/internal/service/codex_api_usage.go
++++ b/backend/internal/service/codex_api_usage.go
+@@ -20,10 +20,12 @@ const codexAPIObservationLimit = 8 << 20
+ type CodexAPIUsageObserver struct {
+-	stream   bool
+-	encoding string
+-	buffer   []byte
+-	data     []byte
+-	event    string
+-	discard  bool
+-	result   *OpenAIForwardResult
+-	finished bool
++	stream     bool
++	encoding   string
++	buffer     []byte
++	data       []byte
++	event      string
++	discard    bool
++	result     *OpenAIForwardResult
++	finished   bool
++	resourceID string
++	onResource func(string)
+ }
+@@ -108,2 +110,16 @@ func (o *CodexAPIUsageObserver) observe(body []byte, event string) {
+ 	}
++	id := root.Get("id").String()
++	if id != "" && id != o.resourceID && o.onResource != nil {
++		o.onResource(id)
++	}
++	o.resourceID = id
++	result := &OpenAIForwardResult{
++		ResponseID:                  extractOpenAIResponseIDFromJSONBytes(body),
++		ImageCount:                  extractOpenAIImagesBillableCountFromJSONBytes(body),
++		UpstreamResponseModel:       root.Get("model").String(),
++		UpstreamResponseServiceTier: root.Get("service_tier").String(),
++	}
++	if result.ImageCount > 0 {
++		o.result = result
++	}
+ 	usage := root.Get("usage")
+@@ -120,7 +136,24 @@ func (o *CodexAPIUsageObserver) observe(body []byte, event string) {
+ 	}
+-	o.result = &OpenAIForwardResult{
+-		Usage: parsed, ResponseID: extractOpenAIResponseIDFromJSONBytes(body),
+-		UpstreamResponseModel:       root.Get("model").String(),
+-		UpstreamResponseServiceTier: root.Get("service_tier").String(),
++	result.Usage = parsed
++	o.result = result
++}
++
++func (o *CodexAPIUsageObserver) ResultForEndpoint(target string, completed bool) (*OpenAIForwardResult, bool) {
++	result, observed := o.Result()
++	if completed && strings.HasSuffix(target, "/alpha/search") {
++		if !observed {
++			result, observed = &OpenAIForwardResult{}, true
++		}
++		result.WebSearchCalls = 1
+ 	}
++	return result, observed
++}
++
++func (o *CodexAPIUsageObserver) ResourceID() string {
++	_, _ = o.Result()
++	return o.resourceID
++}
++
++func (o *CodexAPIUsageObserver) OnResource(callback func(string)) {
++	o.onResource = callback
+ }
+@@ -167,2 +200,3 @@ func (o *CodexAPIUsageObserver) Result() (*OpenAIForwardResult, bool) {
+ 		decoded.stream = o.stream
++		decoded.onResource = o.onResource
+ 		n, err := io.Copy(decoded, io.LimitReader(reader, 4*codexAPIObservationLimit+1))
+@@ -173,2 +207,3 @@ func (o *CodexAPIUsageObserver) Result() (*OpenAIForwardResult, bool) {
+ 		o.result, _ = decoded.Result()
++		o.resourceID = decoded.ResourceID()
+ 	} else if o.stream {
+diff --git a/backend/internal/service/codex_api_usage_test.go b/backend/internal/service/codex_api_usage_test.go
+index 11dba5397f5ee2309601477c6409c17604b10845..8d81dede570798cd47707284e82a55bf83b46319 100644
+--- a/backend/internal/service/codex_api_usage_test.go
++++ b/backend/internal/service/codex_api_usage_test.go
+@@ -29,2 +29,39 @@ func TestCodexAPIUsageObserverJSON(t *testing.T) {
+ 
++func TestCodexAPIUsageObserverImagesAndCompressedResource(t *testing.T) {
++	observer := NewCodexAPIUsageObserver("application/json", "")
++	_, _ = observer.Write([]byte(`{"data":[{"b64_json":"a"},{"url":"https://example.test/image"}],"usage":{"input_tokens":2,"output_tokens":3}}`))
++	result, ok := observer.Result()
++	require.True(t, ok)
++	require.Equal(t, 2, result.ImageCount)
++	var body bytes.Buffer
++	w := gzip.NewWriter(&body)
++	_, err := w.Write([]byte(`{"id":"file-owned"}`))
++	require.NoError(t, err)
++	require.NoError(t, w.Close())
++	observer = NewCodexAPIUsageObserver("application/json", "gzip")
++	_, _ = observer.Write(body.Bytes())
++	require.Equal(t, "file-owned", observer.ResourceID())
++	_, ok = observer.Result()
++	require.False(t, ok)
++}
++
++func TestCodexAPIUsageObserverPerCallBilling(t *testing.T) {
++	for _, completed := range []bool{true, false} {
++		observer := NewCodexAPIUsageObserver("application/json", "")
++		_, _ = observer.Write([]byte(`{"results":[]}`))
++		result, ok := observer.ResultForEndpoint("/v1/alpha/search", completed)
++		require.Equal(t, completed, ok)
++		if ok {
++			require.Equal(t, 1, result.WebSearchCalls)
++			require.Equal(t, OpenAIUsage{}, result.Usage)
++		}
++	}
++	observer := NewCodexAPIUsageObserver("application/json", "")
++	_, _ = observer.Write([]byte(`{"data":[{"b64_json":"actual-output"}]}`))
++	result, ok := observer.Result()
++	require.True(t, ok)
++	require.Equal(t, 1, result.ImageCount)
++	require.Equal(t, OpenAIUsage{}, result.Usage)
++}
++
+ func TestCodexAPIUsageObserverSSE(t *testing.T) {
+@@ -43,2 +80,13 @@ func TestCodexAPIUsageObserverSSE(t *testing.T) {
+ 
++func TestCodexAPIUsageObserverBindsStreamingResourceBeforeDelivery(t *testing.T) {
++	observer := NewCodexAPIUsageObserver("text/event-stream", "")
++	var bound string
++	observer.OnResource(func(id string) { bound = id })
++	_, err := observer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"response-owned\"}}\n\n"))
++	require.NoError(t, err)
++	require.Equal(t, "response-owned", bound)
++	_, ok := observer.Result()
++	require.False(t, ok)
++}
++
+ func TestCodexAPIUsageObserverMissingUsage(t *testing.T) {
+diff --git a/backend/internal/service/codex_api_websocket.go b/backend/internal/service/codex_api_websocket.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..b98e405c67804c161a5d65e8477b0e8c26ab4202
+--- /dev/null
++++ b/backend/internal/service/codex_api_websocket.go
+@@ -0,0 +1,81 @@
++package service
++
++import (
++	"context"
++	"net/http"
++	"strings"
++	"time"
++
++	coderws "github.com/coder/websocket"
++)
++
++var codexAPIProxyClients = &coderOpenAIWSClientDialer{proxyClients: make(map[string]*openAIWSProxyClientEntry)}
++
++type codexAPIWSHTTPTransport struct {
++	transport http.RoundTripper
++	rejected  *http.Response
++}
++
++func (t *codexAPIWSHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	resp, err := t.transport.RoundTrip(req)
++	if err == nil && resp.StatusCode != http.StatusSwitchingProtocols {
++		// The WebSocket library keeps only 1 KiB of handshake errors. The HTTP
++		// relay owns the original body so provider errors are not truncated.
++		copy := *resp
++		t.rejected = &copy
++		resp.Body = http.NoBody
++	}
++	return resp, err
++}
++
++func (s *OpenAIGatewayService) DialCodexAPI(ctx context.Context, account *Account, incoming *http.Request, target string) (*coderws.Conn, *http.Response, error) {
++	req, err := s.buildCodexAPIRequest(ctx, account, incoming, target)
++	if err != nil {
++		return nil, nil, err
++	}
++	client := *http.DefaultClient
++	if account.Proxy != nil {
++		proxyClient, err := codexAPIProxyClients.proxyHTTPClient(account.Proxy.URL())
++		if err != nil {
++			return nil, nil, err
++		}
++		client = *proxyClient
++	}
++	transport := client.Transport
++	if transport == nil {
++		transport = http.DefaultTransport
++	}
++	if httpTransport, ok := transport.(*http.Transport); ok {
++		clone := httpTransport.Clone()
++		clone.DisableCompression = true
++		defer clone.CloseIdleConnections()
++		transport = clone
++	}
++	capture := &codexAPIWSHTTPTransport{transport: transport}
++	client.Transport = capture
++	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
++	client.Timeout = 30 * time.Second
++	for name := range req.Header {
++		if strings.HasPrefix(strings.ToLower(name), "sec-websocket-") {
++			req.Header.Del(name)
++		}
++	}
++	var protocols []string
++	for _, protocol := range strings.Split(incoming.Header.Get("Sec-WebSocket-Protocol"), ",") {
++		if protocol = strings.TrimSpace(protocol); protocol != "" && !strings.HasPrefix(protocol, "openai-insecure-api-key.") {
++			protocols = append(protocols, protocol)
++		}
++	}
++	conn, response, err := coderws.Dial(ctx, req.URL.String(), &coderws.DialOptions{
++		HTTPClient:   &client,
++		HTTPHeader:   req.Header,
++		Subprotocols: protocols,
++	})
++	if capture.rejected != nil {
++		return nil, capture.rejected, err
++	}
++	if conn != nil {
++		conn.SetReadLimit(openAIWSMessageReadLimitBytes)
++	}
++	return conn, response, err
++}

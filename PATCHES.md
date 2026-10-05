@@ -22,6 +22,7 @@ Row 17 was added on 2026-09-21.
 Row 18 was added on 2026-09-21.
 The early new-model import was removed on 2026-09-23 after upstream included it.
 Row 19 was added on 2026-10-01.
+Row 20 was added on 2026-10-05 against Codex API 592d61325adf.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -44,6 +45,7 @@ Row 19 was added on 2026-10-01.
 | 17: Dedicated Codex API accounts | Forward native/public Responses and model catalogs without local protocol transforms; enforce dedicated groups and credential validity | New handler/service/repository helpers and tests, guarded account/group/transport/routes/billing changes, account UI | 55 | +2449 / -60 |
 | 18: Codex API billing and entrypoints | Use the OAuth service-tier contract and select public/native Responses and model catalogs by request path, never client metadata | Service-tier billing and parity test, dedicated handler and handler/route tests | 5 | +86 / -15 |
 | 19: Codex API error passthrough tests | Preserve plan/model/parameter errors, rate limits and SSE failures without local retries or cooldowns; allow subsequent requests | `server/routes/codex_api_gateway_test.go` only | 1 | +57 / -14 |
+| 20: Codex API subscription endpoints | Align inference adapters and WebSocket relay with the gateway; skip account management and independent upstream credentials | Dedicated handler, shared endpoint policy, transport, inspection, resource cache, usage and route tests | 13 | +1171 / -74 |
 
 ## Behavior boundaries
 
@@ -77,8 +79,16 @@ Row 19 was added on 2026-10-01.
   Request paths select these contracts; client headers and `client_version`
   do not switch them. Sub2API performs no protocol preprocessing on either. Compact
   uses its JSON facade. Model catalogs, request bodies and upstream errors are
-  not locally mapped, repaired or synthesized. Other endpoints, including WS,
-  are not supported for this type; existing account paths remain unchanged.
+  not locally mapped, repaired or synthesized. Patch 20 also supports images,
+  file upload, subscription transcription, search, memory trace summarization,
+  Guardian inference, Responses/Guardian WebSocket, subscription call creation
+  and Realtime/Live call sidebands. Direct Realtime sessions, modern Live
+  sessions, Platform and account-management endpoints remain unsupported.
+  Existing ordinary account paths remain unchanged.
+  Files, previous responses and call sidebands retain their originating account
+  through the existing cache, scoped to the caller's API key and group. A
+  WebSocket keeps one account for its lifetime and rejects references owned by
+  another account. Multipart wire bytes are preserved; inspection uses a copy.
 - Dedicated forwarding retains local access, security, concurrency and billing
   controls. Codex API uses the same model/token/cache pricing and multipliers as
   normal OpenAI OAuth, including the service-tier response contract. No separate
@@ -88,7 +98,7 @@ Row 19 was added on 2026-10-01.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 19 patches.
+Apply patches in numerical order. The complete series contains all 20 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
@@ -105,6 +115,9 @@ For separate capabilities:
 - Patch 19 follows patch 18 and verifies the existing dedicated passthrough
   contract across public/native routes. It changes tests only; upstream errors
   remain visible to clients with their original status and body.
+- Patch 20 follows patch 19 and expands subscription inference adapters. It
+  shares one method/path allowlist across dispatch, transport and registration;
+  no second permission system or independent upstream credentials are added.
 - GPT-6 Sol/Luna and Claude Opus 5.5 support now comes from upstream; the early
   downstream import is no longer needed.
 
