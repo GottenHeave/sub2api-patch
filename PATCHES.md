@@ -23,6 +23,7 @@ Row 18 was added on 2026-09-21.
 The early new-model import was removed on 2026-09-23 after upstream included it.
 Row 19 was added on 2026-10-01.
 Row 20 was added on 2026-10-05 against Codex API 592d61325adf.
+Row 21 was added on 2026-10-05 to retain Realtime session inspection.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -46,6 +47,7 @@ Row 20 was added on 2026-10-05 against Codex API 592d61325adf.
 | 18: Codex API billing and entrypoints | Use the OAuth service-tier contract and select public/native Responses and model catalogs by request path, never client metadata | Service-tier billing and parity test, dedicated handler and handler/route tests | 5 | +86 / -15 |
 | 19: Codex API error passthrough tests | Preserve plan/model/parameter errors, rate limits and SSE failures without local retries or cooldowns; allow subsequent requests | `server/routes/codex_api_gateway_test.go` only | 1 | +57 / -14 |
 | 20: Codex API subscription endpoints | Align inference adapters and WebSocket relay with the gateway; skip account management and independent upstream credentials | Dedicated handler, shared endpoint policy, transport, inspection, resource cache, usage and route tests | 13 | +1171 / -74 |
+| 21: Codex API Realtime inspection | Use the existing Realtime moderation protocol and session model for REST and WebSocket inspection | Dedicated WS handler, shared inspection and regression test | 3 | +30 / -6 |
 
 ## Behavior boundaries
 
@@ -98,7 +100,7 @@ Row 20 was added on 2026-10-05 against Codex API 592d61325adf.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 20 patches.
+Apply patches in numerical order. The complete series contains all 21 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
@@ -118,6 +120,8 @@ For separate capabilities:
 - Patch 20 follows patch 19 and expands subscription inference adapters. It
   shares one method/path allowlist across dispatch, transport and registration;
   no second permission system or independent upstream credentials are added.
+- Patch 21 follows patch 20 and selects the existing Realtime inspection
+  contract for subscription calls and sidebands, without modifying wire bytes.
 - GPT-6 Sol/Luna and Claude Opus 5.5 support now comes from upstream; the early
   downstream import is no longer needed.
 

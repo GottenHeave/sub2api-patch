@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Mon, 5 Oct 2026 09:27:23 +0000
+Subject: [PATCH 1/1] fix: inspect Codex API Realtime session controls
+
+---
+ .../internal/handler/codex_api_websocket.go   |  5 ++++-
+ .../service/codex_api_endpoints_test.go       | 12 ++++++++++++
+ .../internal/service/codex_api_inspection.go  | 19 ++++++++++++++-----
+ 3 files changed, 30 insertions(+), 6 deletions(-)
+
+diff --git a/backend/internal/handler/codex_api_websocket.go b/backend/internal/handler/codex_api_websocket.go
+index 5de7bcf866d90eb02786d0ccb68f38e71d731369..71dae4c6abf51eb76a2b7b1ee193300e51aacd07 100644
+--- a/backend/internal/handler/codex_api_websocket.go
++++ b/backend/internal/handler/codex_api_websocket.go
+@@ -112,2 +112,5 @@ func (h *OpenAIGatewayHandler) forwardCodexAPIWebSocket(c *gin.Context, key *ser
+ 			model := gjson.GetBytes(body, "model").String()
++			if model == "" {
++				model = gjson.GetBytes(body, "session.model").String()
++			}
+ 			if h.findBlockedCyberSessionForAPIKey(readContext, key, body) != "" {
+@@ -117,3 +120,3 @@ func (h *OpenAIGatewayHandler) forwardCodexAPIWebSocket(c *gin.Context, key *ser
+ 			}
+-			if decision := h.checkSecurityAuditStage(readContext, requestLogger(readContext, "handler.codex_api.websocket"), key, subject, service.ContentModerationProtocolOpenAIResponses, model, body, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
++			if decision := h.checkSecurityAuditStage(readContext, requestLogger(readContext, "handler.codex_api.websocket"), key, subject, service.CodexAPIInspectionProtocol(target), model, body, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
+ 				writeSecurityAuditWSError(frameCtx, client, decision)
+diff --git a/backend/internal/service/codex_api_endpoints_test.go b/backend/internal/service/codex_api_endpoints_test.go
+index f896be019674a4128573637969095fbcc0e58705..a864a21b8b3c5de3e3139e2c517f8a33b080edd3 100644
+--- a/backend/internal/service/codex_api_endpoints_test.go
++++ b/backend/internal/service/codex_api_endpoints_test.go
+@@ -64,2 +64,14 @@ func TestCodexAPIResourceOwnership(t *testing.T) {
+ 
++func TestCodexAPIRealtimeInspectionUsesSessionContract(t *testing.T) {
++	body := []byte(`{"session":{"model":"subscription-model","instructions":"inspect session instructions"}}`)
++	for _, target := range []string{"/v1/realtime/calls", "/backend-api/codex/live", "/v1/realtime", "/v1/live/call_owned"} {
++		inspection, err := InspectCodexAPIRequest(target, "application/json", body)
++		require.NoError(t, err)
++		require.Equal(t, ContentModerationProtocolOpenAIRealtime, inspection.Protocol, target)
++		require.Equal(t, "subscription-model", inspection.Model)
++		require.Equal(t, "inspect session instructions", ExtractContentModerationText(inspection.Protocol, inspection.Body))
++		require.Equal(t, body, inspection.Body)
++	}
++}
++
+ func TestCodexAPIImageMultipartInspectionKeepsWireBytes(t *testing.T) {
+diff --git a/backend/internal/service/codex_api_inspection.go b/backend/internal/service/codex_api_inspection.go
+index bec92a20de8d8e683cfd6ac75e46ae4393fcd94b..472bdb0201a3ab6edc2859797516129e5b8c0062 100644
+--- a/backend/internal/service/codex_api_inspection.go
++++ b/backend/internal/service/codex_api_inspection.go
+@@ -20,6 +20,5 @@ type CodexAPIInspection struct {
+ func InspectCodexAPIRequest(target, contentType string, body []byte) (CodexAPIInspection, error) {
+-	result := CodexAPIInspection{Body: body, Model: gjson.GetBytes(body, "model").String(), Protocol: ContentModerationProtocolOpenAIResponses}
+-	images := strings.HasSuffix(target, "/images/generations") || strings.HasSuffix(target, "/images/edits")
+-	if images {
+-		result.Protocol = ContentModerationProtocolOpenAIImages
++	result := CodexAPIInspection{Body: body, Model: gjson.GetBytes(body, "model").String(), Protocol: CodexAPIInspectionProtocol(target)}
++	if result.Model == "" {
++		result.Model = gjson.GetBytes(body, "session.model").String()
+ 	}
+@@ -29,3 +28,3 @@ func InspectCodexAPIRequest(target, contentType string, body []byte) (CodexAPIIn
+ 	}
+-	if images {
++	if result.Protocol == ContentModerationProtocolOpenAIImages {
+ 		parsed := &OpenAIImagesRequest{}
+@@ -74 +73,11 @@ func InspectCodexAPIRequest(target, contentType string, body []byte) (CodexAPIIn
+ }
++
++func CodexAPIInspectionProtocol(target string) string {
++	if strings.HasSuffix(target, "/images/generations") || strings.HasSuffix(target, "/images/edits") {
++		return ContentModerationProtocolOpenAIImages
++	}
++	if strings.HasSuffix(target, "/realtime/calls") || strings.HasSuffix(target, "/realtime") || strings.HasSuffix(target, "/live") || strings.Contains(target, "/live/") {
++		return ContentModerationProtocolOpenAIRealtime
++	}
++	return ContentModerationProtocolOpenAIResponses
++}
