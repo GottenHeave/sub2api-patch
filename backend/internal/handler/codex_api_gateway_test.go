@@ -149,3 +149,54 @@ func TestRelayCodexAPIResponsePreservesUpstream(t *testing.T) {
 		require.Empty(t, writer.Header().Get("X-Hop"))
 	}
 }
+
+type codexAPIEndpointCase struct {
+	method    string
+	path      string
+	websocket bool
+	target    string
+}
+
+func TestCodexAPISubscriptionEndpoints(t *testing.T) {
+	for _, test := range []codexAPIEndpointCase{
+		{"POST", "/v1/images/generations", false, "/v1/images/generations"},
+		{"POST", "/codex/images/edits", false, "/backend-api/codex/images/edits"},
+		{"POST", "/v1/files", false, "/v1/files"},
+		{"POST", "/v1/audio/transcriptions", false, "/v1/audio/transcriptions"},
+		{"POST", "/transcribe", false, "/v1/audio/transcriptions"},
+		{"POST", "/backend-api/transcribe", false, "/v1/audio/transcriptions"},
+		{"POST", "/v1/alpha/search", false, "/v1/alpha/search"},
+		{"POST", "/backend-api/codex/memories/trace_summarize", false, "/backend-api/codex/memories/trace_summarize"},
+		{"POST", "/codex/guardian", false, "/backend-api/codex/guardian"},
+		{"GET", "/codex/guardian-classifier", true, "/backend-api/codex/guardian-classifier"},
+		{"GET", "/v1/responses", true, "/v1/responses"},
+		{"GET", "/codex/models", false, "/backend-api/codex/models"},
+		{"POST", "/codex/responses/compact", false, "/v1/responses/compact"},
+		{"POST", "/v1/realtime/calls", false, "/v1/realtime/calls"},
+		{"POST", "/backend-api/codex/live", false, "/backend-api/codex/live"},
+		{"GET", "/v1/realtime?call_id=call_example", true, "/v1/realtime"},
+		{"GET", "/codex/live/call_example", true, "/backend-api/codex/live/call_example"},
+		{"GET", "/v1/realtime", true, ""},
+		{"GET", "/v1/live", true, ""},
+		{"POST", "/v1/live/sessions", false, ""},
+		{"GET", "/v1/live/sessions/session_example/attach", true, ""},
+		{"POST", "/platform/files", false, ""},
+		{"POST", "/auth/oauth/token", false, ""},
+		{"GET", "/backend-api/wham/usage", false, ""},
+		{"POST", "/codex/alpha/notes/v2/write_file", false, ""},
+		{"GET", "/backend-api/ps/plugins/list", false, ""},
+		{"GET", "/v1/files/file_example", false, ""},
+		{"DELETE", "/v1/files/file_example", false, ""},
+		{"POST", "/v1/images/edits/async", false, ""},
+		{"POST", "/v1/realtime/client_secrets", false, ""},
+	} {
+		t.Run(test.method+test.path, func(t *testing.T) {
+			r := httptest.NewRequest(test.method, test.path, nil)
+			if test.websocket {
+				r.Header.Set("Connection", "Upgrade")
+				r.Header.Set("Upgrade", "websocket")
+			}
+			require.Equal(t, test.target, codexAPITarget(r))
+		})
+	}
+}

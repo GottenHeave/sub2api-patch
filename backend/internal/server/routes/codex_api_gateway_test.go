@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -58,11 +61,83 @@ func (u codexAPIRoutesUpstream) Do(r *http.Request, _ string, _ int64, _ int) (*
 	return u.do(r)
 }
 
-func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
+type codexAPIRouteCache struct {
+	service.GatewayCache
+	mu        sync.Mutex
+	resources map[string]int64
+}
+
+type codexAPIRouteConcurrency struct {
+	service.ConcurrencyCache
+	mu     sync.Mutex
+	active int
+}
+
+func (s *codexAPIRouteConcurrency) AcquireAccountSlot(_ context.Context, _ int64, limit int, _ string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active >= limit {
+		return false, nil
+	}
+	s.active++
+	return true, nil
+}
+
+func (s *codexAPIRouteConcurrency) ReleaseAccountSlot(_ context.Context, _ int64, _ string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active--
+	return nil
+}
+
+func (s *codexAPIRouteCache) GetSessionAccountID(_ context.Context, _ int64, key string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id := s.resources[key]; id != 0 {
+		return id, nil
+	}
+	return 0, service.ErrStickySessionNotFound
+}
+
+func (s *codexAPIRouteCache) SetSessionAccountID(_ context.Context, _ int64, key string, id int64, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resources[key] = id
+	return nil
+}
+
+func newCodexAPIRoutesFixture(t *testing.T, accounts []service.Account, upstream service.HTTPUpstream, cache service.GatewayCache) (*gin.Engine, *service.Group) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{RunMode: config.RunModeSimple, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, TextMaxBodySize: 1 << 20}}
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	repo := codexAPIRoutesRepository{members: accounts}
+	rateLimits := service.NewRateLimitService(repo, nil, cfg, nil, nil)
+	s := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, cache, cfg, nil, nil, nil, rateLimits, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
+	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billing.Stop)
+	slots := &codexAPIRouteConcurrency{}
+	t.Cleanup(func() {
+		require.Eventually(t, func() bool { slots.mu.Lock(); defer slots.mu.Unlock(); return slots.active == 0 }, 5*time.Second, 10*time.Millisecond)
+	})
+	h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: handler.NewOpenAIGatewayHandler(s, service.NewConcurrencyService(slots), billing, nil, nil, nil, nil, nil, cfg), AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
+	group := &service.Group{ID: 1, Platform: service.PlatformOpenAI, AllowImageGeneration: true, ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: []string{"different-local-model"}}}
+	router := gin.New()
+	RegisterGatewayRoutes(router, h, servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+		if c.GetHeader("Authorization") != "Bearer local" {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{ID: 1, GroupID: &group.ID, Group: group})
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{})
+		c.Next()
+	}), nil, nil, nil, nil, nil, cfg)
+	return router, group
+}
+
+func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "upstream", "base_url": "https://codex.example"}}
-	repo := codexAPIRoutesRepository{members: []service.Account{account}}
 	wire := new(bytes.Buffer)
 	encoder := gzip.NewWriter(wire)
 	_, err := encoder.Write([]byte(`{ "model": "gpt-6.1-sol", "future_field": true }`))
@@ -83,24 +158,7 @@ func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
 		}
 		return &http.Response{StatusCode: response.status, Header: http.Header{"Etag": {"original"}, "Content-Type": {response.contentType}}, Body: io.NopCloser(strings.NewReader(response.body))}, nil
 	}}
-	// Keep shared error handling available: unintended state writes must reach
-	// the repository stub rather than being skipped for a nil rate-limit service.
-	rateLimits := service.NewRateLimitService(repo, nil, cfg, nil, nil)
-	s := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, rateLimits, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
-	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
-	t.Cleanup(billing.Stop)
-	h := &handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: handler.NewOpenAIGatewayHandler(s, service.NewConcurrencyService(nil), billing, nil, nil, nil, nil, nil, cfg), AsyncImage: handler.NewAsyncImageHandler(nil, nil)}
-	group := &service.Group{ID: 1, Platform: service.PlatformOpenAI, ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: []string{"different-local-model"}}}
-	router := gin.New()
-	RegisterGatewayRoutes(router, h, servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
-		if c.GetHeader("Authorization") != "Bearer local" {
-			c.AbortWithStatus(http.StatusUnauthorized)
-			return
-		}
-		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{GroupID: &group.ID, Group: group})
-		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{})
-		c.Next()
-	}), nil, nil, nil, nil, nil, cfg)
+	router, _ := newCodexAPIRoutesFixture(t, []service.Account{account}, upstream, nil)
 	routes := []codexAPIRoutesRequest{
 		{"POST", "/v1/responses", "/v1/responses"},
 		{"POST", "/responses", "/v1/responses"},
@@ -152,8 +210,6 @@ func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
 	for _, path := range []string{"/v1/responses", "/responses", "/backend-api/codex/responses", "/antigravity/models", "/antigravity/v1/models"} {
 		r := httptest.NewRequest(http.MethodGet, path, nil)
 		r.Header.Set("Authorization", "Bearer local")
-		r.Header.Set("Connection", "Upgrade")
-		r.Header.Set("Upgrade", "websocket")
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, r)
 		require.Equal(t, http.StatusNotFound, w.Code, path)
@@ -162,4 +218,143 @@ func TestCodexAPIGatewayRoutesDispatchBeforeTransformations(t *testing.T) {
 	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/models", nil))
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	require.Equal(t, before, calls)
+}
+
+func TestCodexAPISubscriptionRouteInventory(t *testing.T) {
+	account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "upstream", "base_url": "https://codex.example"}}
+	upstream := codexAPIRoutesUpstream{do: func(r *http.Request) (*http.Response, error) {
+		require.Equal(t, "Bearer upstream", r.Header.Get("Authorization"))
+		return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("provider-owned error"))}, nil
+	}}
+	router, group := newCodexAPIRoutesFixture(t, []service.Account{account}, upstream, nil)
+	for _, route := range service.CodexAPIEndpointRoutes() {
+		if route.Method != http.MethodPost {
+			continue
+		}
+		t.Run(route.Method+route.Path, func(t *testing.T) {
+			r := httptest.NewRequest(route.Method, route.Path, strings.NewReader(`{"model":"future-model","future_field":true}`))
+			r.Header.Set("Authorization", "Bearer local")
+			r.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, r)
+			require.Equal(t, http.StatusUnprocessableEntity, w.Code, w.Body.String())
+			require.Equal(t, "provider-owned error", w.Body.String())
+		})
+	}
+	group.AllowImageGeneration = false
+	r := httptest.NewRequest("POST", "/codex/images/generations", strings.NewReader(`{"model":"future-model"}`))
+	r.Header.Set("Authorization", "Bearer local")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, r)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	for _, path := range []string{"/v1/files", "/codex/guardian", "/backend-api/codex/images/edits"} {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest("POST", path, nil))
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+	}
+	ordinary, _ := newCodexAPIRoutesFixture(t, []service.Account{{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}}, nil, nil)
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("POST", "/codex/guardian", nil)
+	r.Header.Set("Authorization", "Bearer local")
+	ordinary.ServeHTTP(w, r)
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestCodexAPIRoutesWebSocketRelay(t *testing.T) {
+	seen := make(chan string, 1)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.URL.Path + "?" + r.URL.RawQuery + "|" + r.Header.Get("Authorization")
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		for range 2 {
+			kind, body, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+			if err := conn.Write(r.Context(), kind, body); err != nil {
+				return
+			}
+		}
+		_ = conn.Close(coderws.StatusNormalClosure, "complete")
+	}))
+	defer provider.Close()
+	account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"api_key": "upstream", "base_url": provider.URL}}
+	router, _ := newCodexAPIRoutesFixture(t, []service.Account{account}, nil, nil)
+	server := httptest.NewServer(router)
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	conn, _, err := coderws.Dial(ctx, server.URL+"/codex/responses?future=a%20b&api_key=local", &coderws.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer local"}}})
+	require.NoError(t, err)
+	defer func() { _ = conn.CloseNow() }()
+	require.Equal(t, "/backend-api/codex/responses?future=a%20b|Bearer upstream", <-seen)
+	blocked := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/v1/models", nil)
+	request.Header.Set("Authorization", "Bearer local")
+	router.ServeHTTP(blocked, request)
+	require.Equal(t, http.StatusServiceUnavailable, blocked.Code)
+	for _, kind := range []coderws.MessageType{coderws.MessageText, coderws.MessageBinary} {
+		payload := []byte(`{ "type":"response.create", "model":"future-model", "namespace":"original" }`)
+		require.NoError(t, conn.Write(ctx, kind, payload))
+		gotKind, got, err := conn.Read(ctx)
+		require.NoError(t, err)
+		require.Equal(t, kind, gotKind)
+		require.Equal(t, payload, got)
+	}
+}
+
+func TestCodexAPICallSidebandKeepsAccountAndOwner(t *testing.T) {
+	cache := &codexAPIRouteCache{resources: make(map[string]int64)}
+	account := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "upstream", "base_url": "https://codex.example"}}
+	calls := 0
+	upstream := codexAPIRoutesUpstream{do: func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"Location": {"/v1/live/call_created"}}, Body: io.NopCloser(strings.NewReader("sdp-answer"))}, nil
+	}}
+	router, _ := newCodexAPIRoutesFixture(t, []service.Account{account}, upstream, cache)
+	r := httptest.NewRequest("POST", "/v1/realtime/calls", strings.NewReader(`{"sdp":"offer","session":{"model":"future-model"}}`))
+	r.Header.Set("Authorization", "Bearer local")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, r)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	require.Equal(t, "sdp-answer", w.Body.String())
+	require.Equal(t, "/v1/live/call_created", w.Header().Get("Location"))
+	require.Len(t, cache.resources, 1)
+	r = httptest.NewRequest("GET", "/v1/realtime?call_id=unowned", nil)
+	r.Header.Set("Authorization", "Bearer local")
+	r.Header.Set("Connection", "Upgrade")
+	r.Header.Set("Upgrade", "websocket")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, r)
+	require.Equal(t, http.StatusConflict, w.Code)
+	require.Equal(t, 1, calls)
+}
+
+func TestCodexAPIFileReferenceKeepsUploadAccount(t *testing.T) {
+	cache := &codexAPIRouteCache{resources: make(map[string]int64)}
+	account := service.Account{ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Credentials: map[string]any{"api_key": "file-owner", "base_url": "https://codex.example"}}
+	upstream := codexAPIRoutesUpstream{do: func(r *http.Request) (*http.Response, error) {
+		require.Equal(t, "Bearer file-owner", r.Header.Get("Authorization"))
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"file-uploaded"}`))}, nil
+	}}
+	router, _ := newCodexAPIRoutesFixture(t, []service.Account{account}, upstream, cache)
+	r := httptest.NewRequest("POST", "/v1/files", strings.NewReader("original multipart bytes"))
+	r.Header.Set("Authorization", "Bearer local")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Equal(t, `{"id":"file-uploaded"}`, w.Body.String())
+	require.Len(t, cache.resources, 1)
+	other := account
+	other.ID = 1
+	other.Credentials = map[string]any{"api_key": "wrong-owner", "base_url": "https://codex.example"}
+	router, _ = newCodexAPIRoutesFixture(t, []service.Account{other, account}, upstream, cache)
+	r = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"future-model","input":[{"file_id":"file-uploaded"}]}`))
+	r.Header.Set("Authorization", "Bearer local")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, r)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
