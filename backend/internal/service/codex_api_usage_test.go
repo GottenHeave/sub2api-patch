@@ -27,6 +27,43 @@ func TestCodexAPIUsageObserverJSON(t *testing.T) {
 	require.Equal(t, "upstream-model", result.UpstreamResponseModel)
 }
 
+func TestCodexAPIUsageObserverImagesAndCompressedResource(t *testing.T) {
+	observer := NewCodexAPIUsageObserver("application/json", "")
+	_, _ = observer.Write([]byte(`{"data":[{"b64_json":"a"},{"url":"https://example.test/image"}],"usage":{"input_tokens":2,"output_tokens":3}}`))
+	result, ok := observer.Result()
+	require.True(t, ok)
+	require.Equal(t, 2, result.ImageCount)
+	var body bytes.Buffer
+	w := gzip.NewWriter(&body)
+	_, err := w.Write([]byte(`{"id":"file-owned"}`))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	observer = NewCodexAPIUsageObserver("application/json", "gzip")
+	_, _ = observer.Write(body.Bytes())
+	require.Equal(t, "file-owned", observer.ResourceID())
+	_, ok = observer.Result()
+	require.False(t, ok)
+}
+
+func TestCodexAPIUsageObserverPerCallBilling(t *testing.T) {
+	for _, completed := range []bool{true, false} {
+		observer := NewCodexAPIUsageObserver("application/json", "")
+		_, _ = observer.Write([]byte(`{"results":[]}`))
+		result, ok := observer.ResultForEndpoint("/v1/alpha/search", completed)
+		require.Equal(t, completed, ok)
+		if ok {
+			require.Equal(t, 1, result.WebSearchCalls)
+			require.Equal(t, OpenAIUsage{}, result.Usage)
+		}
+	}
+	observer := NewCodexAPIUsageObserver("application/json", "")
+	_, _ = observer.Write([]byte(`{"data":[{"b64_json":"actual-output"}]}`))
+	result, ok := observer.Result()
+	require.True(t, ok)
+	require.Equal(t, 1, result.ImageCount)
+	require.Equal(t, OpenAIUsage{}, result.Usage)
+}
+
 func TestCodexAPIUsageObserverSSE(t *testing.T) {
 	observer := NewCodexAPIUsageObserver("text/event-stream; charset=utf-8", "")
 	body := "data: {\"type\":\"response.created\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\r\n\r\n" +
@@ -39,6 +76,17 @@ func TestCodexAPIUsageObserverSSE(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 20, result.Usage.InputTokens)
 	require.Equal(t, 4, result.Usage.OutputTokens)
+}
+
+func TestCodexAPIUsageObserverBindsStreamingResourceBeforeDelivery(t *testing.T) {
+	observer := NewCodexAPIUsageObserver("text/event-stream", "")
+	var bound string
+	observer.OnResource(func(id string) { bound = id })
+	_, err := observer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"response-owned\"}}\n\n"))
+	require.NoError(t, err)
+	require.Equal(t, "response-owned", bound)
+	_, ok := observer.Result()
+	require.False(t, ok)
 }
 
 func TestCodexAPIUsageObserverMissingUsage(t *testing.T) {
