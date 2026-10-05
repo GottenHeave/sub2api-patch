@@ -110,12 +110,15 @@ func (h *OpenAIGatewayHandler) forwardCodexAPIWebSocket(c *gin.Context, key *ser
 				return kind, nil, fmt.Errorf("unable to inspect Codex API frame")
 			}
 			model := gjson.GetBytes(body, "model").String()
+			if model == "" {
+				model = gjson.GetBytes(body, "session.model").String()
+			}
 			if h.findBlockedCyberSessionForAPIKey(readContext, key, body) != "" {
 				writeCyberSessionBlockedWSError(frameCtx, client)
 				_ = client.Close(coderws.StatusPolicyViolation, "session blocked by cyber-security policy")
 				return kind, nil, fmt.Errorf("blocked Codex API session")
 			}
-			if decision := h.checkSecurityAuditStage(readContext, requestLogger(readContext, "handler.codex_api.websocket"), key, subject, service.ContentModerationProtocolOpenAIResponses, model, body, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
+			if decision := h.checkSecurityAuditStage(readContext, requestLogger(readContext, "handler.codex_api.websocket"), key, subject, service.CodexAPIInspectionProtocol(target), model, body, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
 				writeSecurityAuditWSError(frameCtx, client, decision)
 				_ = client.Close(securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
 				return kind, nil, fmt.Errorf("codex API frame rejected by security audit")
