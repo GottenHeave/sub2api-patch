@@ -24,6 +24,7 @@ The early new-model import was removed on 2026-09-23 after upstream included it.
 Row 19 was added on 2026-10-01.
 Row 20 was added on 2026-10-05 against Codex API 592d61325adf.
 Row 21 was added on 2026-10-05 to retain Realtime session inspection.
+Row 22 was added on 2026-10-05 to retain WebSocket handshake error bodies.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -48,6 +49,7 @@ Row 21 was added on 2026-10-05 to retain Realtime session inspection.
 | 19: Codex API error passthrough tests | Preserve plan/model/parameter errors, rate limits and SSE failures without local retries or cooldowns; allow subsequent requests | `server/routes/codex_api_gateway_test.go` only | 1 | +57 / -14 |
 | 20: Codex API subscription endpoints | Align inference adapters and WebSocket relay with the gateway; skip account management and independent upstream credentials | Dedicated handler, shared endpoint policy, transport, inspection, resource cache, usage and route tests | 13 | +1171 / -74 |
 | 21: Codex API Realtime inspection | Use the existing Realtime moderation protocol and session model for REST and WebSocket inspection | Dedicated WS handler, shared inspection and regression test | 3 | +30 / -6 |
+| 22: Codex API handshake error bodies | Finish reading failed handshake bodies before the WebSocket library cancels its context | WebSocket transport and existing handshake test | 2 | +12 / -2 |
 
 ## Behavior boundaries
 
@@ -100,7 +102,7 @@ Row 21 was added on 2026-10-05 to retain Realtime session inspection.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 21 patches.
+Apply patches in numerical order. The complete series contains all 22 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
@@ -122,6 +124,8 @@ For separate capabilities:
   no second permission system or independent upstream credentials are added.
 - Patch 21 follows patch 20 and selects the existing Realtime inspection
   contract for subscription calls and sidebands, without modifying wire bytes.
+- Patch 22 follows patch 21 and retains complete HTTP error bodies when
+  WebSocket dialing fails. It changes only transport body ownership and tests.
 - GPT-6 Sol/Luna and Claude Opus 5.5 support now comes from upstream; the early
   downstream import is no longer needed.
 
