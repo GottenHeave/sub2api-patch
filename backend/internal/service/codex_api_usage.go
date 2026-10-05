@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"context"
 	"io"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -18,14 +20,27 @@ const codexAPIObservationLimit = 8 << 20
 // CodexAPIUsageObserver observes a copy of response bytes without changing relay
 // behavior. Observation limits affect accounting availability, never delivery.
 type CodexAPIUsageObserver struct {
-	stream   bool
-	encoding string
-	buffer   []byte
-	data     []byte
-	event    string
-	discard  bool
-	result   *OpenAIForwardResult
-	finished bool
+	stream     bool
+	encoding   string
+	buffer     []byte
+	data       []byte
+	event      string
+	discard    bool
+	result     *OpenAIForwardResult
+	finished   bool
+	resourceID string
+	onResource func(string)
+
+	startedAt    time.Time
+	ttftMode     string
+	firstTokenMs *int
+}
+
+func (s *OpenAIGatewayService) NewCodexAPIUsageObserver(ctx context.Context, contentType, contentEncoding string, start time.Time) *CodexAPIUsageObserver {
+	observer := NewCodexAPIUsageObserver(contentType, contentEncoding)
+	observer.startedAt = start
+	observer.ttftMode = s.openAITTFTMode(ctx)
+	return observer
 }
 
 func NewCodexAPIUsageObserver(contentType, contentEncoding string) *CodexAPIUsageObserver {
@@ -99,12 +114,34 @@ func (o *CodexAPIUsageObserver) observe(body []byte, event string) {
 	if !gjson.ValidBytes(body) {
 		return
 	}
-	if o.stream && !openAIStreamEventTypeIsTerminal(effectiveOpenAISSEEventType(body, event)) {
-		return
+	if o.stream {
+		eventType := effectiveOpenAISSEEventType(body, event)
+		if o.firstTokenMs == nil && !o.startedAt.IsZero() && openAIStreamDataStartsTTFT(string(body), eventType, false, o.ttftMode) {
+			ms := int(time.Since(o.startedAt).Milliseconds())
+			o.firstTokenMs = &ms
+		}
+		if !openAIStreamEventTypeIsTerminal(eventType) {
+			return
+		}
 	}
 	root := gjson.ParseBytes(body)
 	if response := root.Get("response"); response.IsObject() {
 		root = response
+	}
+	id := root.Get("id").String()
+	if id != "" && id != o.resourceID && o.onResource != nil {
+		o.onResource(id)
+	}
+	o.resourceID = id
+	result := &OpenAIForwardResult{
+		FirstTokenMs:                o.firstTokenMs,
+		ResponseID:                  extractOpenAIResponseIDFromJSONBytes(body),
+		ImageCount:                  extractOpenAIImagesBillableCountFromJSONBytes(body),
+		UpstreamResponseModel:       root.Get("model").String(),
+		UpstreamResponseServiceTier: root.Get("service_tier").String(),
+	}
+	if result.ImageCount > 0 {
+		o.result = result
 	}
 	usage := root.Get("usage")
 	// Missing, empty and malformed usage must not become a fabricated zero bill.
@@ -118,11 +155,28 @@ func (o *CodexAPIUsageObserver) observe(body []byte, event string) {
 	if !ok {
 		return
 	}
-	o.result = &OpenAIForwardResult{
-		Usage: parsed, ResponseID: extractOpenAIResponseIDFromJSONBytes(body),
-		UpstreamResponseModel:       root.Get("model").String(),
-		UpstreamResponseServiceTier: root.Get("service_tier").String(),
+	result.Usage = parsed
+	o.result = result
+}
+
+func (o *CodexAPIUsageObserver) ResultForEndpoint(target string, completed bool) (*OpenAIForwardResult, bool) {
+	result, observed := o.Result()
+	if completed && strings.HasSuffix(target, "/alpha/search") {
+		if !observed {
+			result, observed = &OpenAIForwardResult{}, true
+		}
+		result.WebSearchCalls = 1
 	}
+	return result, observed
+}
+
+func (o *CodexAPIUsageObserver) ResourceID() string {
+	_, _ = o.Result()
+	return o.resourceID
+}
+
+func (o *CodexAPIUsageObserver) OnResource(callback func(string)) {
+	o.onResource = callback
 }
 
 func (o *CodexAPIUsageObserver) Result() (*OpenAIForwardResult, bool) {
@@ -163,14 +217,17 @@ func (o *CodexAPIUsageObserver) Result() (*OpenAIForwardResult, bool) {
 		if closeReader != nil {
 			defer closeReader()
 		}
+		// Buffered decoding cannot recover event arrival times; leave timing disabled.
 		decoded := NewCodexAPIUsageObserver("application/json", "")
 		decoded.stream = o.stream
+		decoded.onResource = o.onResource
 		n, err := io.Copy(decoded, io.LimitReader(reader, 4*codexAPIObservationLimit+1))
 		o.buffer = nil
 		if err != nil || n > 4*codexAPIObservationLimit {
 			return nil, false
 		}
 		o.result, _ = decoded.Result()
+		o.resourceID = decoded.ResourceID()
 	} else if o.stream {
 		if len(o.buffer) > 0 {
 			o.line(bytes.TrimSuffix(o.buffer, []byte{'\r'}))
