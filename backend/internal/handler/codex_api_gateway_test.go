@@ -2,15 +2,19 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -147,5 +151,189 @@ func TestRelayCodexAPIResponsePreservesUpstream(t *testing.T) {
 		require.Equal(t, test.body, writer.Body.String())
 		require.Equal(t, "upstream-tag", writer.Header().Get("ETag"))
 		require.Empty(t, writer.Header().Get("X-Hop"))
+	}
+}
+
+type codexAPIEndpointCase struct {
+	method    string
+	path      string
+	websocket bool
+	target    string
+}
+
+func TestCodexAPISubscriptionEndpoints(t *testing.T) {
+	for _, test := range []codexAPIEndpointCase{
+		{"POST", "/v1/images/generations", false, "/v1/images/generations"},
+		{"POST", "/codex/images/edits", false, "/backend-api/codex/images/edits"},
+		{"POST", "/v1/files", false, "/v1/files"},
+		{"POST", "/v1/audio/transcriptions", false, "/v1/audio/transcriptions"},
+		{"POST", "/transcribe", false, "/v1/audio/transcriptions"},
+		{"POST", "/backend-api/transcribe", false, "/v1/audio/transcriptions"},
+		{"POST", "/v1/alpha/search", false, "/v1/alpha/search"},
+		{"POST", "/backend-api/codex/memories/trace_summarize", false, "/backend-api/codex/memories/trace_summarize"},
+		{"POST", "/codex/guardian", false, "/backend-api/codex/guardian"},
+		{"GET", "/codex/guardian-classifier", true, "/backend-api/codex/guardian-classifier"},
+		{"GET", "/v1/responses", true, "/v1/responses"},
+		{"GET", "/codex/models", false, "/backend-api/codex/models"},
+		{"POST", "/codex/responses/compact", false, "/v1/responses/compact"},
+		{"POST", "/v1/realtime/calls", false, "/v1/realtime/calls"},
+		{"POST", "/backend-api/codex/live", false, "/backend-api/codex/live"},
+		{"GET", "/v1/realtime?call_id=call_example", true, "/v1/realtime"},
+		{"GET", "/codex/live/call_example", true, "/backend-api/codex/live/call_example"},
+		{"GET", "/v1/realtime", true, ""},
+		{"GET", "/v1/live", true, ""},
+		{"POST", "/v1/live/sessions", false, ""},
+		{"GET", "/v1/live/sessions/session_example/attach", true, ""},
+		{"POST", "/platform/files", false, ""},
+		{"POST", "/auth/oauth/token", false, ""},
+		{"GET", "/backend-api/wham/usage", false, ""},
+		{"POST", "/codex/alpha/notes/v2/write_file", false, ""},
+		{"GET", "/backend-api/ps/plugins/list", false, ""},
+		{"GET", "/v1/files/file_example", false, ""},
+		{"DELETE", "/v1/files/file_example", false, ""},
+		{"POST", "/v1/images/edits/async", false, ""},
+		{"POST", "/v1/realtime/client_secrets", false, ""},
+	} {
+		t.Run(test.method+test.path, func(t *testing.T) {
+			r := httptest.NewRequest(test.method, test.path, nil)
+			if test.websocket {
+				r.Header.Set("Connection", "Upgrade")
+				r.Header.Set("Upgrade", "websocket")
+			}
+			require.Equal(t, test.target, codexAPITarget(r))
+		})
+	}
+}
+
+func newCodexAPITimingFixture(t *testing.T, baseURL string, upstream service.HTTPUpstream) (*gin.Engine, <-chan *service.UsageLog) {
+	t.Helper()
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Default.RateMultiplier = 1
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	account := service.Account{ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"base_url": baseURL, "api_key": "test-key"}}
+	group := &service.Group{ID: 1, Platform: service.PlatformOpenAI, RateMultiplier: 1}
+	repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{group.ID: {account}}}
+	usage := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 4)}
+	billing := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billing.Stop)
+	gateway := service.NewOpenAIGatewayService(repo, usage, nil, nil, nil, nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil, billing, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
+	slots := &helperConcurrencyCacheStub{userSeq: []bool{true}, accountSeq: []bool{true}}
+	h := &OpenAIGatewayHandler{cfg: cfg, gatewayService: gateway, billingCacheService: billing, concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(slots), SSEPingFormatComment, 0)}
+	router := gin.New()
+	router.Any("/v1/responses", func(c *gin.Context) {
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 1, GroupID: &group.ID, Group: group, User: &service.User{ID: 1}})
+		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
+	}, h.CodexAPIDispatch)
+	return router, usage.created
+}
+
+func TestCodexAPIStreamingUsageRecordsFirstToken(t *testing.T) {
+	chunks := []string{
+		": heartbeat\n\n",
+		"data: {\"type\":\"response.created\"}\n\n",
+		"event: response.output_text.delta\ndata: {\"delta\":",
+		"\"hello\"}\n\n",
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\" again\"}\n\n",
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_http\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n",
+	}
+	upstream := codexAPIHandlerUpstream{do: func(*http.Request) (*http.Response, error) {
+		time.Sleep(50 * time.Millisecond)
+		reader, writer := io.Pipe()
+		go func() {
+			defer func() { _ = writer.Close() }()
+			for _, chunk := range chunks {
+				time.Sleep(100 * time.Millisecond)
+				if _, err := io.WriteString(writer, chunk); err != nil {
+					return
+				}
+			}
+		}()
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader}, nil
+	}}
+	router, logs := newCodexAPITimingFixture(t, "https://codex.example", upstream)
+	synctest.Test(t, func(t *testing.T) {
+		writer := httptest.NewRecorder()
+		router.ServeHTTP(writer, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.1","stream":true}`)))
+		require.Equal(t, http.StatusOK, writer.Code)
+		require.Equal(t, strings.Join(chunks, ""), writer.Body.String())
+		select {
+		case log := <-logs:
+			require.NotNil(t, log.FirstTokenMs)
+			require.Equal(t, 450, *log.FirstTokenMs)
+			require.EqualValues(t, 650, *log.DurationMs)
+			require.Equal(t, 12, log.InputTokens)
+			require.Equal(t, 3, log.OutputTokens)
+		default:
+			t.Fatal("stream usage was not recorded")
+		}
+	})
+}
+
+func TestCodexAPIWebSocketUsageRecordsPerTurnTiming(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		for turn := range 3 {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				return
+			}
+			id := fmt.Sprintf("resp_%d", turn)
+			frames := []string{fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, id)}
+			if turn < 2 {
+				frames = append(frames, `{"type":"response.output_text.delta","item_id":"msg_1","delta":"hello"}`)
+			}
+			frames = append(frames, fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"model":"gpt-5.1","usage":{"input_tokens":12,"output_tokens":3}}}`, id))
+			for _, frame := range frames {
+				time.Sleep(40 * time.Millisecond)
+				if err := conn.Write(r.Context(), coderws.MessageText, []byte(frame)); err != nil {
+					return
+				}
+			}
+		}
+		_ = conn.Close(coderws.StatusNormalClosure, "complete")
+	}))
+	defer upstream.Close()
+	router, logs := newCodexAPITimingFixture(t, upstream.URL, nil)
+	server := httptest.NewServer(router)
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses", nil)
+	require.NoError(t, err)
+	defer func() { _ = client.CloseNow() }()
+	for turn := range 3 {
+		time.Sleep(250 * time.Millisecond)
+		start := time.Now()
+		require.NoError(t, client.Write(ctx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","input":[]}`)))
+		frameCount := 3
+		if turn == 2 {
+			frameCount = 2
+		}
+		for range frameCount {
+			kind, _, err := client.Read(ctx)
+			require.NoError(t, err)
+			require.Equal(t, coderws.MessageText, kind)
+		}
+		elapsed := time.Since(start).Milliseconds()
+		select {
+		case log := <-logs:
+			require.NotNil(t, log.DurationMs)
+			require.LessOrEqual(t, int64(*log.DurationMs), elapsed, "turn duration includes connection idle time")
+			if turn < 2 {
+				require.NotNil(t, log.FirstTokenMs)
+				require.GreaterOrEqual(t, *log.FirstTokenMs, 80)
+				require.Less(t, *log.FirstTokenMs, *log.DurationMs)
+			} else {
+				require.Nil(t, log.FirstTokenMs, "metadata-only turn must not inherit the preceding token time")
+			}
+			require.Equal(t, 12, log.InputTokens)
+			require.Equal(t, 3, log.OutputTokens)
+		case <-ctx.Done():
+			t.Fatal("WebSocket usage was not recorded")
+		}
 	}
 }

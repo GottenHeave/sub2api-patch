@@ -591,6 +591,18 @@ func RegisterGatewayRoutes(
 		antigravityV1Beta.POST("/models/*modelAction", h.Gateway.GeminiV1BetaModels)
 	}
 
+	registered := make(map[string]bool)
+	for _, route := range r.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+	for _, route := range service.CodexAPIEndpointRoutes() {
+		if registered[route.Method+" "+route.Path] {
+			continue
+		}
+		// These additions are private to dedicated groups. Ordinary groups retain
+		// their existing endpoints and receive 404 for newly registered paths.
+		rootRoute(route.Method, route.Path, bodyLimit, func(c *gin.Context) { c.AbortWithStatus(http.StatusNotFound) })
+	}
 }
 
 func dispatchCodexModelsGateway(c *gin.Context, openAIHandler, generatedHandler gin.HandlerFunc) {
