@@ -118,6 +118,8 @@ func TestCodexAPIWebSocketHandshakeAndRedirects(t *testing.T) {
 				require.Empty(t, r.Header.Get("X-Codex-Gateway-Authorization"))
 				w.Header().Set("Location", "/redirected")
 				w.WriteHeader(status)
+				require.NoError(t, http.NewResponseController(w).Flush())
+				time.Sleep(10 * time.Millisecond)
 				_, _ = io.WriteString(w, body)
 			}))
 			defer server.Close()
