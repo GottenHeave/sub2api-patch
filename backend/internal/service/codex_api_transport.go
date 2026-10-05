@@ -10,12 +10,24 @@ import (
 
 // RoundTripCodexAPI leaves protocol interpretation to the configured gateway.
 func (s *OpenAIGatewayService) RoundTripCodexAPI(ctx context.Context, account *Account, incoming *http.Request, targetPath string) (*http.Response, error) {
+	req, err := s.buildCodexAPIRequest(ctx, account, incoming, targetPath)
+	if err != nil {
+		return nil, err
+	}
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	return s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+}
+
+func (s *OpenAIGatewayService) buildCodexAPIRequest(ctx context.Context, account *Account, incoming *http.Request, targetPath string) (*http.Request, error) {
 	if account == nil || !account.IsCodexAPI() || incoming == nil || incoming.URL == nil {
 		return nil, fmt.Errorf("invalid Codex API request")
 	}
-	switch targetPath {
-	case "/v1/responses", "/backend-api/codex/responses", "/v1/responses/compact", "/v1/models", "/backend-api/codex/models":
-	default:
+	policyRequest := incoming.Clone(ctx)
+	policyRequest.URL.Path = targetPath
+	if targetPath == "" || CodexAPITarget(policyRequest) != targetPath {
 		return nil, fmt.Errorf("unsupported Codex API endpoint")
 	}
 	base, err := s.validateUpstreamBaseURL(strings.TrimSpace(account.GetCredential("base_url")))
@@ -53,11 +65,7 @@ func (s *OpenAIGatewayService) RoundTripCodexAPI(ctx context.Context, account *A
 	if _, ok := req.Header["User-Agent"]; !ok {
 		req.Header["User-Agent"] = []string{""}
 	}
-	proxyURL := ""
-	if account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-	return s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	return req, nil
 }
 
 // StripCodexAPIHopHeaders removes fields that apply only to a single connection.
