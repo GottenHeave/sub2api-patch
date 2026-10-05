@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -19,11 +21,17 @@ type codexAPIWSHTTPTransport struct {
 func (t *codexAPIWSHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.transport.RoundTrip(req)
 	if err == nil && resp.StatusCode != http.StatusSwitchingProtocols {
-		// The WebSocket library keeps only 1 KiB of handshake errors. The HTTP
-		// relay owns the original body so provider errors are not truncated.
+		// Dial cancels its handshake context on return and retains only 1 KiB of
+		// errors. Finish reading under that context before handing off the bytes.
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 		copy := *resp
+		copy.Body = io.NopCloser(bytes.NewReader(body))
 		t.rejected = &copy
 		resp.Body = http.NoBody
+		if readErr != nil {
+			return nil, readErr
+		}
 	}
 	return resp, err
 }
