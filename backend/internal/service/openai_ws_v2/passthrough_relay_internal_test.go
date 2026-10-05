@@ -3,6 +3,7 @@ package openai_ws_v2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync/atomic"
@@ -13,6 +14,30 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestObserveUpstreamMessage_FirstTokenWithoutResponseIDEachTurn(t *testing.T) {
+	state := &relayState{}
+	start := time.Unix(100, 0)
+	now := start
+	observe := func(payload string) observedUpstreamEvent {
+		return observeUpstreamMessage(state, []byte(payload), start, func() time.Time { return now }, nil)
+	}
+	for turn := range 2 {
+		turnStart := start.Add(time.Duration(turn) * time.Minute)
+		state.setPendingTurnStartedAt(turnStart)
+		now = turnStart.Add(10 * time.Millisecond)
+		observe(fmt.Sprintf(`{"type":"response.created","response":{"id":"resp_%d"}}`, turn))
+		now = turnStart.Add(40 * time.Millisecond)
+		observe(`{"type":"response.output_text.delta","delta":"hello"}`)
+		now = turnStart.Add(60 * time.Millisecond)
+		observe(`{"type":"response.output_text.delta","delta":" again"}`)
+		now = turnStart.Add(100 * time.Millisecond)
+		result := observe(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_%d"}}`, turn))
+		require.NotNil(t, result.firstToken, "turn %d", turn)
+		require.Equal(t, 40, *result.firstToken)
+		require.Equal(t, 100*time.Millisecond, result.duration)
+	}
+}
 
 func TestRunEntry_DelegatesRelay(t *testing.T) {
 	t.Parallel()
