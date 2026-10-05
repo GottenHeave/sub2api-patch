@@ -62,6 +62,18 @@ func TestCodexAPIResourceOwnership(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
+func TestCodexAPIRealtimeInspectionUsesSessionContract(t *testing.T) {
+	body := []byte(`{"session":{"model":"subscription-model","instructions":"inspect session instructions"}}`)
+	for _, target := range []string{"/v1/realtime/calls", "/backend-api/codex/live", "/v1/realtime", "/v1/live/call_owned"} {
+		inspection, err := InspectCodexAPIRequest(target, "application/json", body)
+		require.NoError(t, err)
+		require.Equal(t, ContentModerationProtocolOpenAIRealtime, inspection.Protocol, target)
+		require.Equal(t, "subscription-model", inspection.Model)
+		require.Equal(t, "inspect session instructions", ExtractContentModerationText(inspection.Protocol, inspection.Body))
+		require.Equal(t, body, inspection.Body)
+	}
+}
+
 func TestCodexAPIImageMultipartInspectionKeepsWireBytes(t *testing.T) {
 	var wire bytes.Buffer
 	writer := multipart.NewWriter(&wire)
