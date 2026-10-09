@@ -54,6 +54,14 @@ class WorkflowPolicyTest(unittest.TestCase):
         self.assertIn("TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io", test_step)
         self.assertIn("make test-integration", test_step)
 
+    def test_validation_and_release_builders_use_docker_hub_mirror(self) -> None:
+        for workflow in (VALIDATION, RELEASE):
+            buildx_step = workflow.split("- name: Set up Docker Buildx\n", 1)[1]
+            buildx_step = buildx_step.split("\n      - name:", 1)[0]
+            self.assertIn("image=mirror.gcr.io/moby/buildkit:buildx-stable-1", buildx_step)
+            self.assertIn('[registry."docker.io"]', buildx_step)
+            self.assertIn('mirrors = ["mirror.gcr.io"]', buildx_step)
+
     def test_collision_and_compare_and_swap_guards_exist(self) -> None:
         self.assertIn("version tag already exists", RELEASE)
         self.assertIn("GitHub release already exists", RELEASE)
