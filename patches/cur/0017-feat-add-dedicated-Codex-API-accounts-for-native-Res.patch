@@ -2788,7 +2788,9 @@ diff --git a/frontend/src/components/account/CreateAccountModal.vue b/frontend/s
 index c6616c679f5b09c2bb0bf08861dedc8d7877fa10..0bc22afc9ab6e5458b3818378bf686aaf95f259d 100644
 --- a/frontend/src/components/account/CreateAccountModal.vue
 +++ b/frontend/src/components/account/CreateAccountModal.vue
-@@ -418,3 +418,7 @@
+@@ -416,5 +416,9 @@
+               <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.responsesApi') }}</span>
+             </div>
            </button>
 -
 +          <button type="button" :aria-pressed="accountCategory === 'codex-api'" @click="accountCategory = 'codex-api'"
