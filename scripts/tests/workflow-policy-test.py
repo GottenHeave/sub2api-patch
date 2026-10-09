@@ -43,6 +43,11 @@ class WorkflowPolicyTest(unittest.TestCase):
         ):
             self.assertIn(f"- name: {gate}", VALIDATION)
 
+    def test_linter_supports_go_1_27_2_export_data(self) -> None:
+        lint_step = VALIDATION.split("- name: Backend lint and format checks\n", 1)[1]
+        lint_step = lint_step.split("\n      - name:", 1)[0]
+        self.assertIn("version: v2.14.0", lint_step)
+
     def test_collision_and_compare_and_swap_guards_exist(self) -> None:
         self.assertIn("version tag already exists", RELEASE)
         self.assertIn("GitHub release already exists", RELEASE)

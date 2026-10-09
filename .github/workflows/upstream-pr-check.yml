@@ -136,7 +136,7 @@ jobs:
       - name: Backend lint and format checks
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13
+          version: v2.14.0
           args: --timeout=30m
           working-directory: worktree/backend
 
