@@ -48,6 +48,12 @@ class WorkflowPolicyTest(unittest.TestCase):
         lint_step = lint_step.split("\n      - name:", 1)[0]
         self.assertIn("version: v2.14.0", lint_step)
 
+    def test_backend_containers_use_docker_hub_mirror(self) -> None:
+        test_step = VALIDATION.split("- name: Backend tests\n", 1)[1]
+        test_step = test_step.split("\n      - name:", 1)[0]
+        self.assertIn("TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io", test_step)
+        self.assertIn("make test-integration", test_step)
+
     def test_collision_and_compare_and_swap_guards_exist(self) -> None:
         self.assertIn("version tag already exists", RELEASE)
         self.assertIn("GitHub release already exists", RELEASE)
