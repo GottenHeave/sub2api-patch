@@ -1267,13 +1267,13 @@ index 8b2bbb827db4758042cd8f9a6ce84c8949861277..45d4c821684dba36e1203c015ca8648d
 +		}
 +	}
  	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupIn.ID, nil); err != nil {
-@@ -1089,2 +1132,5 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
+@@ -1089,5 +1132,11 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
  	}
 +	if err := lockCodexAPIAccounts(ctx, exec, accountIDs); err != nil {
 +		return err
 +	}
  	if err := lockLiveGroups(ctx, exec, []int64{groupID}); err != nil {
-@@ -1092,2 +1138,5 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
+ 		return err
  	}
 +	if err := validateCodexAPIGroup(ctx, exec, groupID, nil, accountIDs, nil); err != nil {
 +		return err
