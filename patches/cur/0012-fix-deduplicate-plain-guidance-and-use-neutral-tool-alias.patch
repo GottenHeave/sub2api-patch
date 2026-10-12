@@ -11,14 +11,14 @@ Subject: [PATCH 12/12] fix: deduplicate plain guidance and use neutral tool
  .../service/openai_codex_transform_test.go    | 12 +--
  .../service/openai_compat_model_test.go       | 14 +--
  .../service/openai_gateway_service_test.go    |  2 +-
- .../openai_image_generation_controls_test.go  |  2 +-
+ .../openai_image_generation_controls_test.go  |  4 +-
  .../service/openai_messages_bridge.go         |  4 +-
  .../service/openai_messages_todo_guard.go     |  9 +-
  .../service/openai_oauth_passthrough_test.go  |  4 +-
  .../service/openai_outbound_markers_test.go   | 93 +++++++++++++++++++
  .../service/openai_setup_token_compat_test.go |  2 +-
  ...penai_ws_forwarder_ingress_session_test.go |  2 +-
- 13 files changed, 140 insertions(+), 52 deletions(-)
+ 13 files changed, 141 insertions(+), 53 deletions(-)
  create mode 100644 backend/internal/service/openai_outbound_markers_test.go
 
 diff --git a/backend/internal/service/openai_codex_tool_names.go b/backend/internal/service/openai_codex_tool_names.go
@@ -225,6 +225,11 @@ index 300bea37639d1ed70aac84d763e244200fc4068e..6d6c7ccf6e9b8161c5ed323987eacb2b
 -			require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexImageGenerationBridgeMarker)
 +			require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexImageGenerationBridgeText)
  		})
+@@ -490,3 +490,3 @@
+-				require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexImageGenerationBridgeMarker)
++				require.NotContains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexImageGenerationBridgeText)
+ 				require.Equal(t, "shell", gjson.GetBytes(upstream.lastBody, "tools.0.name").String())
+ 			})
 diff --git a/backend/internal/service/openai_messages_bridge.go b/backend/internal/service/openai_messages_bridge.go
 index d67b4b1e9183ebaa64475117686b12bb369c20ec..5c04582fab444a2c789718b7fecf7c8a3d7bb19a 100644
 --- a/backend/internal/service/openai_messages_bridge.go
