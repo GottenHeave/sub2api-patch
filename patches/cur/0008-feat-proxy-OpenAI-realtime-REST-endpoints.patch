@@ -21,7 +21,7 @@ index 8ee8928b2540bdb8d3712a4318f64d7767f2b5cc..80ad3e686ce6474dfc7c951ee1f7486c
 @@ -33,2 +33,3 @@ const (
  	EndpointRealtime             = "/v1/realtime"
 +	EndpointRealtimeREST         = "/v1/realtime/rest"
- )
+ 	EndpointGeminiCachedContents = "/v1beta/cachedContents"
 @@ -112,2 +113,4 @@ func NormalizeInboundEndpoint(path string) string {
  		return EndpointResponses
 +	case isRealtimeRESTEndpoint(path):

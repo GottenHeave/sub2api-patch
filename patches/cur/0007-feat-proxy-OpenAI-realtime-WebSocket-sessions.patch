@@ -29,7 +29,7 @@ index b45b101d890eb59fbeeee0814c4fcb646e8afc2c..8ee8928b2540bdb8d3712a4318f64d77
 @@ -32,2 +32,3 @@ const (
  	EndpointGeminiModels         = "/v1beta/models"
 +	EndpointRealtime             = "/v1/realtime"
- )
+ 	EndpointGeminiCachedContents = "/v1beta/cachedContents"
 @@ -111,2 +112,4 @@ func NormalizeInboundEndpoint(path string) string {
  		return EndpointResponses
 +	case strings.Contains(path, EndpointRealtime):
