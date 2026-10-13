@@ -64,9 +64,9 @@ index d76bc423fe366655923edb86e52864808dfa92fc..2fdf1976695f2c1a4dc283aee8da3c94
 +	}
  	switch a.Platform {
  	case PlatformAntigravity:
--		if isAntigravityGeminiModel(modelKey) && modelKey != antigravityGeminiModelRateLimitKey {
+-		if isAntigravityGeminiModel(modelKey) && !isAntigravityGeminiImageModel(modelKey) && modelKey != antigravityGeminiModelRateLimitKey {
 -			keys = append(keys, antigravityGeminiModelRateLimitKey)
-+		if isAntigravityGeminiModel(modelKey) {
++		if isAntigravityGeminiModel(modelKey) && !isAntigravityGeminiImageModel(modelKey) {
 +			keys = appendModelRateLimitKey(keys, antigravityGeminiModelRateLimitKey)
  		}
  	case PlatformOpenAI:
