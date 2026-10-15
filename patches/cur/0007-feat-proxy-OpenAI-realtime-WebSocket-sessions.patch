@@ -944,12 +944,12 @@ index 556ad0627436419c07db3d6d9457870325761eae..03738d9122c87ea988270aa4e30d0566
  		firstClientMessage = s.ReplaceModelInBody(firstClientMessage, capturedSessionModel)
 @@ -748,8 +784,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
  	firstMessageResponsesLite := isOpenAIResponsesLiteWebSocketPayload(firstClientMessage)
--	if normalized, compatibilityChanged, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(firstClientMessage, account, firstMessageResponsesLite); normalizeErr != nil {
+-	if normalized, compatibilityChanged, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBodyWithConfig(s.cfg, firstClientMessage, account, firstMessageResponsesLite); normalizeErr != nil {
 -		return fmt.Errorf("normalize first websocket response.create: %w", normalizeErr)
 -	} else if compatibilityChanged {
 -		firstClientMessage = normalized
 +	if !isRealtime {
-+		if normalized, compatibilityChanged, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(firstClientMessage, account, firstMessageResponsesLite); normalizeErr != nil {
++		if normalized, compatibilityChanged, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBodyWithConfig(s.cfg, firstClientMessage, account, firstMessageResponsesLite); normalizeErr != nil {
 +			return fmt.Errorf("normalize first websocket response.create: %w", normalizeErr)
 +		} else if compatibilityChanged {
 +			firstClientMessage = normalized
