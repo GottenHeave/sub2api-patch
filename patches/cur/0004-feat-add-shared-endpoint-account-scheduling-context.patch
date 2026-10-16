@@ -83,8 +83,8 @@ index 2986f6abeb6a22e978ad924bc4408f1d3959eff2..05ba69fa43bfd800789e1fb7bd75f48f
  	if req.RequirePrivacySet && !account.IsPrivacySet() {
 @@ -1799,3 +1862,3 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
  	}
--	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
-+	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
+-	if req.RequestedModel != "" && !supportsOpenAIRequestModel(account, req.RequestedModel, req.RequireCompact) {
++	if req.RequestedModel != "" && !supportsOpenAIRequestModel(account, req.RequestedModel, req.RequireCompact) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
  		return false, "model_not_supported"
 @@ -2139,2 +2202,52 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
  
@@ -154,6 +154,6 @@ index a90bad3e2589150945deaa201cfb3956264662d3..a3e3e00f5d9673419ef5ea66bfda6434
  	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
 @@ -433,3 +439,3 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
  	}
--	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
-+	if requestedModel != "" && !account.IsModelSupported(requestedModel) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
+-	if requestedModel != "" && !supportsOpenAIRequestModel(account, requestedModel, requireCompact) {
++	if requestedModel != "" && !supportsOpenAIRequestModel(account, requestedModel, requireCompact) && !openAIAudioTranscriptionKnownModelSelectionFromContext(ctx) {
  		return "model_not_supported"
