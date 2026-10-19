@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/require"
 )
 
@@ -205,11 +207,14 @@ func TestCodexAPISubscriptionEndpoints(t *testing.T) {
 	}
 }
 
-func newCodexAPITimingFixture(t *testing.T, baseURL string, upstream service.HTTPUpstream) (*gin.Engine, <-chan *service.UsageLog) {
+func newCodexAPITimingFixture(t *testing.T, baseURL string, upstream service.HTTPUpstream, configure ...func(*config.Config)) (*gin.Engine, <-chan *service.UsageLog) {
 	t.Helper()
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	cfg.Default.RateMultiplier = 1
 	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	for _, apply := range configure {
+		apply(cfg)
+	}
 	account := service.Account{ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"base_url": baseURL, "api_key": "test-key"}}
 	group := &service.Group{ID: 1, Platform: service.PlatformOpenAI, RateMultiplier: 1}
 	repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{group.ID: {account}}}
@@ -220,11 +225,69 @@ func newCodexAPITimingFixture(t *testing.T, baseURL string, upstream service.HTT
 	slots := &helperConcurrencyCacheStub{userSeq: []bool{true}, accountSeq: []bool{true}}
 	h := &OpenAIGatewayHandler{cfg: cfg, gatewayService: gateway, billingCacheService: billing, concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(slots), SSEPingFormatComment, 0)}
 	router := gin.New()
-	router.Any("/v1/responses", func(c *gin.Context) {
-		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 1, GroupID: &group.ID, Group: group, User: &service.User{ID: 1}})
-		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
-	}, h.CodexAPIDispatch)
+	for _, path := range []string{"/v1/responses", "/codex/responses", "/backend-api/codex/responses", "/v1/responses/compact", "/v1/images/generations"} {
+		router.Any(path, func(c *gin.Context) {
+			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 1, GroupID: &group.ID, Group: group, User: &service.User{ID: 1}})
+			c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
+		}, h.CodexAPIDispatch)
+	}
 	return router, usage.created
+}
+
+func TestCodexAPIRequestBodyLimits(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		path       string
+		size       int
+		compressed bool
+		status     int
+	}{
+		{"large public responses", "/v1/responses", (16 << 20) + 1, false, http.StatusUnprocessableEntity},
+		{"large native alias", "/codex/responses", (16 << 20) + 1, false, http.StatusUnprocessableEntity},
+		{"large native responses", "/backend-api/codex/responses", (16 << 20) + 1, false, http.StatusUnprocessableEntity},
+		{"exact wire ceiling", "/v1/responses", 64 << 20, false, http.StatusUnprocessableEntity},
+		{"exceeds wire ceiling", "/v1/responses", (64 << 20) + 1, false, http.StatusRequestEntityTooLarge},
+		{"exact decoded ceiling", "/backend-api/codex/responses", 64 << 20, true, http.StatusUnprocessableEntity},
+		{"exceeds decoded ceiling", "/backend-api/codex/responses", (64 << 20) + 1, true, http.StatusBadRequest},
+		{"compact keeps wire ceiling", "/v1/responses/compact", (16 << 20) + 1, false, http.StatusRequestEntityTooLarge},
+		{"compact keeps decoded ceiling", "/v1/responses/compact", (16 << 20) + 1, true, http.StatusBadRequest},
+		{"images keep wire ceiling", "/v1/images/generations", (16 << 20) + 1, false, http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := bytes.Repeat([]byte{'x'}, test.size)
+			copy(body, `{"model":"gpt-5.1","input":"`)
+			copy(body[len(body)-2:], `"}`)
+			encoding := ""
+			if test.compressed {
+				encoder, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1))
+				require.NoError(t, err)
+				body = encoder.EncodeAll(body, nil)
+				require.NoError(t, encoder.Close())
+				encoding = "zstd"
+			}
+			calls := 0
+			upstream := codexAPIHandlerUpstream{do: func(request *http.Request) (*http.Response, error) {
+				calls++
+				forwarded, err := io.ReadAll(request.Body)
+				require.NoError(t, err)
+				require.True(t, bytes.Equal(body, forwarded), "forwarding must preserve the original wire bytes")
+				require.Equal(t, encoding, request.Header.Get("Content-Encoding"))
+				return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("fixture upstream"))}, nil
+			}}
+			router, _ := newCodexAPITimingFixture(t, "https://codex.example", upstream)
+			request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Content-Encoding", encoding)
+			writer := httptest.NewRecorder()
+			router.ServeHTTP(writer, request)
+			require.Equal(t, test.status, writer.Code, writer.Body.String())
+			if test.status == http.StatusUnprocessableEntity {
+				require.Equal(t, 1, calls)
+			} else {
+				require.Zero(t, calls)
+			}
+		})
+	}
 }
 
 func TestCodexAPIStreamingUsageRecordsFirstToken(t *testing.T) {
