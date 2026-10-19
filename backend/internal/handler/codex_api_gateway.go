@@ -75,8 +75,9 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
 	var body []byte
 	requestModel := c.Query("model")
 	if c.Request.Method == http.MethodPost {
-		raw, err := io.ReadAll(io.LimitReader(c.Request.Body, (16<<20)+1))
-		if err != nil || len(raw) > 16<<20 {
+		bodyLimit := service.CodexAPIRequestBodyLimit(target)
+		raw, err := io.ReadAll(io.LimitReader(c.Request.Body, bodyLimit+1))
+		if err != nil || int64(len(raw)) > bodyLimit {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Unable to read request body")
 			return
 		}
@@ -84,11 +85,7 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
 		inspection := c.Request.Clone(ctx)
 		inspection.Body = io.NopCloser(bytes.NewReader(raw))
 		body, err = pkghttputil.ReadRequestBodyWithPrealloc(inspection)
-		encoding := strings.ToLower(strings.TrimSpace(c.Request.Header.Get("Content-Encoding")))
-		// The shared decoder truncates at its expansion ceiling. Refuse to
-		// forward an encoded payload whose security inspection may be incomplete.
-		inspectionTruncated := encoding != "" && encoding != "identity" && len(body) >= 64<<20
-		if err != nil || inspectionTruncated || len(body) > 16<<20 {
+		if err != nil || int64(len(body)) > bodyLimit {
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Unable to inspect request body")
 			return
 		}

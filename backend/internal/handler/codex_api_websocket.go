@@ -78,7 +78,7 @@ func (h *OpenAIGatewayHandler) forwardCodexAPIWebSocket(c *gin.Context, key *ser
 		return
 	}
 	defer func() { _ = client.CloseNow() }()
-	client.SetReadLimit(min(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg), 16<<20))
+	client.SetReadLimit(min(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg), service.CodexAPIRequestBodyLimit(target)))
 	setOpenAIClientTransportWS(c)
 	readContext := c.Copy()
 	recordContext := c.Copy()
@@ -95,7 +95,9 @@ func (h *OpenAIGatewayHandler) forwardCodexAPIWebSocket(c *gin.Context, key *ser
 	}()
 	lastBilledID := ""
 	var completedTurn openaiwsv2.RelayTurnResult
-	_, _ = openaiwsv2.Relay(ctx, codexAPIWSFrameConn{client}, codexAPIWSFrameConn{upstream}, nil, openaiwsv2.RelayOptions{
+	transport := h.gatewayService.CodexAPIWebSocketTransport(ctx, codexAPIWSFrameConn{upstream}, account, c.Request, target)
+	defer func() { _ = transport.Close() }()
+	_, _ = openaiwsv2.Relay(ctx, codexAPIWSFrameConn{client}, transport, nil, openaiwsv2.RelayOptions{
 		FirstMessageSent: true,
 		IdleTimeout:      5 * time.Minute,
 		ReadClientFrame: func(frameCtx context.Context, conn openaiwsv2.FrameConn) (coderws.MessageType, []byte, error) {
@@ -106,7 +108,7 @@ func (h *OpenAIGatewayHandler) forwardCodexAPIWebSocket(c *gin.Context, key *ser
 			inspection := c.Request.Clone(frameCtx)
 			inspection.Body = io.NopCloser(bytes.NewReader(payload))
 			body, err := pkghttputil.ReadRequestBodyWithPrealloc(inspection)
-			if err != nil || len(body) >= 64<<20 {
+			if err != nil || int64(len(body)) > service.CodexAPIRequestBodyLimit(target) {
 				_ = client.Close(coderws.StatusPolicyViolation, "Unable to inspect request frame")
 				return kind, nil, fmt.Errorf("unable to inspect Codex API frame")
 			}
