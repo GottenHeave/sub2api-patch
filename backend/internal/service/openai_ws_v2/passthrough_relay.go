@@ -24,6 +24,14 @@ type FrameConn interface {
 	Close() error
 }
 
+type PreparedFrameWrite func() error
+
+// FrameWritePreparer rejects connection-local protocol errors before the relay
+// attributes a new request model or start time to an accepted upstream turn.
+type FrameWritePreparer interface {
+	PrepareWriteFrame(context.Context, coderws.MessageType, []byte) (PreparedFrameWrite, []byte, error)
+}
+
 type Usage struct {
 	InputTokens              int
 	ImageInputTokens         int
@@ -205,7 +213,23 @@ func Relay(
 		defer cancel()
 		return upstreamConn.WriteFrame(writeCtx, msgType, payload)
 	}
+	var writeClient func(coderws.MessageType, []byte) error
 	writeClientFrameUpstream := func(msgType coderws.MessageType, payload []byte) error {
+		acceptedAt := time.Time{}
+		write := func() error { return writeUpstream(msgType, payload) }
+		if preparer, ok := upstreamConn.(FrameWritePreparer); ok {
+			acceptedAt = nowFn()
+			writeCtx, cancel := context.WithTimeout(relayCtx, writeTimeout)
+			defer cancel()
+			prepared, rejection, err := preparer.PrepareWriteFrame(writeCtx, msgType, payload)
+			if err != nil {
+				return err
+			}
+			if len(rejection) > 0 {
+				return writeClient(coderws.MessageText, rejection)
+			}
+			write = prepared
+		}
 		isResponseCreate := isClientResponseCreateFrame(msgType, payload)
 		if isResponseCreate {
 			state.setRequestModel(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
@@ -214,7 +238,10 @@ func Relay(
 				turnStartedAt = options.TakeNextTurnStartedAt()
 			}
 			if turnStartedAt.IsZero() {
-				turnStartedAt = nowFn()
+				turnStartedAt = acceptedAt
+				if turnStartedAt.IsZero() {
+					turnStartedAt = nowFn()
+				}
 			}
 			state.setPendingTurnStartedAt(turnStartedAt)
 			// The policy-enforcing client connection has accepted this turn.
@@ -222,7 +249,7 @@ func Relay(
 			// with the transport returning from WriteFrame.
 			state.turnWroteDownstream.Store(false)
 		}
-		err := writeUpstream(msgType, payload)
+		err := write()
 		if err != nil && isResponseCreate {
 			// The relay exits on this error, but retain the previous turn's state
 			// for accurate diagnostics while the two relay goroutines settle.
@@ -230,7 +257,7 @@ func Relay(
 		}
 		return err
 	}
-	writeClient := func(msgType coderws.MessageType, payload []byte) error {
+	writeClient = func(msgType coderws.MessageType, payload []byte) error {
 		// 下行写超时故意不挂在 relayCtx 上：coder/websocket 在已武装的 write
 		// ctx 被取消时会直接硬关连接（context.AfterFunc 的 stop 不等待执行中
 		// 的回调），外部取消若落在一次已成功写入的解除武装窗口内，会连同尚未
