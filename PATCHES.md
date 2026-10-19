@@ -26,6 +26,7 @@ Row 20 was added on 2026-10-05 against Codex API 592d61325adf.
 Row 20 was updated on 2026-10-19 for live SSE first-token and WS per-turn timing.
 Row 21 was added on 2026-10-05 to retain Realtime session inspection.
 Row 22 was added on 2026-10-05 to retain WebSocket handshake error bodies.
+Row 23 was added on 2026-10-19 for connection-local large-request HTTP bridging.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -51,6 +52,7 @@ Row 22 was added on 2026-10-05 to retain WebSocket handshake error bodies.
 | 20: Codex API subscription endpoints | Align inference adapters and WebSocket relay with the gateway; record live SSE first-token and WS per-turn timing; skip account management and independent upstream credentials | Dedicated handler, shared endpoint policy, transport, inspection, resource cache, usage, WS relay timing and tests | 15 | +1434 / -90 |
 | 21: Codex API Realtime inspection | Use the existing Realtime moderation protocol and session model for REST and WebSocket inspection | Dedicated WS handler, shared inspection and regression test | 3 | +30 / -6 |
 | 22: Codex API handshake error bodies | Finish reading failed handshake bodies before the WebSocket library cancels its context | WebSocket transport and existing handshake test | 2 | +12 / -2 |
+| 23: Codex API large-request bridge | Reuse HTTP bridging and complete connection-local replay, retain native continuation and bound Responses ingress/decompression | Dedicated HTTP/WS handlers, bridge, shared replay/relay/decoder helpers and tests | 13 | +1790 / -25 |
 
 ## Behavior boundaries
 
@@ -82,7 +84,7 @@ Row 22 was added on 2026-10-05 to retain WebSocket handshake error bodies.
   user's API key to that group. Native Responses and model requests use the
   native gateway endpoints; `/v1` requests use Codex API's public adapters.
   Request paths select these contracts; client headers and `client_version`
-  do not switch them. Sub2API performs no protocol preprocessing on either. Compact
+  do not switch them. Direct HTTP and native WS forwarding preserve their request contracts. Compact
   uses its JSON facade. Model catalogs, request bodies and upstream errors are
   not locally mapped, repaired or synthesized. Patch 20 also supports images,
   file upload, subscription transcription, search, memory trace summarization,
@@ -94,6 +96,18 @@ Row 22 was added on 2026-10-05 to retain WebSocket handshake error bodies.
   through the existing cache, scoped to the caller's API key and group. A
   WebSocket keeps one account for its lifetime and rejects references owned by
   another account. Multipart wire bytes are preserved; inspection uses a copy.
+- Dedicated Responses WS requests at the shared bridge threshold, 15 MiB by
+  default, can switch to HTTP. Complete matching history is retained only on
+  that live connection and stream; missing history fails explicitly. After
+  switching, the connection stays HTTP-only. Active native turns must finish
+  before switching; HTTP warmups and incomplete item references are rejected.
+  Responses HTTP/client WS bodies and replay payloads are bounded to 64 MiB;
+  replay has at most 32 streams and 8 KiB correlation identifiers. Other
+  dedicated endpoints retain 16 MiB. The paired Codex API gateway must support
+  the same 64 MiB HTTP limit; its original revision still rejects above 16 MiB.
+  No cross-connection history, persistence, or standalone public HTTP
+  previous_response_id emulation is added. Canceled HTTP requests cannot report
+  usage that the provider did not emit before cancellation.
 - Dedicated forwarding retains local access, security, concurrency and billing
   controls. Codex API uses the same model/token/cache pricing and multipliers as
   normal OpenAI OAuth, including the service-tier response contract. No separate
@@ -103,7 +117,7 @@ Row 22 was added on 2026-10-05 to retain WebSocket handshake error bodies.
 
 ## Applying selected capabilities
 
-Apply patches in numerical order. The complete series contains all 22 patches.
+Apply patches in numerical order. The complete series contains all 23 patches.
 For separate capabilities:
 
 - STT: 3, 4, 5, 6. Patch 3 supplies cached-token compatibility, not audio pricing.
@@ -131,6 +145,11 @@ For separate capabilities:
   contract for subscription calls and sidebands, without modifying wire bytes.
 - Patch 22 follows patch 21 and retains complete HTTP error bodies when
   WebSocket dialing fails. It changes only transport body ownership and tests.
+- Patch 23 follows patch 22 and reuses shared threshold, replay, SSE and relay
+  mechanisms for dedicated Responses HTTP bridging. Native prepared frames use
+  the native HTTP contract; public requests retain public adaptation. Its
+  bounded decompression rejects oversized output instead of returning a
+  truncated inspection body. No account scheduling or billing schema changes.
 - GPT-6 Sol/Luna and Claude Opus 5.5 support now comes from upstream; the early
   downstream import is no longer needed.
 

@@ -1,0 +1,2079 @@
+From 632b9fcb1e24c8394c1e4c245243cf09cb96d897 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 19:43:31 +0000
+Subject: [PATCH] feat: bridge large Codex API turns with connection-local
+ history
+
+---
+ backend/internal/handler/codex_api_gateway.go |  11 +-
+ .../handler/codex_api_gateway_test.go         |  73 +-
+ .../internal/handler/codex_api_websocket.go   |   8 +-
+ .../codex_api_websocket_bridge_test.go        | 123 ++++
+ backend/internal/pkg/httputil/body.go         |  19 +-
+ backend/internal/pkg/httputil/body_test.go    |  54 ++
+ .../service/codex_api_websocket_bridge.go     | 681 ++++++++++++++++++
+ ..._api_websocket_bridge_audit_limits_test.go |  23 +
+ ...api_websocket_bridge_audit_metrics_test.go |  86 +++
+ .../codex_api_websocket_bridge_audit_test.go  | 318 ++++++++
+ .../codex_api_websocket_bridge_test.go        | 378 ++++++++++
+ .../internal/service/openai_ws_http_bridge.go |   8 +-
+ .../service/openai_ws_v2/passthrough_relay.go |  33 +-
+ 13 files changed, 1790 insertions(+), 25 deletions(-)
+ create mode 100644 backend/internal/handler/codex_api_websocket_bridge_test.go
+ create mode 100644 backend/internal/service/codex_api_websocket_bridge.go
+ create mode 100644 backend/internal/service/codex_api_websocket_bridge_audit_limits_test.go
+ create mode 100644 backend/internal/service/codex_api_websocket_bridge_audit_metrics_test.go
+ create mode 100644 backend/internal/service/codex_api_websocket_bridge_audit_test.go
+ create mode 100644 backend/internal/service/codex_api_websocket_bridge_test.go
+
+diff --git a/backend/internal/handler/codex_api_gateway.go b/backend/internal/handler/codex_api_gateway.go
+index 1beed7c56..95f1f68ef 100644
+--- a/backend/internal/handler/codex_api_gateway.go
++++ b/backend/internal/handler/codex_api_gateway.go
+@@ -75,8 +75,9 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 	var body []byte
+ 	requestModel := c.Query("model")
+ 	if c.Request.Method == http.MethodPost {
+-		raw, err := io.ReadAll(io.LimitReader(c.Request.Body, (16<<20)+1))
+-		if err != nil || len(raw) > 16<<20 {
++		bodyLimit := service.CodexAPIRequestBodyLimit(target)
++		raw, err := io.ReadAll(io.LimitReader(c.Request.Body, bodyLimit+1))
++		if err != nil || int64(len(raw)) > bodyLimit {
+ 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", "Unable to read request body")
+ 			return
+ 		}
+@@ -84,11 +85,7 @@ func (h *OpenAIGatewayHandler) forwardCodexAPI(c *gin.Context, key *service.APIK
+ 		inspection := c.Request.Clone(ctx)
+ 		inspection.Body = io.NopCloser(bytes.NewReader(raw))
+ 		body, err = pkghttputil.ReadRequestBodyWithPrealloc(inspection)
+-		encoding := strings.ToLower(strings.TrimSpace(c.Request.Header.Get("Content-Encoding")))
+-		// The shared decoder truncates at its expansion ceiling. Refuse to
+-		// forward an encoded payload whose security inspection may be incomplete.
+-		inspectionTruncated := encoding != "" && encoding != "identity" && len(body) >= 64<<20
+-		if err != nil || inspectionTruncated || len(body) > 16<<20 {
++		if err != nil || int64(len(body)) > bodyLimit {
+ 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Unable to inspect request body")
+ 			return
+ 		}
+diff --git a/backend/internal/handler/codex_api_gateway_test.go b/backend/internal/handler/codex_api_gateway_test.go
+index eed1c6e14..69c6e7440 100644
+--- a/backend/internal/handler/codex_api_gateway_test.go
++++ b/backend/internal/handler/codex_api_gateway_test.go
+@@ -1,6 +1,7 @@
+ package handler
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"fmt"
+ 	"io"
+@@ -16,6 +17,7 @@ import (
+ 	"github.com/Wei-Shaw/sub2api/internal/service"
+ 	coderws "github.com/coder/websocket"
+ 	"github.com/gin-gonic/gin"
++	"github.com/klauspost/compress/zstd"
+ 	"github.com/stretchr/testify/require"
+ )
+ 
+@@ -205,11 +207,14 @@ func TestCodexAPISubscriptionEndpoints(t *testing.T) {
+ 	}
+ }
+ 
+-func newCodexAPITimingFixture(t *testing.T, baseURL string, upstream service.HTTPUpstream) (*gin.Engine, <-chan *service.UsageLog) {
++func newCodexAPITimingFixture(t *testing.T, baseURL string, upstream service.HTTPUpstream, configure ...func(*config.Config)) (*gin.Engine, <-chan *service.UsageLog) {
+ 	t.Helper()
+ 	cfg := &config.Config{RunMode: config.RunModeSimple}
+ 	cfg.Default.RateMultiplier = 1
+ 	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
++	for _, apply := range configure {
++		apply(cfg)
++	}
+ 	account := service.Account{ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeCodexAPI, Status: service.StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"base_url": baseURL, "api_key": "test-key"}}
+ 	group := &service.Group{ID: 1, Platform: service.PlatformOpenAI, RateMultiplier: 1}
+ 	repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{group.ID: {account}}}
+@@ -220,13 +225,71 @@ func newCodexAPITimingFixture(t *testing.T, baseURL string, upstream service.HTT
+ 	slots := &helperConcurrencyCacheStub{userSeq: []bool{true}, accountSeq: []bool{true}}
+ 	h := &OpenAIGatewayHandler{cfg: cfg, gatewayService: gateway, billingCacheService: billing, concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(slots), SSEPingFormatComment, 0)}
+ 	router := gin.New()
+-	router.Any("/v1/responses", func(c *gin.Context) {
+-		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 1, GroupID: &group.ID, Group: group, User: &service.User{ID: 1}})
+-		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
+-	}, h.CodexAPIDispatch)
++	for _, path := range []string{"/v1/responses", "/codex/responses", "/backend-api/codex/responses", "/v1/responses/compact", "/v1/images/generations"} {
++		router.Any(path, func(c *gin.Context) {
++			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 1, GroupID: &group.ID, Group: group, User: &service.User{ID: 1}})
++			c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
++		}, h.CodexAPIDispatch)
++	}
+ 	return router, usage.created
+ }
+ 
++func TestCodexAPIRequestBodyLimits(t *testing.T) {
++	for _, test := range []struct {
++		name       string
++		path       string
++		size       int
++		compressed bool
++		status     int
++	}{
++		{"large public responses", "/v1/responses", (16 << 20) + 1, false, http.StatusUnprocessableEntity},
++		{"large native alias", "/codex/responses", (16 << 20) + 1, false, http.StatusUnprocessableEntity},
++		{"large native responses", "/backend-api/codex/responses", (16 << 20) + 1, false, http.StatusUnprocessableEntity},
++		{"exact wire ceiling", "/v1/responses", 64 << 20, false, http.StatusUnprocessableEntity},
++		{"exceeds wire ceiling", "/v1/responses", (64 << 20) + 1, false, http.StatusRequestEntityTooLarge},
++		{"exact decoded ceiling", "/backend-api/codex/responses", 64 << 20, true, http.StatusUnprocessableEntity},
++		{"exceeds decoded ceiling", "/backend-api/codex/responses", (64 << 20) + 1, true, http.StatusBadRequest},
++		{"compact keeps wire ceiling", "/v1/responses/compact", (16 << 20) + 1, false, http.StatusRequestEntityTooLarge},
++		{"compact keeps decoded ceiling", "/v1/responses/compact", (16 << 20) + 1, true, http.StatusBadRequest},
++		{"images keep wire ceiling", "/v1/images/generations", (16 << 20) + 1, false, http.StatusRequestEntityTooLarge},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			body := bytes.Repeat([]byte{'x'}, test.size)
++			copy(body, `{"model":"gpt-5.1","input":"`)
++			copy(body[len(body)-2:], `"}`)
++			encoding := ""
++			if test.compressed {
++				encoder, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1))
++				require.NoError(t, err)
++				body = encoder.EncodeAll(body, nil)
++				require.NoError(t, encoder.Close())
++				encoding = "zstd"
++			}
++			calls := 0
++			upstream := codexAPIHandlerUpstream{do: func(request *http.Request) (*http.Response, error) {
++				calls++
++				forwarded, err := io.ReadAll(request.Body)
++				require.NoError(t, err)
++				require.True(t, bytes.Equal(body, forwarded), "forwarding must preserve the original wire bytes")
++				require.Equal(t, encoding, request.Header.Get("Content-Encoding"))
++				return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("fixture upstream"))}, nil
++			}}
++			router, _ := newCodexAPITimingFixture(t, "https://codex.example", upstream)
++			request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewReader(body))
++			request.Header.Set("Content-Type", "application/json")
++			request.Header.Set("Content-Encoding", encoding)
++			writer := httptest.NewRecorder()
++			router.ServeHTTP(writer, request)
++			require.Equal(t, test.status, writer.Code, writer.Body.String())
++			if test.status == http.StatusUnprocessableEntity {
++				require.Equal(t, 1, calls)
++			} else {
++				require.Zero(t, calls)
++			}
++		})
++	}
++}
++
+ func TestCodexAPIStreamingUsageRecordsFirstToken(t *testing.T) {
+ 	chunks := []string{
+ 		": heartbeat\n\n",
+diff --git a/backend/internal/handler/codex_api_websocket.go b/backend/internal/handler/codex_api_websocket.go
+index 3df1a49eb..2e1548dc7 100644
+--- a/backend/internal/handler/codex_api_websocket.go
++++ b/backend/internal/handler/codex_api_websocket.go
+@@ -78,7 +78,7 @@ func (h *OpenAIGatewayHandler) forwardCodexAPIWebSocket(c *gin.Context, key *ser
+ 		return
+ 	}
+ 	defer func() { _ = client.CloseNow() }()
+-	client.SetReadLimit(min(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg), 16<<20))
++	client.SetReadLimit(min(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg), service.CodexAPIRequestBodyLimit(target)))
+ 	setOpenAIClientTransportWS(c)
+ 	readContext := c.Copy()
+ 	recordContext := c.Copy()
+@@ -95,7 +95,9 @@ func (h *OpenAIGatewayHandler) forwardCodexAPIWebSocket(c *gin.Context, key *ser
+ 	}()
+ 	lastBilledID := ""
+ 	var completedTurn openaiwsv2.RelayTurnResult
+-	_, _ = openaiwsv2.Relay(ctx, codexAPIWSFrameConn{client}, codexAPIWSFrameConn{upstream}, nil, openaiwsv2.RelayOptions{
++	transport := h.gatewayService.CodexAPIWebSocketTransport(ctx, codexAPIWSFrameConn{upstream}, account, c.Request, target)
++	defer func() { _ = transport.Close() }()
++	_, _ = openaiwsv2.Relay(ctx, codexAPIWSFrameConn{client}, transport, nil, openaiwsv2.RelayOptions{
+ 		FirstMessageSent: true,
+ 		IdleTimeout:      5 * time.Minute,
+ 		ReadClientFrame: func(frameCtx context.Context, conn openaiwsv2.FrameConn) (coderws.MessageType, []byte, error) {
+@@ -106,7 +108,7 @@ func (h *OpenAIGatewayHandler) forwardCodexAPIWebSocket(c *gin.Context, key *ser
+ 			inspection := c.Request.Clone(frameCtx)
+ 			inspection.Body = io.NopCloser(bytes.NewReader(payload))
+ 			body, err := pkghttputil.ReadRequestBodyWithPrealloc(inspection)
+-			if err != nil || len(body) >= 64<<20 {
++			if err != nil || int64(len(body)) > service.CodexAPIRequestBodyLimit(target) {
+ 				_ = client.Close(coderws.StatusPolicyViolation, "Unable to inspect request frame")
+ 				return kind, nil, fmt.Errorf("unable to inspect Codex API frame")
+ 			}
+diff --git a/backend/internal/handler/codex_api_websocket_bridge_test.go b/backend/internal/handler/codex_api_websocket_bridge_test.go
+new file mode 100644
+index 000000000..66dd572bd
+--- /dev/null
++++ b/backend/internal/handler/codex_api_websocket_bridge_test.go
+@@ -0,0 +1,123 @@
++package handler
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	coderws "github.com/coder/websocket"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++func TestCodexAPIWebSocketLargeFirstTurnUsesHTTP(t *testing.T) {
++	var nativePermit atomic.Bool
++	native := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		conn, err := coderws.Accept(w, r, nil)
++		if err != nil {
++			return
++		}
++		defer func() { _ = conn.CloseNow() }()
++		nativePermit.Store(true)
++		defer nativePermit.Store(false)
++		_, _, _ = conn.Read(r.Context())
++	}))
++	defer native.Close()
++	requests := make(chan *http.Request, 1)
++	upstream := codexAPIHandlerUpstream{do: func(r *http.Request) (*http.Response, error) {
++		if nativePermit.Load() {
++			return &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"gateway_busy","message":"fixture concurrency limit is one"}}`))}, nil
++		}
++		body, err := io.ReadAll(r.Body)
++		require.NoError(t, err)
++		require.Equal(t, 17<<20, len(gjson.GetBytes(body, "input.0.content.0.image_url").String()))
++		require.False(t, gjson.GetBytes(body, "previous_response_id").Exists())
++		requests <- r
++		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_large\",\"output\":[]}}\n\n"))}, nil
++	}}
++	router, _ := newCodexAPITimingFixture(t, native.URL, upstream, func(cfg *config.Config) { cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true })
++	server := httptest.NewServer(router)
++	defer server.Close()
++	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
++	defer cancel()
++	client, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses", nil)
++	require.NoError(t, err)
++	defer func() { _ = client.CloseNow() }()
++	payload := []byte(`{"type":"response.create","model":"gpt-5.1","stream":true,"input":[{"role":"user","content":[{"type":"input_image","image_url":"` + strings.Repeat("x", 17<<20) + `"}]}]}`)
++	require.NoError(t, client.Write(ctx, coderws.MessageText, payload))
++	_, frame, err := client.Read(ctx)
++	require.NoError(t, err)
++	require.Equal(t, "resp_large", gjson.GetBytes(frame, "response.id").String())
++	select {
++	case request := <-requests:
++		require.Equal(t, "/backend-api/codex/responses", request.URL.Path)
++		require.Equal(t, "Bearer test-key", request.Header.Get("Authorization"))
++	default:
++		t.Fatal("large Responses request did not reach HTTP")
++	}
++}
++
++func TestCodexAPIWebSocketHTTPBridgePreservesUsageAndFirstTokenTiming(t *testing.T) {
++	native := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		conn, err := coderws.Accept(w, r, nil)
++		if err != nil {
++			return
++		}
++		defer func() { _ = conn.CloseNow() }()
++		_, _, _ = conn.Read(r.Context())
++	}))
++	defer native.Close()
++	upstream := codexAPIHandlerUpstream{do: func(*http.Request) (*http.Response, error) {
++		reader, writer := io.Pipe()
++		go func() {
++			defer func() { _ = writer.Close() }()
++			for _, frame := range []string{
++				`{"type":"response.created","response":{"id":"resp_bridge_usage"}}`,
++				`{"type":"response.output_text.delta","delta":"hello"}`,
++				`{"type":"response.completed","response":{"id":"resp_bridge_usage","model":"gpt-5.1","output":[],"usage":{"input_tokens":12,"output_tokens":3}}}`,
++			} {
++				time.Sleep(40 * time.Millisecond)
++				if _, err := io.WriteString(writer, "data: "+frame+"\n\n"); err != nil {
++					return
++				}
++			}
++		}()
++		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader}, nil
++	}}
++	router, logs := newCodexAPITimingFixture(t, native.URL, upstream, func(cfg *config.Config) {
++		cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = true
++		cfg.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = 1
++	})
++	server := httptest.NewServer(router)
++	defer server.Close()
++	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
++	defer cancel()
++	client, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses", nil)
++	require.NoError(t, err)
++	defer func() { _ = client.CloseNow() }()
++	time.Sleep(100 * time.Millisecond)
++	started := time.Now()
++	require.NoError(t, client.Write(ctx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","input":[]}`)))
++	for range 3 {
++		_, _, err := client.Read(ctx)
++		require.NoError(t, err)
++	}
++	select {
++	case log := <-logs:
++		require.Equal(t, 12, log.InputTokens)
++		require.Equal(t, 3, log.OutputTokens)
++		require.NotNil(t, log.FirstTokenMs)
++		require.NotNil(t, log.DurationMs)
++		require.GreaterOrEqual(t, *log.FirstTokenMs, 80)
++		require.Less(t, *log.FirstTokenMs, *log.DurationMs)
++		require.LessOrEqual(t, int64(*log.DurationMs), time.Since(started).Milliseconds())
++	case <-ctx.Done():
++		t.Fatal("bridged usage was not recorded")
++	}
++}
+diff --git a/backend/internal/pkg/httputil/body.go b/backend/internal/pkg/httputil/body.go
+index 3a6fab4b7..2cc82e198 100644
+--- a/backend/internal/pkg/httputil/body.go
++++ b/backend/internal/pkg/httputil/body.go
+@@ -17,7 +17,7 @@ const (
+ 	requestBodyReadInitCap    = 512
+ 	requestBodyReadMaxInitCap = 1 << 20
+ 	jsonUTF8BOMLen            = 3
+-	// maxDecompressedBodySize limits the decompressed request body to 64 MB
++	// maxDecompressedBodySize limits the decompressed request body to 64 MiB
+ 	// to prevent decompression bomb attacks.
+ 	maxDecompressedBodySize = 64 << 20
+ )
+@@ -173,26 +173,37 @@ func decompressRequestBody(encoding string, raw []byte) ([]byte, error) {
+ 			return nil, err
+ 		}
+ 		defer dec.Close()
+-		return io.ReadAll(io.LimitReader(dec, maxDecompressedBodySize))
++		return readDecompressedRequestBody(dec)
+ 	case "gzip", "x-gzip":
+ 		gr, err := gzip.NewReader(bytes.NewReader(raw))
+ 		if err != nil {
+ 			return nil, err
+ 		}
+ 		defer func() { _ = gr.Close() }()
+-		return io.ReadAll(io.LimitReader(gr, maxDecompressedBodySize))
++		return readDecompressedRequestBody(gr)
+ 	case "deflate":
+ 		zr, err := zlib.NewReader(bytes.NewReader(raw))
+ 		if err != nil {
+ 			return nil, err
+ 		}
+ 		defer func() { _ = zr.Close() }()
+-		return io.ReadAll(io.LimitReader(zr, maxDecompressedBodySize))
++		return readDecompressedRequestBody(zr)
+ 	default:
+ 		return nil, errors.New("unsupported Content-Encoding")
+ 	}
+ }
+ 
++func readDecompressedRequestBody(reader io.Reader) ([]byte, error) {
++	body, err := readRequestBodyChunks(io.LimitReader(reader, maxDecompressedBodySize+1), requestBodyReadInitCap, -1)
++	if err != nil {
++		return nil, err
++	}
++	if len(body) > maxDecompressedBodySize {
++		return nil, &http.MaxBytesError{Limit: maxDecompressedBodySize}
++	}
++	return body, nil
++}
++
+ // NormalizeLenientJSONRequestBody escapes raw control bytes that broken
+ // OpenAI-compatible clients sometimes place inside JSON strings.
+ func NormalizeLenientJSONRequestBody(body []byte, maxNormalizedBytes int64) ([]byte, error) {
+diff --git a/backend/internal/pkg/httputil/body_test.go b/backend/internal/pkg/httputil/body_test.go
+index ed8355d50..4619cb0b5 100644
+--- a/backend/internal/pkg/httputil/body_test.go
++++ b/backend/internal/pkg/httputil/body_test.go
+@@ -4,6 +4,8 @@ import (
+ 	"bytes"
+ 	"compress/gzip"
+ 	"compress/zlib"
++	"errors"
++	"io"
+ 	"net/http"
+ 	"strings"
+ 	"testing"
+@@ -141,3 +143,55 @@ func TestReadRequestBodyWithPrealloc_RespectsIdentityEncoding(t *testing.T) {
+ 		t.Fatalf("body mismatch: got %q", got)
+ 	}
+ }
++
++func TestReadRequestBodyWithPrealloc_DecompressionLimit(t *testing.T) {
++	for _, encoding := range []string{"zstd", "gzip", "x-gzip", "deflate"} {
++		for _, delta := range []int{0, 1} {
++			name := encoding + "/at limit"
++			if delta > 0 {
++				name = encoding + "/over limit"
++			}
++			t.Run(name, func(t *testing.T) {
++				payload := bytes.Repeat([]byte{'x'}, maxDecompressedBodySize+delta)
++				var compressed bytes.Buffer
++				var writer io.WriteCloser
++				switch encoding {
++				case "zstd":
++					var err error
++					writer, err = zstd.NewWriter(&compressed, zstd.WithEncoderConcurrency(1))
++					if err != nil {
++						t.Fatal(err)
++					}
++				case "gzip", "x-gzip":
++					writer = gzip.NewWriter(&compressed)
++				case "deflate":
++					writer = zlib.NewWriter(&compressed)
++				}
++				if _, err := writer.Write(payload); err != nil {
++					t.Fatal(err)
++				}
++				if err := writer.Close(); err != nil {
++					t.Fatal(err)
++				}
++				request := newRequestWithBody(t, compressed.Bytes(), encoding)
++				got, err := ReadRequestBodyWithPrealloc(request)
++				if delta == 0 {
++					if err != nil {
++						t.Fatal(err)
++					}
++					if !bytes.Equal(payload, got) {
++						t.Fatalf("decoded body mismatch: got %d bytes, want %d", len(got), len(payload))
++					}
++					return
++				}
++				var limitErr *http.MaxBytesError
++				if !errors.As(err, &limitErr) || limitErr.Limit != maxDecompressedBodySize || got != nil {
++					t.Fatalf("expected bounded decompression error and no partial body, got %d bytes, %v", len(got), err)
++				}
++				if request.Header.Get("Content-Encoding") != encoding {
++					t.Fatal("failed decoding must retain the original encoding header")
++				}
++			})
++		}
++	}
++}
+diff --git a/backend/internal/service/codex_api_websocket_bridge.go b/backend/internal/service/codex_api_websocket_bridge.go
+new file mode 100644
+index 000000000..ebeaf5bd6
+--- /dev/null
++++ b/backend/internal/service/codex_api_websocket_bridge.go
+@@ -0,0 +1,681 @@
++package service
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"net/http"
++	"sort"
++	"strconv"
++	"strings"
++	"sync"
++	"time"
++
++	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
++	coderws "github.com/coder/websocket"
++	"github.com/tidwall/gjson"
++	"github.com/tidwall/sjson"
++)
++
++const CodexAPIResponsesBodyLimit int64 = 64 << 20
++
++func CodexAPIRequestBodyLimit(target string) int64 {
++	switch target {
++	case "/v1/responses", "/codex/responses", "/backend-api/codex/responses":
++		return CodexAPIResponsesBodyLimit
++	default:
++		return 16 << 20
++	}
++}
++
++const (
++	codexAPIReplayLaneLimit       = 32
++	codexAPICorrelationLimitBytes = 8 << 10
++)
++
++type codexAPIReplayHistory struct {
++	id    string
++	input []json.RawMessage
++}
++
++type codexAPIBridgeTurn struct {
++	lane        string
++	input       []json.RawMessage
++	complete    bool
++	id          string
++	collector   openAIWSToolCallReplayCollector
++	outputOrder map[string]int
++	unfinished  map[string]bool
++	sawOutput   bool
++	cancel      context.CancelFunc
++}
++
++func (t *codexAPIBridgeTurn) discardReplay() {
++	t.complete = false
++	t.input = nil
++	t.collector = openAIWSToolCallReplayCollector{}
++	t.outputOrder = nil
++	t.unfinished = nil
++}
++
++type codexAPIBridgeFrame struct {
++	kind       coderws.MessageType
++	payload    []byte
++	err        error
++	turn       *codexAPIBridgeTurn
++	local      bool
++	keepActive bool
++}
++
++// codexAPIWSHTTPBridge owns replay only for this live client connection. The
++// shared relay still owns client inspection, resource binding, usage and TTFT.
++type codexAPIWSHTTPBridge struct {
++	service         *OpenAIGatewayService
++	account         *Account
++	incoming        *http.Request
++	target          string
++	native          openaiwsv2.FrameConn
++	ctx             context.Context
++	cancel          context.CancelFunc
++	frames          chan codexAPIBridgeFrame
++	mu              sync.Mutex
++	history         map[string]codexAPIReplayHistory
++	pending         map[string]*codexAPIBridgeTurn
++	httpMode        bool
++	switched        time.Time
++	nativeAmbiguous bool
++	replayLimited   bool
++}
++
++func (s *OpenAIGatewayService) CodexAPIWebSocketTransport(ctx context.Context, native openaiwsv2.FrameConn, account *Account, incoming *http.Request, target string) openaiwsv2.FrameConn {
++	if CodexAPIRequestBodyLimit(target) != CodexAPIResponsesBodyLimit || !s.openAIWSHTTPBridgeEnabled() {
++		return native
++	}
++	ctx, cancel := context.WithCancel(ctx)
++	bridge := &codexAPIWSHTTPBridge{
++		service: s, account: account, incoming: incoming, target: target,
++		native: native, ctx: ctx, cancel: cancel, frames: make(chan codexAPIBridgeFrame),
++		history: make(map[string]codexAPIReplayHistory), pending: make(map[string]*codexAPIBridgeTurn),
++	}
++	go bridge.readNative()
++	return bridge
++}
++
++func (b *codexAPIWSHTTPBridge) Close() error {
++	b.cancel()
++	b.mu.Lock()
++	clear(b.history)
++	for _, turn := range b.pending {
++		turn.discardReplay()
++	}
++	clear(b.pending)
++	b.mu.Unlock()
++	return b.native.Close()
++}
++
++func (b *codexAPIWSHTTPBridge) readNative() {
++	for {
++		kind, payload, err := b.native.ReadFrame(b.ctx)
++		b.mu.Lock()
++		switched := b.httpMode
++		b.mu.Unlock()
++		if err != nil && switched {
++			return
++		}
++		if !b.emit(codexAPIBridgeFrame{kind: kind, payload: payload, err: err}) || err != nil {
++			return
++		}
++	}
++}
++
++func (b *codexAPIWSHTTPBridge) emit(frame codexAPIBridgeFrame) bool {
++	select {
++	case b.frames <- frame:
++		return true
++	case <-b.ctx.Done():
++		return false
++	}
++}
++
++func (b *codexAPIWSHTTPBridge) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
++	for {
++		select {
++		case frame := <-b.frames:
++			if frame.err != nil {
++				b.mu.Lock()
++				switched := b.httpMode
++				b.mu.Unlock()
++				if switched {
++					continue
++				}
++			}
++			if frame.err == nil && !frame.local {
++				b.observe(frame.payload, frame.turn, frame.keepActive)
++			}
++			return frame.kind, frame.payload, frame.err
++		case <-ctx.Done():
++			return 0, nil, ctx.Err()
++		case <-b.ctx.Done():
++			return 0, nil, b.ctx.Err()
++		}
++	}
++}
++
++func codexAPIBridgeRequestError(lane, code, message string) []byte {
++	payload := buildOpenAIWSHTTPBridgeErrorEvent(http.StatusBadRequest, message)
++	payload, _ = sjson.SetBytes(payload, "error.type", "invalid_request_error")
++	payload, _ = sjson.SetBytes(payload, "error.code", code)
++	return codexAPIEventLane(payload, lane)
++}
++
++func codexAPIEventLane(payload []byte, lane string) []byte {
++	if lane != "" {
++		if updated, err := sjson.SetRawBytes(payload, "stream_id", []byte(lane)); err == nil {
++			return updated
++		}
++	}
++	return payload
++}
++
++func codexAPIMessageLane(payload []byte) string {
++	lane := gjson.GetBytes(payload, "stream_id")
++	if lane.Type == gjson.String {
++		canonical, _ := json.Marshal(lane.String())
++		return string(canonical)
++	}
++	return lane.Raw
++}
++
++func (b *codexAPIWSHTTPBridge) WriteFrame(ctx context.Context, kind coderws.MessageType, payload []byte) error {
++	write, rejection, err := b.PrepareWriteFrame(ctx, kind, payload)
++	if err != nil {
++		return err
++	}
++	if len(rejection) > 0 {
++		select {
++		case b.frames <- codexAPIBridgeFrame{kind: coderws.MessageText, payload: rejection, local: true}:
++			return nil
++		case <-ctx.Done():
++			return ctx.Err()
++		case <-b.ctx.Done():
++			return b.ctx.Err()
++		}
++	}
++	return write()
++}
++
++func (b *codexAPIWSHTTPBridge) PrepareWriteFrame(ctx context.Context, kind coderws.MessageType, payload []byte) (openaiwsv2.PreparedFrameWrite, []byte, error) {
++	if err := b.ctx.Err(); err != nil {
++		return nil, nil, err
++	}
++	nativeWrite := func() error { return b.native.WriteFrame(ctx, kind, payload) }
++	event := gjson.GetBytes(payload, "type").String()
++	lane := codexAPIMessageLane(payload)
++	previous := gjson.GetBytes(payload, "previous_response_id").String()
++	b.mu.Lock()
++	requiresHTTP := b.httpMode || event == "response.create" && b.service.shouldBridgeOpenAIWSHTTP(b.account, len(payload), "")
++	if len(lane) > codexAPICorrelationLimitBytes || len(previous) > codexAPICorrelationLimitBytes || len(gjson.GetBytes(payload, "response_id").String()) > codexAPICorrelationLimitBytes {
++		if requiresHTTP {
++			b.mu.Unlock()
++			return nil, codexAPIBridgeRequestError(lane, "replay_limit", "HTTP replay correlation identifiers exceed the 8 KiB limit"), nil
++		}
++		b.disableNativeReplay()
++		b.mu.Unlock()
++		return nativeWrite, nil, nil
++	}
++	if b.replayLimited {
++		b.mu.Unlock()
++		if requiresHTTP {
++			return nil, codexAPIBridgeRequestError(lane, "replay_limit", "Native correlation identifiers exceeded the replay limit on this connection"), nil
++		}
++		return nativeWrite, nil, nil
++	}
++	if event == "response.cancel" || event == "response.interrupt" {
++		turn := b.pending[lane]
++		id := gjson.GetBytes(payload, "response_id").String()
++		if lane == "" && id != "" {
++			turn = nil
++			for _, candidate := range b.pending {
++				if candidate.id == id {
++					if turn != nil {
++						turn = nil
++						break
++					}
++					turn = candidate
++				}
++			}
++		}
++		if turn != nil && turn.cancel != nil && (id == "" || id == turn.id) {
++			if mode := gjson.GetBytes(payload, "mode").String(); event == "response.interrupt" && mode != "" && mode != "discard_partial_items" {
++				b.mu.Unlock()
++				return nil, codexAPIBridgeRequestError(lane, "unsupported_interrupt", "HTTP interruption supports discard_partial_items only"), nil
++			}
++			b.mu.Unlock()
++			return func() error { turn.cancel(); return nil }, nil, nil
++		}
++	}
++	if event != "response.create" {
++		httpMode := b.httpMode
++		b.mu.Unlock()
++		if httpMode {
++			return nil, codexAPIBridgeRequestError(lane, "unsupported_event", "Event is unavailable after switching this connection to HTTP"), nil
++		}
++		return nativeWrite, nil, nil
++	}
++	history, hasHistory := b.history[lane]
++	hasHistory = hasHistory && history.id == previous && previous != ""
++	current, exists, inputErr := openAIWSExtractNormalizedInputSequence(payload)
++	if input := gjson.GetBytes(payload, "input"); input.Type == gjson.String {
++		message, err := sjson.SetBytes([]byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}`), "content.0.text", input.String())
++		inputErr = err
++		current = []json.RawMessage{message}
++	}
++	complete := inputErr == nil && (previous == "" || hasHistory)
++	// Input views retain the wire payload. Own the retained bytes separately so
++	// the connection budget does not hide a larger backing allocation.
++	if complete {
++		for i := range current {
++			current[i] = bytes.Clone(current[i])
++		}
++	}
++	full := current
++	if complete && hasHistory {
++		if !openAIWSRawItemsHasPrefix(current, history.input) {
++			full = combineOpenAIWSReplayItems(history.input, current)
++		}
++		exists = true
++	}
++	fullSize := codexAPIReplayBytes(full)
++	bridge := b.httpMode || b.service.shouldBridgeOpenAIWSHTTP(b.account, len(payload), "") ||
++		complete && b.service.shouldBridgeOpenAIWSHTTP(b.account, fullSize, "")
++	if !openAIWSPayloadBoolFromRaw(payload, "generate", true) && bridge {
++		b.mu.Unlock()
++		return nil, codexAPIBridgeRequestError(lane, "unsupported_warmup", "generate=false requires the native WebSocket transport"), nil
++	}
++	if bridge && !complete {
++		b.mu.Unlock()
++		return nil, codexAPIBridgeRequestError(lane, "previous_response_not_found", "Complete previous_response_id history is unavailable on this connection and stream"), nil
++	}
++	if bridge && b.nativeAmbiguous {
++		b.mu.Unlock()
++		return nil, codexAPIBridgeRequestError(lane, "incomplete_replay", "Overlapping native responses require a new connection with full input before HTTP bridging"), nil
++	}
++	if bridge && (len(b.pending) > 0 && !b.httpMode || b.pending[lane] != nil) {
++		b.mu.Unlock()
++		return nil, codexAPIBridgeRequestError(lane, "bridge_busy", "Wait for the active response before switching transport or reusing its stream"), nil
++	}
++	if len(b.pending)+len(b.history) >= codexAPIReplayLaneLimit && b.pending[lane] == nil && b.history[lane].id == "" {
++		if bridge {
++			b.mu.Unlock()
++			return nil, codexAPIBridgeRequestError(lane, "replay_limit", "Connection replay stream limit reached"), nil
++		}
++		b.nativeAmbiguous = true
++		b.mu.Unlock()
++		return nativeWrite, nil, nil
++	}
++	if prior := b.pending[lane]; prior != nil {
++		// Ambiguous overlapping native turns cannot produce a replay anchor.
++		prior.discardReplay()
++		b.nativeAmbiguous = true
++		b.mu.Unlock()
++		return nativeWrite, nil, nil
++	}
++	var body []byte
++	target := b.target
++	if bridge {
++		for _, item := range full {
++			if gjson.GetBytes(item, "type").String() == "item_reference" {
++				b.mu.Unlock()
++				return nil, codexAPIBridgeRequestError(lane, "incomplete_replay", "HTTP replay requires full input items instead of item_reference"), nil
++			}
++		}
++		if fullSize > int(CodexAPIResponsesBodyLimit) {
++			b.mu.Unlock()
++			return nil, codexAPIBridgeRequestError(lane, "request_too_large", "Replayed request exceeds the 64 MiB HTTP limit"), nil
++		}
++		var err error
++		var replayable bool
++		body, replayable, err = buildOpenAIWSCurrentTurnRetryPayload(payload, full, exists, "")
++		if err != nil || !replayable {
++			b.mu.Unlock()
++			return nil, codexAPIBridgeRequestError(lane, "incomplete_replay", "Complete input and tool-call context are required for HTTP replay"), nil
++		}
++		if err == nil {
++			body, err = prepareOpenAIWSHTTPBridgeBody(b.account, body)
++		}
++		if kind == coderws.MessageBinary || target != "/v1/responses" || gjson.GetBytes(payload, "stream").Bool() {
++			target = "/backend-api/codex/responses"
++		}
++		if err == nil {
++			body, err = sjson.DeleteBytes(body, "stream_id")
++		}
++		if err != nil || int64(len(body)) > CodexAPIResponsesBodyLimit {
++			b.mu.Unlock()
++			return nil, codexAPIBridgeRequestError(lane, "request_too_large", "Unable to prepare request within the 64 MiB HTTP limit"), nil
++		}
++	}
++	turn := &codexAPIBridgeTurn{lane: lane, input: full, complete: complete}
++	if !complete {
++		turn.input = nil
++	}
++	b.pending[lane] = turn
++	b.enforceReplayBudget()
++	if !bridge {
++		b.mu.Unlock()
++		return nativeWrite, nil, nil
++	}
++	switching := !b.httpMode
++	b.httpMode = true
++	if switching {
++		b.switched = time.Now()
++	}
++	turnCtx, cancel := context.WithCancel(b.ctx)
++	turn.cancel = cancel
++	b.mu.Unlock()
++	return func() error {
++		if switching {
++			// codex-api holds a concurrency permit for the lifetime of its socket.
++			// Release it before HTTP so a gateway concurrency limit of one works.
++			_ = b.native.Close()
++		}
++		go b.runHTTP(turnCtx, turn, body, target)
++		return nil
++	}, nil, nil
++}
++
++func codexAPIReplayBytes(items []json.RawMessage) int {
++	total := 2
++	for _, item := range items {
++		total += len(item) + 1
++	}
++	return total
++}
++
++func (b *codexAPIWSHTTPBridge) disableNativeReplay() {
++	// Native requests may still be active after tracking is released. The flag
++	// prevents a later large request from mistaking this connection for idle.
++	b.replayLimited = true
++	clear(b.history)
++	clear(b.pending)
++}
++
++func (b *codexAPIWSHTTPBridge) enforceReplayBudget() {
++	total := 0
++	seen := make(map[*byte]bool)
++	count := func(items []json.RawMessage) {
++		for _, item := range items {
++			if len(item) > 0 && !seen[&item[0]] {
++				seen[&item[0]] = true
++				total += len(item)
++			}
++		}
++	}
++	for lane, history := range b.history {
++		total += len(lane) + len(history.id)
++		count(history.input)
++	}
++	for lane, turn := range b.pending {
++		total += len(lane) + len(turn.id)
++		count(turn.input)
++		count(turn.collector.allItems)
++		count(turn.collector.items)
++		for key := range turn.collector.allSeen {
++			total += len(key)
++		}
++		for key := range turn.collector.seen {
++			total += len(key)
++		}
++		for key := range turn.outputOrder {
++			total += len(key)
++		}
++		for key := range turn.unfinished {
++			total += len(key)
++		}
++	}
++	if int64(total) <= CodexAPIResponsesBodyLimit {
++		return
++	}
++	clear(b.history)
++	for _, turn := range b.pending {
++		turn.discardReplay()
++	}
++}
++
++func codexAPIOutputItemKey(item gjson.Result) string {
++	if id := item.Get("id").String(); id != "" {
++		return strings.Clone(id)
++	}
++	return strings.TrimSpace(item.Raw)
++}
++
++func (t *codexAPIBridgeTurn) observeOutput(event string, payload []byte) {
++	t.sawOutput = t.sawOutput || isOpenAIWSTokenEvent(event) || event == "response.output_item.added" || event == "response.output_item.done"
++	if event != "response.output_item.added" && event != "response.output_item.done" {
++		return
++	}
++	item := gjson.GetBytes(payload, "item")
++	key := codexAPIOutputItemKey(item)
++	index := gjson.GetBytes(payload, "output_index")
++	unfinishedKey := key
++	if index.Exists() {
++		unfinishedKey = strconv.Itoa(int(index.Int()))
++	}
++	if event == "response.output_item.added" {
++		if t.unfinished == nil {
++			t.unfinished = make(map[string]bool)
++		}
++		t.unfinished[unfinishedKey] = true
++		return
++	}
++	delete(t.unfinished, unfinishedKey)
++	if index.Exists() && index.Int() >= 0 {
++		if t.outputOrder == nil {
++			t.outputOrder = make(map[string]int)
++		}
++		t.outputOrder[key] = int(index.Int())
++	}
++	t.collector.AddEvent(event, payload)
++}
++
++func (t *codexAPIBridgeTurn) completedOutput(event string, payload []byte) ([]json.RawMessage, bool) {
++	output := gjson.GetBytes(payload, "response.output")
++	if output.IsArray() && len(output.Array()) > 0 {
++		collector := &openAIWSToolCallReplayCollector{}
++		collector.AddEvent(event, payload)
++		items := collector.AllItems()
++		return items, len(items) == len(output.Array())
++	}
++	items := t.collector.AllItems()
++	if len(t.unfinished) > 0 {
++		return nil, false
++	}
++	if len(items) == 0 {
++		return nil, output.IsArray() && !t.sawOutput
++	}
++	for _, item := range items {
++		if _, ok := t.outputOrder[codexAPIOutputItemKey(gjson.ParseBytes(item))]; !ok {
++			return nil, false
++		}
++	}
++	sort.SliceStable(items, func(i, j int) bool {
++		return t.outputOrder[codexAPIOutputItemKey(gjson.ParseBytes(items[i]))] < t.outputOrder[codexAPIOutputItemKey(gjson.ParseBytes(items[j]))]
++	})
++	for index, item := range items {
++		if t.outputOrder[codexAPIOutputItemKey(gjson.ParseBytes(item))] != index {
++			return nil, false
++		}
++	}
++	return items, true
++}
++
++func (b *codexAPIWSHTTPBridge) observe(payload []byte, turn *codexAPIBridgeTurn, keepActive bool) {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	if b.ctx.Err() != nil {
++		return
++	}
++	event, id, _ := parseOpenAIWSEventEnvelope(payload)
++	if len(id) > codexAPICorrelationLimitBytes || len(codexAPIMessageLane(payload)) > codexAPICorrelationLimitBytes {
++		if !b.httpMode {
++			b.disableNativeReplay()
++		}
++		return
++	}
++	if turn == nil {
++		if lane := gjson.GetBytes(payload, "stream_id"); lane.Exists() {
++			turn = b.pending[codexAPIMessageLane(payload)]
++		} else {
++			for _, candidate := range b.pending {
++				if candidate.id == id && id != "" || len(b.pending) == 1 {
++					turn = candidate
++					break
++				}
++			}
++		}
++	}
++	if turn == nil {
++		return
++	}
++	if id != "" {
++		turn.id = strings.Clone(id)
++	}
++	if event == "error" && (keepActive || turn.id != "") {
++		turn.discardReplay()
++		return
++	}
++	if turn.complete {
++		turn.observeOutput(event, payload)
++	}
++	if !isOpenAIWSTerminalEvent(event) && event != "error" {
++		b.enforceReplayBudget()
++		return
++	}
++	delete(b.pending, turn.lane)
++	if (event == "response.completed" || event == "response.done") && turn.complete && turn.id != "" {
++		if output, complete := turn.completedOutput(event, payload); complete {
++			b.history[turn.lane] = codexAPIReplayHistory{id: turn.id, input: combineOpenAIWSReplayItems(turn.input, output)}
++		}
++	}
++	b.enforceReplayBudget()
++}
++
++func (b *codexAPIWSHTTPBridge) runHTTP(ctx context.Context, turn *codexAPIBridgeTurn, body []byte, target string) {
++	defer turn.cancel()
++	err := b.streamHTTP(ctx, turn, body, target)
++	if err == nil || b.ctx.Err() != nil {
++		return
++	}
++	b.mu.Lock()
++	id := turn.id
++	b.mu.Unlock()
++	payload := buildOpenAIWSHTTPBridgeFailedEvent(id, gjson.GetBytes(body, "model").String(), time.Now().Unix(), nil, err.Error())
++	if ctx.Err() != nil {
++		payload, _ = sjson.SetBytes(payload, "type", "response.incomplete")
++		payload, _ = sjson.SetBytes(payload, "response.status", "incomplete")
++		payload, _ = sjson.SetBytes(payload, "response.incomplete_details.reason", "interrupted")
++		payload, _ = sjson.DeleteBytes(payload, "response.error")
++	}
++	b.emit(codexAPIBridgeFrame{kind: coderws.MessageText, payload: codexAPIEventLane(payload, turn.lane), turn: turn})
++}
++
++func (b *codexAPIWSHTTPBridge) streamHTTP(ctx context.Context, turn *codexAPIBridgeTurn, body []byte, target string) error {
++	var response *http.Response
++	for attempt := 0; ; attempt++ {
++		incoming := b.incoming.Clone(ctx)
++		incoming.Method = http.MethodPost
++		incoming.Body = io.NopCloser(bytes.NewReader(body))
++		incoming.ContentLength = int64(len(body))
++		for name := range incoming.Header {
++			if strings.HasPrefix(strings.ToLower(name), "sec-websocket-") {
++				incoming.Header.Del(name)
++			}
++		}
++		incoming.Header.Del("Content-Encoding")
++		incoming.Header.Set("Content-Type", "application/json")
++		incoming.Header.Set("Accept", "text/event-stream")
++		incoming.Header.Set("Accept-Encoding", "identity")
++		var err error
++		response, err = b.service.RoundTripCodexAPI(ctx, b.account, incoming, target)
++		if err != nil {
++			return errors.New("codex API HTTP bridge request failed")
++		}
++		if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
++			break
++		}
++		errorBody, _ := io.ReadAll(io.LimitReader(response.Body, openAIWSHTTPBridgeErrorBodyLimitBytes))
++		_ = response.Body.Close()
++		if response.StatusCode != http.StatusTooManyRequests || gjson.GetBytes(errorBody, "error.code").String() != "gateway_busy" || attempt >= 3 || time.Since(b.switched) > time.Second {
++			payload := buildOpenAIWSHTTPBridgeErrorEvent(response.StatusCode, extractOpenAISSEErrorMessage(errorBody))
++			b.emit(codexAPIBridgeFrame{kind: coderws.MessageText, payload: codexAPIEventLane(payload, turn.lane), turn: turn})
++			return nil
++		}
++		select {
++		case <-ctx.Done():
++			return ctx.Err()
++		case <-time.After(time.Duration(attempt+1) * 25 * time.Millisecond):
++		}
++	}
++	defer func() { _ = response.Body.Close() }()
++	stop := context.AfterFunc(ctx, func() { _ = response.Body.Close() })
++	defer stop()
++	scanner := bufio.NewScanner(io.LimitReader(response.Body, CodexAPIResponsesBodyLimit))
++	buffer := getSSEScannerBuf64K()
++	defer putSSEScannerBuf64K(buffer)
++	scanner.Buffer(buffer[:0], int(CodexAPIResponsesBodyLimit))
++	var parser openAICompatSSEFrameParser
++	frameBytes := 0
++	bareError := ""
++	var parseError error
++	emit := func(frame openAICompatSSEFrame, ok bool) bool {
++		if !ok || strings.TrimSpace(frame.Data) == "[DONE]" {
++			return false
++		}
++		payload := []byte(openAICompatPayloadWithEventType(frame.Data, frame.EventType))
++		if !json.Valid(payload) {
++			parseError = errors.New("codex API HTTP response contains incomplete or invalid JSON")
++			return true
++		}
++		_, id, _ := parseOpenAIWSEventEnvelope(payload)
++		if len(id) > codexAPICorrelationLimitBytes {
++			parseError = errors.New("codex API HTTP response exceeds the 8 KiB correlation limit")
++			return true
++		}
++		payload = codexAPIEventLane(payload, turn.lane)
++		event := gjson.GetBytes(payload, "type").String()
++		if event == "error" {
++			bareError = extractOpenAISSEErrorMessage(payload)
++			if bareError == "" {
++				bareError = gjson.GetBytes(payload, "message").String()
++			}
++		}
++		b.emit(codexAPIBridgeFrame{kind: coderws.MessageText, payload: payload, turn: turn, keepActive: event == "error"})
++		return isOpenAIWSTerminalEvent(event)
++	}
++	for scanner.Scan() {
++		line := scanner.Text()
++		frameBytes += len(line)
++		if int64(frameBytes) > CodexAPIResponsesBodyLimit {
++			return errors.New("codex API HTTP event exceeds the response limit")
++		}
++		frame, ready := parser.AddLine(line)
++		if ready {
++			frameBytes = 0
++		}
++		if emit(frame, ready) {
++			return parseError
++		}
++	}
++	if emit(parser.Finish()) {
++		return parseError
++	}
++	if err := scanner.Err(); err != nil {
++		return errors.New("codex API HTTP response could not be read")
++	}
++	if bareError != "" {
++		return errors.New(bareError)
++	}
++	return errors.New("codex API HTTP response ended before a terminal event")
++}
+diff --git a/backend/internal/service/codex_api_websocket_bridge_audit_limits_test.go b/backend/internal/service/codex_api_websocket_bridge_audit_limits_test.go
+new file mode 100644
+index 000000000..e7dc5c0e9
+--- /dev/null
++++ b/backend/internal/service/codex_api_websocket_bridge_audit_limits_test.go
+@@ -0,0 +1,23 @@
++package service
++
++import (
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++func TestCodexAPIWSBridgeAuditResponseLimitCannotEmitTruncatedTerminal(t *testing.T) {
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(*http.Request, int64) (*http.Response, error) {
++		padding := ":" + strings.Repeat(" ", int(CodexAPIResponsesBodyLimit)-128) + "\n"
++		terminal := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"truncated\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"" + strings.Repeat("x", 300) + "\"}]}]}}\n\n"
++		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(io.MultiReader(strings.NewReader(padding), strings.NewReader(terminal)))}, nil
++	}})
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","stream":true,"model":"gpt-5","input":[]}`)
++	event := codexAPIBridgeRead(t, bridge)
++	require.True(t, gjson.ValidBytes(event), "bounded read forwarded an invalid partial SSE event: %s", event)
++	require.Equal(t, "response.failed", gjson.GetBytes(event, "type").String(), "response byte overflow must not report successful completion")
++}
+diff --git a/backend/internal/service/codex_api_websocket_bridge_audit_metrics_test.go b/backend/internal/service/codex_api_websocket_bridge_audit_metrics_test.go
+new file mode 100644
+index 000000000..e67d71c25
+--- /dev/null
++++ b/backend/internal/service/codex_api_websocket_bridge_audit_metrics_test.go
+@@ -0,0 +1,86 @@
++package service
++
++import (
++	"context"
++	"strings"
++	"testing"
++	"time"
++
++	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++func TestCodexAPIWSBridgeAuditLocalRejectionPreservesActiveTiming(t *testing.T) {
++	t.Run("before_created", func(t *testing.T) { testCodexAPILocalRejectionTiming(t, true) })
++	t.Run("after_created", func(t *testing.T) { testCodexAPILocalRejectionTiming(t, false) })
++}
++
++func testCodexAPILocalRejectionTiming(t *testing.T, beforeCreated bool) {
++	bridge, native := newCodexAPIBridgeFixture(t, 500, codexAPIBridgeHTTPFixture{})
++	client := &codexAPIBridgeNativeFixture{read: make(chan []byte, 8), written: make(chan []byte, 8), closed: make(chan struct{})}
++	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
++	turns := make(chan openaiwsv2.RelayTurnResult, 8)
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		_, _ = openaiwsv2.Relay(ctx, client, bridge, nil, openaiwsv2.RelayOptions{
++			FirstMessageSent: true,
++			OnTurnComplete: func(turn openaiwsv2.RelayTurnResult) {
++				turns <- turn
++			},
++		})
++	}()
++	t.Cleanup(func() {
++		cancel()
++		select {
++		case <-done:
++		case <-time.After(time.Second):
++			t.Error("relay did not release on cancellation")
++		}
++	})
++	client.read <- []byte(`{"type":"response.create","model":"gpt-5","input":[]}`)
++	<-native.written
++	created := func() {
++		native.read <- []byte(`{"type":"response.created","response":{"id":"active-turn"}}`)
++		require.Equal(t, "response.created", gjson.GetBytes(<-client.written, "type").String())
++	}
++	token := func() {
++		native.read <- []byte(`{"type":"response.output_text.delta","response_id":"active-turn","delta":"token"}`)
++		require.Equal(t, "response.output_text.delta", gjson.GetBytes(<-client.written, "type").String())
++	}
++	if !beforeCreated {
++		created()
++	}
++	time.Sleep(30 * time.Millisecond)
++	if !beforeCreated {
++		token()
++	}
++	client.read <- []byte(`{"type":"response.create","model":"rejected-model","stream_id":"other","input":"` + strings.Repeat("x", 600) + `"}`)
++	rejection := <-client.written
++	require.Equal(t, "bridge_busy", gjson.GetBytes(rejection, "error.code").String())
++	if beforeCreated {
++		created()
++		token()
++	}
++	native.read <- []byte(`{"type":"response.completed","response":{"id":"active-turn","output":[],"usage":{"input_tokens":9,"output_tokens":1}}}`)
++	require.Equal(t, "response.completed", gjson.GetBytes(<-client.written, "type").String())
++	for {
++		select {
++		case turn := <-turns:
++			if turn.TerminalEventType != "response.completed" {
++				continue
++			}
++			require.Equal(t, "active-turn", turn.RequestID)
++			require.Equal(t, "gpt-5", turn.RequestModel)
++			require.Equal(t, 9, turn.Usage.InputTokens)
++			require.Equal(t, 1, turn.Usage.OutputTokens)
++			require.NotNil(t, turn.FirstTokenMs, "a connection-local rejection must not settle the active upstream turn")
++			require.GreaterOrEqual(t, *turn.FirstTokenMs, 30)
++			require.GreaterOrEqual(t, turn.Duration, 30*time.Millisecond)
++			return
++		case <-ctx.Done():
++			t.Fatal("active upstream turn did not complete")
++		}
++	}
++}
+diff --git a/backend/internal/service/codex_api_websocket_bridge_audit_test.go b/backend/internal/service/codex_api_websocket_bridge_audit_test.go
+new file mode 100644
+index 000000000..0d456e7f9
+--- /dev/null
++++ b/backend/internal/service/codex_api_websocket_bridge_audit_test.go
+@@ -0,0 +1,318 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++	"time"
++	"unsafe"
++
++	coderws "github.com/coder/websocket"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++func TestCodexAPIWSBridgeAuditRetainsNativeSeparateOutputItems(t *testing.T) {
++	bodies := make(chan []byte, 2)
++	count := 0
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(r *http.Request, _ int64) (*http.Response, error) {
++		body, err := io.ReadAll(r.Body)
++		require.NoError(t, err)
++		bodies <- body
++		count++
++		if count == 1 {
++			frames := "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"tool-item\",\"call_id\":\"call-1\",\"name\":\"tool\",\"arguments\":\"{}\"}}\n\n" +
++				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"native-complete\",\"output\":[]}}\n\n"
++			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(frames))}, nil
++		}
++		return codexAPIBridgeResponse("next", `[]`), nil
++	}})
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","stream":true,"model":"gpt-5","input":[]}`)
++	require.Equal(t, "response.output_item.done", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "type").String())
++	require.Equal(t, "response.completed", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "type").String())
++	<-bodies
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","stream":true,"model":"gpt-5","previous_response_id":"native-complete","input":[{"type":"function_call_output","call_id":"call-1","output":"result"}]}`)
++	event := codexAPIBridgeRead(t, bridge)
++	require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String(), "next turn lost captured native tool context: %s", event)
++	body := <-bodies
++	require.Equal(t, "function_call", gjson.GetBytes(body, "input.0.type").String())
++	require.Equal(t, "function_call_output", gjson.GetBytes(body, "input.1.type").String())
++}
++
++func TestCodexAPIWSBridgeAuditInterruptCancelsHTTP(t *testing.T) {
++	started := make(chan context.Context, 1)
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(r *http.Request, _ int64) (*http.Response, error) {
++		started <- r.Context()
++		reader, writer := io.Pipe()
++		go func() {
++			defer func() { _ = writer.Close() }()
++			_, _ = io.WriteString(writer, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"interrupt-me\"}}\n\n")
++			<-r.Context().Done()
++		}()
++		return &http.Response{StatusCode: http.StatusOK, Body: reader}, nil
++	}})
++	require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(`{"type":"response.create","stream":true,"model":"gpt-5","stream_id":"interrupt-lane","input":[]}`)))
++	requestContext := <-started
++	require.Equal(t, "response.created", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "type").String())
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.interrupt","response_id":"interrupt-me","mode":"discard_partial_items"}`)
++	event := codexAPIBridgeRead(t, bridge)
++	select {
++	case <-requestContext.Done():
++	case <-time.After(100 * time.Millisecond):
++		t.Fatalf("Codex interrupt did not cancel upstream HTTP; response: %s", event)
++	}
++	require.Equal(t, "response.incomplete", gjson.GetBytes(event, "type").String())
++	require.Equal(t, "interrupted", gjson.GetBytes(event, "response.incomplete_details.reason").String())
++	require.Equal(t, "interrupt-lane", gjson.GetBytes(event, "stream_id").String())
++}
++
++func TestCodexAPIWSBridgeAuditNativeInterruptRemainsUnchanged(t *testing.T) {
++	bridge, native := newCodexAPIBridgeFixture(t, 1000, codexAPIBridgeHTTPFixture{})
++	for _, payload := range []string{
++		`{"type":"response.create","model":"gpt-5","stream_id":"native","input":"hello"}`,
++		`{"type":"response.interrupt","response_id":"native-response","mode":"discard_partial_items"}`,
++	} {
++		require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(payload)))
++		require.Equal(t, payload, string(<-native.written))
++	}
++}
++
++func TestCodexAPIWSBridgeAuditBareErrorEOFEndsClientTurn(t *testing.T) {
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(*http.Request, int64) (*http.Response, error) {
++		frames := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"failed-turn\"}}\n\n" +
++			"event: error\ndata: {\"type\":\"error\",\"sequence_number\":1,\"code\":\"upstream_error\",\"message\":\"upstream deadline exceeded\",\"param\":null}\n\n"
++		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(frames))}, nil
++	}})
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","stream":true,"model":"gpt-5","input":[]}`)
++	require.Equal(t, "response.created", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "type").String())
++	require.Equal(t, "error", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "type").String())
++	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
++	defer cancel()
++	_, event, err := bridge.ReadFrame(ctx)
++	require.NoError(t, err, "the HTTP stream ended but the client turn never received a terminal event")
++	require.Equal(t, "response.failed", gjson.GetBytes(event, "type").String())
++	require.Equal(t, "failed-turn", gjson.GetBytes(event, "response.id").String())
++	require.Contains(t, gjson.GetBytes(event, "response.error.message").String(), "deadline")
++}
++
++func TestCodexAPIWSBridgeAuditUnknownParentRetainsNoInput(t *testing.T) {
++	bridge, native := newCodexAPIBridgeFixture(t, 1000, codexAPIBridgeHTTPFixture{})
++	payload := []byte(`{"type":"response.create","model":"gpt-5","previous_response_id":"external","input":[{"role":"user","content":"tiny"}],"metadata":"` + strings.Repeat("x", 500) + `"}`)
++	require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, payload))
++	require.Equal(t, payload, <-native.written)
++	bridge.mu.Lock()
++	defer bridge.mu.Unlock()
++	require.False(t, bridge.pending[""].complete)
++	require.Empty(t, bridge.pending[""].input, "incomplete snapshots must not pin entire native frames")
++}
++
++func TestCodexAPIWSBridgeAuditCompletedOutputIsCompleteAndOrdered(t *testing.T) {
++	for _, tc := range []struct {
++		name     string
++		events   []string
++		terminal string
++		complete bool
++		ids      []string
++	}{
++		{
++			name: "indexed_items_out_of_order_without_terminal_output",
++			events: []string{
++				`{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"second","role":"assistant","content":[]}}`,
++				`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"first","summary":[]}}`,
++			},
++			terminal: `{"type":"response.completed","response":{"id":"r"}}`, complete: true, ids: []string{"first", "second"},
++		},
++		{
++			name: "unfinished_item",
++			events: []string{
++				`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"unfinished"}}`,
++			},
++			terminal: `{"type":"response.completed","response":{"id":"r","output":[]}}`,
++		},
++		{
++			name: "missing_index_zero",
++			events: []string{
++				`{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"second","content":[]}}`,
++			},
++			terminal: `{"type":"response.completed","response":{"id":"r","output":[]}}`,
++		},
++		{
++			name: "uncollected_delta",
++			events: []string{
++				`{"type":"response.output_text.delta","output_index":0,"delta":"unretained"}`,
++			},
++			terminal: `{"type":"response.completed","response":{"id":"r","output":[]}}`,
++		},
++		{
++			name:     "invalid_terminal_item",
++			terminal: `{"type":"response.completed","response":{"id":"r","output":[{"type":"message","id":"valid"},{"id":"invalid"}]}}`,
++		},
++		{
++			name: "invalid_done_item_is_not_empty_output",
++			events: []string{
++				`{"type":"response.output_item.done","output_index":0,"item":{"id":"invalid"}}`,
++			},
++			terminal: `{"type":"response.completed","response":{"id":"r","output":[]}}`,
++		},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			turn := &codexAPIBridgeTurn{}
++			for _, event := range tc.events {
++				turn.observeOutput(gjson.Get(event, "type").String(), []byte(event))
++			}
++			items, complete := turn.completedOutput("response.completed", []byte(tc.terminal))
++			require.Equal(t, tc.complete, complete)
++			if complete {
++				ids := make([]string, 0, len(items))
++				for _, item := range items {
++					ids = append(ids, gjson.GetBytes(item, "id").String())
++				}
++				require.Equal(t, tc.ids, ids)
++			}
++		})
++	}
++}
++
++func TestCodexAPIWSBridgeAuditReplayBudgetIncludesCollectorKeys(t *testing.T) {
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{})
++	key := strings.Repeat("x", int(CodexAPIResponsesBodyLimit))
++	bridge.pending[""] = &codexAPIBridgeTurn{complete: true, input: []json.RawMessage{json.RawMessage(`{}`)}, collector: openAIWSToolCallReplayCollector{allSeen: map[string]struct{}{key: {}}}}
++	bridge.enforceReplayBudget()
++	require.False(t, bridge.pending[""].complete)
++	require.Empty(t, bridge.pending[""].collector.allSeen)
++}
++
++func TestCodexAPIWSBridgeAuditRetainedKeysOwnTheirBytes(t *testing.T) {
++	raw := `{"type":"function_call","id":"item-id","call_id":"call-id","name":"tool","arguments":"` + strings.Repeat("x", 8192) + `"}`
++	item := gjson.Parse(raw)
++	start := uintptr(unsafe.Pointer(unsafe.StringData(item.Raw)))
++	end := start + uintptr(len(item.Raw))
++	assertOwned := func(key string) {
++		t.Helper()
++		ptr := uintptr(unsafe.Pointer(unsafe.StringData(key)))
++		require.False(t, ptr >= start && ptr < end, "retained key pins the uncounted full JSON string")
++	}
++	assertOwned(codexAPIOutputItemKey(item))
++	var collector openAIWSToolCallReplayCollector
++	collector.addAllItem(item)
++	collector.addItem(item)
++	for key := range collector.allSeen {
++		assertOwned(key)
++	}
++	for key := range collector.seen {
++		assertOwned(key)
++	}
++}
++
++func TestCodexAPIWSBridgeAuditPendingLivesUntilTerminalObservation(t *testing.T) {
++	started := make(chan context.Context, 1)
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(r *http.Request, _ int64) (*http.Response, error) {
++		started <- r.Context()
++		return codexAPIBridgeResponse("first", `[]`), nil
++	}})
++	require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5","input":"hello"}`)))
++	requestContext := <-started
++	frame := <-bridge.frames
++	select {
++	case <-requestContext.Done():
++	case <-time.After(time.Second):
++		t.Fatal("HTTP terminal sender did not finish")
++	}
++	bridge.mu.Lock()
++	pending := bridge.pending[""]
++	bridge.mu.Unlock()
++	require.Same(t, frame.turn, pending, "a new turn must not be admitted before the prior terminal is observed")
++	_, rejection, err := bridge.PrepareWriteFrame(t.Context(), coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5","input":"too early"}`))
++	require.NoError(t, err)
++	require.Equal(t, "bridge_busy", gjson.GetBytes(rejection, "error.code").String())
++	bridge.observe(frame.payload, frame.turn, frame.keepActive)
++	bridge.mu.Lock()
++	defer bridge.mu.Unlock()
++	require.Empty(t, bridge.pending)
++	require.Equal(t, "first", bridge.history[""].id)
++}
++
++func TestCodexAPIWSBridgeAuditCorrelationBounds(t *testing.T) {
++	for _, size := range []int{8190, 8191} {
++		t.Run(fmt.Sprint(size), func(t *testing.T) {
++			bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(*http.Request, int64) (*http.Response, error) {
++				return codexAPIBridgeResponse("bounded", `[]`), nil
++			}})
++			codexAPIBridgeWrite(t, bridge, fmt.Sprintf(`{"type":"response.create","model":"gpt-5","stream_id":%q,"input":"hello"}`, strings.Repeat("x", size)))
++			event := codexAPIBridgeRead(t, bridge)
++			if size == 8190 {
++				require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
++			} else {
++				require.Equal(t, "replay_limit", gjson.GetBytes(event, "error.code").String())
++			}
++		})
++	}
++}
++
++func TestCodexAPIWSBridgeAuditOversizedNativeCorrelationDisablesReplay(t *testing.T) {
++	for _, field := range []string{"stream_id", "response_id"} {
++		t.Run(field, func(t *testing.T) {
++			bridge, native := newCodexAPIBridgeFixture(t, 20000, codexAPIBridgeHTTPFixture{})
++			bridge.history["old"] = codexAPIReplayHistory{id: "old"}
++			payload := `{"type":"response.create","model":"gpt-5","input":"hello"}`
++			if field == "stream_id" {
++				payload = fmt.Sprintf(`{"type":"response.create","model":"gpt-5","stream_id":%q,"input":"hello"}`, strings.Repeat("x", 8193))
++			}
++			require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(payload)))
++			require.Equal(t, payload, string(<-native.written))
++			if field == "response_id" {
++				frame := fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, strings.Repeat("x", 8193))
++				native.read <- []byte(frame)
++				require.Equal(t, frame, string(codexAPIBridgeRead(t, bridge)))
++			}
++			bridge.mu.Lock()
++			historyCount := len(bridge.history)
++			bridge.mu.Unlock()
++			require.Zero(t, historyCount)
++			codexAPIBridgeWrite(t, bridge, fmt.Sprintf(`{"type":"response.create","model":"gpt-5","input":%q}`, strings.Repeat("y", 20001)))
++			require.Equal(t, "replay_limit", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "error.code").String())
++		})
++	}
++}
++
++func TestCodexAPIWSBridgeAuditOversizedHTTPResponseIDIsNotExposed(t *testing.T) {
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(*http.Request, int64) (*http.Response, error) {
++		return codexAPIBridgeResponse(strings.Repeat("x", 8193), `[]`), nil
++	}})
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","input":"hello"}`)
++	event := codexAPIBridgeRead(t, bridge)
++	require.Equal(t, "response.failed", gjson.GetBytes(event, "type").String())
++	require.Contains(t, gjson.GetBytes(event, "response.error.message").String(), "correlation limit")
++	require.LessOrEqual(t, len(gjson.GetBytes(event, "response.id").String()), 8192)
++}
++
++func TestCodexAPIWSBridgeAuditNativeBareErrorKeepsActiveTurn(t *testing.T) {
++	bridge, native := newCodexAPIBridgeFixture(t, 300, codexAPIBridgeHTTPFixture{do: func(*http.Request, int64) (*http.Response, error) {
++		return codexAPIBridgeResponse("http-next", `[]`), nil
++	}})
++	require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5","input":"hello"}`)))
++	<-native.written
++	for _, frame := range []string{
++		`{"type":"response.created","response":{"id":"native-active"}}`,
++		`{"type":"error","error":{"message":"recoverable provider event"}}`,
++	} {
++		native.read <- []byte(frame)
++		require.Equal(t, frame, string(codexAPIBridgeRead(t, bridge)))
++	}
++	next := fmt.Sprintf(`{"type":"response.create","model":"gpt-5","stream_id":"other","input":%q}`, strings.Repeat("x", 400))
++	codexAPIBridgeWrite(t, bridge, next)
++	require.Equal(t, "bridge_busy", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "error.code").String())
++	select {
++	case <-native.closed:
++		t.Fatal("native active response was closed after a nonterminal error")
++	default:
++	}
++	native.read <- []byte(`{"type":"response.completed","response":{"id":"native-active","output":[]}}`)
++	codexAPIBridgeRead(t, bridge)
++	codexAPIBridgeWrite(t, bridge, next)
++	require.Equal(t, "http-next", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "response.id").String())
++}
+diff --git a/backend/internal/service/codex_api_websocket_bridge_test.go b/backend/internal/service/codex_api_websocket_bridge_test.go
+new file mode 100644
+index 000000000..b63cbc689
+--- /dev/null
++++ b/backend/internal/service/codex_api_websocket_bridge_test.go
+@@ -0,0 +1,378 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/Wei-Shaw/sub2api/internal/config"
++	coderws "github.com/coder/websocket"
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++type codexAPIBridgeNativeFixture struct {
++	read    chan []byte
++	written chan []byte
++	closed  chan struct{}
++	once    sync.Once
++}
++
++func (f *codexAPIBridgeNativeFixture) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
++	select {
++	case body := <-f.read:
++		return coderws.MessageText, body, nil
++	case <-f.closed:
++		return 0, nil, io.EOF
++	case <-ctx.Done():
++		return 0, nil, ctx.Err()
++	}
++}
++
++func (f *codexAPIBridgeNativeFixture) WriteFrame(ctx context.Context, _ coderws.MessageType, body []byte) error {
++	select {
++	case f.written <- body:
++		return nil
++	case <-ctx.Done():
++		return ctx.Err()
++	}
++}
++
++func (f *codexAPIBridgeNativeFixture) Close() error {
++	f.once.Do(func() { close(f.closed) })
++	return nil
++}
++
++type codexAPIBridgeHTTPFixture struct {
++	HTTPUpstream
++	do func(*http.Request, int64) (*http.Response, error)
++}
++
++func (f codexAPIBridgeHTTPFixture) Do(r *http.Request, _ string, account int64, _ int) (*http.Response, error) {
++	return f.do(r, account)
++}
++
++func newCodexAPIBridgeFixture(t *testing.T, threshold int64, upstream codexAPIBridgeHTTPFixture) (*codexAPIWSHTTPBridge, *codexAPIBridgeNativeFixture) {
++	t.Helper()
++	config := &config.Config{}
++	config.Gateway.OpenAIWS.HTTPBridgeEnabled = true
++	config.Gateway.OpenAIWS.HTTPBridgeThresholdBytes = threshold
++	svc := &OpenAIGatewayService{cfg: config, httpUpstream: upstream}
++	native := &codexAPIBridgeNativeFixture{read: make(chan []byte, 8), written: make(chan []byte, 8), closed: make(chan struct{})}
++	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeCodexAPI, Credentials: map[string]any{"base_url": "https://gateway.example", "api_key": "fixture-key"}}
++	incoming := httptest.NewRequest(http.MethodGet, "/v1/responses?business=keep&api_key=local", nil)
++	incoming.Header.Set("Authorization", "Bearer local-key")
++	incoming.Header.Set("Sec-WebSocket-Key", "fixture-handshake")
++	bridge, ok := svc.CodexAPIWebSocketTransport(t.Context(), native, account, incoming, "/v1/responses").(*codexAPIWSHTTPBridge)
++	require.True(t, ok)
++	t.Cleanup(func() { _ = bridge.Close() })
++	return bridge, native
++}
++
++func codexAPIBridgeResponse(id, output string) *http.Response {
++	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(fmt.Sprintf("event: response.completed\ndata: {\"response\":{\"id\":%q,\"output\":%s}}\n\n", id, output)))}
++}
++
++func codexAPIBridgeRead(t *testing.T, bridge *codexAPIWSHTTPBridge) []byte {
++	t.Helper()
++	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
++	defer cancel()
++	_, payload, err := bridge.ReadFrame(ctx)
++	require.NoError(t, err)
++	return payload
++}
++
++func codexAPIBridgeWrite(t *testing.T, bridge *codexAPIWSHTTPBridge, payload string) {
++	t.Helper()
++	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
++	t.Cleanup(cancel)
++	// Local rejection events use the same backpressure as upstream frames.
++	go func() { require.NoError(t, bridge.WriteFrame(ctx, coderws.MessageText, []byte(payload))) }()
++}
++
++func TestCodexAPIWSBridgePreservesTransportIdentityAndSchema(t *testing.T) {
++	for _, prepared := range []bool{false, true} {
++		t.Run(fmt.Sprint(prepared), func(t *testing.T) {
++			requests := make(chan *http.Request, 1)
++			bodies := make(chan []byte, 1)
++			bridge, native := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(r *http.Request, account int64) (*http.Response, error) {
++				require.EqualValues(t, 42, account)
++				body, err := io.ReadAll(r.Body)
++				require.NoError(t, err)
++				requests <- r
++				bodies <- body
++				for _, item := range gjson.GetBytes(body, "input").Array() {
++					if !item.IsObject() {
++						return &http.Response{StatusCode: 422, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"input items must be objects"}}`))}, nil
++					}
++				}
++				return codexAPIBridgeResponse("resp_http", `[]`), nil
++			}})
++			codexAPIBridgeWrite(t, bridge, fmt.Sprintf(`{"type":"response.create","stream":%t,"model":"gpt-5","stream_id":"lane-a","client_metadata":{"trace":"keep"},"reasoning":{"effort":"none"},"input":"hello"}`, prepared))
++			event := codexAPIBridgeRead(t, bridge)
++			require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
++			require.Equal(t, "lane-a", gjson.GetBytes(event, "stream_id").String())
++			req, body := <-requests, <-bodies
++			wantPath := "/v1/responses"
++			if prepared {
++				wantPath = "/backend-api/codex/responses"
++			}
++			require.Equal(t, wantPath, req.URL.Path)
++			require.Equal(t, "business=keep", req.URL.RawQuery)
++			require.Equal(t, "Bearer fixture-key", req.Header.Get("Authorization"))
++			require.Empty(t, req.Header.Get("Sec-WebSocket-Key"))
++			require.Equal(t, "identity", req.Header.Get("Accept-Encoding"))
++			require.Equal(t, "keep", gjson.GetBytes(body, "client_metadata.trace").String())
++			require.Equal(t, "none", gjson.GetBytes(body, "reasoning.effort").String())
++			require.False(t, gjson.GetBytes(body, "stream_id").Exists())
++			require.False(t, gjson.GetBytes(body, "type").Exists())
++			require.True(t, gjson.GetBytes(body, "stream").Bool())
++			select {
++			case <-native.closed:
++			default:
++				t.Fatal("HTTP bridge retained native concurrency permit")
++			}
++		})
++	}
++}
++
++func TestCodexAPIWSBridgeMidSessionReplaysCompleteImageAndToolHistory(t *testing.T) {
++	bodies := make(chan []byte, 2)
++	turn := 0
++	bridge, native := newCodexAPIBridgeFixture(t, 1200, codexAPIBridgeHTTPFixture{do: func(r *http.Request, _ int64) (*http.Response, error) {
++		body, err := io.ReadAll(r.Body)
++		require.NoError(t, err)
++		bodies <- body
++		turn++
++		return codexAPIBridgeResponse(fmt.Sprintf("resp_http_%d", turn), `[{"type":"message","id":"http_output","role":"assistant","content":[{"type":"output_text","text":"done"}]}]`), nil
++	}})
++	initial := `{"type":"response.create","model":"gpt-5","stream":true,"stream_id":"lane","input":[{"role":"user","content":[{"type":"input_image","image_url":"` + strings.Repeat("x", 700) + `"}]}]}`
++	require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(initial)))
++	require.Equal(t, initial, string(<-native.written))
++	native.read <- []byte(`{"type":"response.output_item.done","stream_id":"lane","item":{"type":"function_call","id":"call-item","call_id":"call-1","name":"tool","arguments":"{}"}}`)
++	codexAPIBridgeRead(t, bridge)
++	native.read <- []byte(`{"type":"response.completed","stream_id":"lane","response":{"id":"resp_native","output":[{"type":"reasoning","id":"reasoning","encrypted_content":"opaque"},{"type":"function_call","id":"call-item","call_id":"call-1","name":"tool","arguments":"{}"}]}}`)
++	codexAPIBridgeRead(t, bridge)
++	second := `{"type":"response.create","model":"gpt-5","stream":true,"stream_id":"lane","previous_response_id":"resp_native","input":[{"type":"function_call_output","call_id":"call-1","output":"` + strings.Repeat("y", 350) + `"}]}`
++	codexAPIBridgeWrite(t, bridge, second)
++	require.Equal(t, "resp_http_1", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "response.id").String())
++	body := <-bodies
++	require.False(t, gjson.GetBytes(body, "previous_response_id").Exists())
++	require.Equal(t, 4, len(gjson.GetBytes(body, "input").Array()))
++	require.Equal(t, 700, len(gjson.GetBytes(body, "input.0.content.0.image_url").String()))
++	require.Equal(t, "reasoning", gjson.GetBytes(body, "input.1.type").String())
++	require.Equal(t, "function_call", gjson.GetBytes(body, "input.2.type").String())
++	require.Equal(t, "function_call_output", gjson.GetBytes(body, "input.3.type").String())
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","stream_id":"lane","previous_response_id":"resp_http_1","input":"continue"}`)
++	codexAPIBridgeRead(t, bridge)
++	lastBody := <-bodies
++	require.Equal(t, 6, len(gjson.GetBytes(lastBody, "input").Array()))
++	require.Equal(t, "user", gjson.GetBytes(lastBody, "input.5.role").String())
++	require.Equal(t, "continue", gjson.GetBytes(lastBody, "input.5.content.0.text").String())
++}
++
++func TestCodexAPIWSBridgeRejectsUnavailableOrForeignHistory(t *testing.T) {
++	for _, lane := range []string{"lane", "other"} {
++		t.Run(lane, func(t *testing.T) {
++			bridge, native := newCodexAPIBridgeFixture(t, 100, codexAPIBridgeHTTPFixture{do: func(*http.Request, int64) (*http.Response, error) {
++				t.Error("missing history reached HTTP")
++				return nil, io.EOF
++			}})
++			bridge.history["\"lane\""] = codexAPIReplayHistory{id: "known", input: []json.RawMessage{json.RawMessage(`{"role":"user","content":"private"}`)}}
++			codexAPIBridgeWrite(t, bridge, fmt.Sprintf(`{"type":"response.create","model":"gpt-5","stream_id":%q,"previous_response_id":"unknown","input":"%s"}`, lane, strings.Repeat("x", 100)))
++			require.Equal(t, "previous_response_not_found", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "error.code").String())
++			select {
++			case <-native.closed:
++				t.Fatal("history error closed native transport")
++			default:
++			}
++		})
++	}
++}
++
++func TestCodexAPIWSBridgeNativeWarmupAndBusyRejections(t *testing.T) {
++	bridge, native := newCodexAPIBridgeFixture(t, 300, codexAPIBridgeHTTPFixture{})
++	warmup := `{"type":"response.create","generate":false,"model":"gpt-5","input":[]}`
++	require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(warmup)))
++	require.Equal(t, warmup, string(<-native.written))
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","stream_id":"other","input":"`+strings.Repeat("x", 400)+`"}`)
++	require.Equal(t, "bridge_busy", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "error.code").String())
++	bridge.mu.Lock()
++	require.Len(t, bridge.pending, 1, "local rejection must not finalize a native turn")
++	bridge.mu.Unlock()
++	native.read <- []byte(`{"type":"response.completed","response":{"id":"warmup","output":[]}}`)
++	codexAPIBridgeRead(t, bridge)
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","generate":false,"model":"gpt-5","input":"`+strings.Repeat("x", 400)+`"}`)
++	require.Equal(t, "unsupported_warmup", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "error.code").String())
++}
++
++func TestCodexAPIWSBridgeCancellationAndDisconnect(t *testing.T) {
++	started := make(chan struct{})
++	canceled := make(chan struct{})
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(r *http.Request, _ int64) (*http.Response, error) {
++		close(started)
++		<-r.Context().Done()
++		close(canceled)
++		return nil, r.Context().Err()
++	}})
++	require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5","stream_id":"lane","input":[]}`)))
++	<-started
++	require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(`{"type":"response.cancel","stream_id":"lane"}`)))
++	require.Equal(t, "response.incomplete", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "type").String())
++	<-canceled
++	require.NoError(t, bridge.Close())
++	_, _, err := bridge.ReadFrame(t.Context())
++	require.ErrorIs(t, err, context.Canceled)
++}
++
++func TestCodexAPIWSBridgeReplayBudgetInvalidatesIncompleteHistory(t *testing.T) {
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{})
++	bridge.history["a"] = codexAPIReplayHistory{id: "a", input: []json.RawMessage{make([]byte, CodexAPIResponsesBodyLimit+1)}}
++	bridge.pending["b"] = &codexAPIBridgeTurn{complete: true, input: []json.RawMessage{json.RawMessage(`{}`)}}
++	bridge.enforceReplayBudget()
++	require.Empty(t, bridge.history)
++	require.False(t, bridge.pending["b"].complete)
++	require.Empty(t, bridge.pending["b"].input)
++}
++
++func TestCodexAPIWSBridgeRetriesOnlyGatewayPermitRelease(t *testing.T) {
++	count := 0
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(*http.Request, int64) (*http.Response, error) {
++		count++
++		if count == 1 {
++			return &http.Response{StatusCode: 429, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"gateway_busy","message":"busy"}}`))}, nil
++		}
++		return codexAPIBridgeResponse("retried", `[]`), nil
++	}})
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","input":[]}`)
++	require.Equal(t, "retried", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "response.id").String())
++	require.Equal(t, 2, count)
++}
++
++func TestCodexAPIWSBridgeThresholdAndDisabledRoutes(t *testing.T) {
++	payload := []byte(`{"type":"response.create","model":"gpt-5","input":[]}`)
++	for _, delta := range []int{-1, 0, 1} {
++		t.Run(fmt.Sprint(delta), func(t *testing.T) {
++			bridge, native := newCodexAPIBridgeFixture(t, int64(len(payload)+delta), codexAPIBridgeHTTPFixture{do: func(*http.Request, int64) (*http.Response, error) {
++				return codexAPIBridgeResponse("bounded", `[]`), nil
++			}})
++			require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, payload))
++			if delta > 0 {
++				require.Equal(t, payload, <-native.written)
++			} else {
++				require.Equal(t, "bounded", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "response.id").String())
++			}
++			require.Same(t, native, bridge.service.CodexAPIWebSocketTransport(t.Context(), native, bridge.account, bridge.incoming, "/v1/realtime"))
++			bridge.service.cfg.Gateway.OpenAIWS.HTTPBridgeEnabled = false
++			require.Same(t, native, bridge.service.CodexAPIWebSocketTransport(t.Context(), native, bridge.account, bridge.incoming, "/v1/responses"))
++		})
++	}
++}
++
++func TestCodexAPIWSBridgeRequiresSuccessfulCompleteOutput(t *testing.T) {
++	for _, terminal := range []string{
++		`{"type":"response.failed","response":{"id":"resp","output":[]}}`,
++		`{"type":"response.incomplete","response":{"id":"resp","output":[]}}`,
++		`{"type":"response.completed","response":{"id":"resp"}}`,
++	} {
++		t.Run(gjson.Get(terminal, "type").String(), func(t *testing.T) {
++			bridge, native := newCodexAPIBridgeFixture(t, 200, codexAPIBridgeHTTPFixture{})
++			require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5","input":[]}`)))
++			native.read <- []byte(terminal)
++			codexAPIBridgeRead(t, bridge)
++			codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","previous_response_id":"resp","input":"`+strings.Repeat("x", 250)+`"}`)
++			require.Equal(t, "previous_response_not_found", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "error.code").String())
++		})
++	}
++}
++
++func TestCodexAPIWSBridgeNativeUnknownContinuationAndLaneIsolation(t *testing.T) {
++	bridge, native := newCodexAPIBridgeFixture(t, 500, codexAPIBridgeHTTPFixture{})
++	request := `{"type":"response.create","model":"gpt-5","stream_id":"a","previous_response_id":"outside","input":[]}`
++	require.NoError(t, bridge.WriteFrame(t.Context(), coderws.MessageText, []byte(request)))
++	require.Equal(t, request, string(<-native.written))
++	native.read <- []byte(`{"type":"response.completed","stream_id":"a","response":{"id":"resp_external","output":[]}}`)
++	codexAPIBridgeRead(t, bridge)
++	bridge.mu.Lock()
++	require.Empty(t, bridge.history)
++	bridge.history[`"a"`] = codexAPIReplayHistory{id: "known", input: []json.RawMessage{json.RawMessage(`{"role":"user","content":"private"}`)}}
++	bridge.mu.Unlock()
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","stream_id":"b","previous_response_id":"known","input":"`+strings.Repeat("x", 600)+`"}`)
++	require.Equal(t, "previous_response_not_found", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "error.code").String())
++	other, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{})
++	codexAPIBridgeWrite(t, other, `{"type":"response.create","model":"gpt-5","stream_id":"a","previous_response_id":"known","input":[]}`)
++	require.Equal(t, "previous_response_not_found", gjson.GetBytes(codexAPIBridgeRead(t, other), "error.code").String())
++}
++
++func TestCodexAPIWSBridgeHTTPModeRejectsWarmupAndReleasesOnDisconnect(t *testing.T) {
++	started := make(chan context.Context, 1)
++	count := 0
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(r *http.Request, _ int64) (*http.Response, error) {
++		count++
++		if count == 1 {
++			return codexAPIBridgeResponse("first", `[]`), nil
++		}
++		started <- r.Context()
++		<-r.Context().Done()
++		return nil, r.Context().Err()
++	}})
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","input":[]}`)
++	codexAPIBridgeRead(t, bridge)
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","generate":false,"input":[]}`)
++	require.Equal(t, "unsupported_warmup", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "error.code").String())
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","input":[]}`)
++	requestContext := <-started
++	require.NoError(t, bridge.Close())
++	select {
++	case <-requestContext.Done():
++	case <-time.After(time.Second):
++		t.Fatal("HTTP request retained after connection close")
++	}
++	require.Equal(t, 2, count)
++}
++
++func TestCodexAPIWSBridgeRetainsCustomAndUnpairedToolCalls(t *testing.T) {
++	bodies := make(chan []byte, 1)
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(r *http.Request, _ int64) (*http.Response, error) {
++		body, err := io.ReadAll(r.Body)
++		require.NoError(t, err)
++		bodies <- body
++		return codexAPIBridgeResponse("next", `[]`), nil
++	}})
++	bridge.history[`"a"`] = codexAPIReplayHistory{id: "known", input: []json.RawMessage{
++		json.RawMessage(`{"type":"custom_tool_call","id":"c","call_id":"custom","name":"custom","input":"run"}`),
++		json.RawMessage(`{"type":"function_call","id":"f","call_id":"pending","name":"pending","arguments":"{}"}`),
++	}}
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","stream_id":"\u0061","previous_response_id":"known","input":[{"type":"custom_tool_call_output","call_id":"custom","output":"ok"}]}`)
++	event := codexAPIBridgeRead(t, bridge)
++	require.Equal(t, "next", gjson.GetBytes(event, "response.id").String())
++	items := gjson.GetBytes(<-bodies, "input").Array()
++	require.Len(t, items, 3)
++	require.Equal(t, "custom_tool_call", items[0].Get("type").String())
++	require.Equal(t, "pending", items[1].Get("call_id").String())
++	require.Equal(t, "custom_tool_call_output", items[2].Get("type").String())
++}
++
++func TestCodexAPIWSBridgeRejectsOpaqueItemReferences(t *testing.T) {
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{})
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","input":[{"type":"item_reference","id":"unobserved"}]}`)
++	require.Equal(t, "incomplete_replay", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "error.code").String())
++}
++
++func TestCodexAPIWSBridgeForwardsTerminalAfterBareError(t *testing.T) {
++	bridge, _ := newCodexAPIBridgeFixture(t, 1, codexAPIBridgeHTTPFixture{do: func(*http.Request, int64) (*http.Response, error) {
++		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"error\",\"error\":{\"message\":\"recoverable\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"final\",\"output\":[],\"usage\":{\"input_tokens\":5}}}\n\n"))}, nil
++	}})
++	codexAPIBridgeWrite(t, bridge, `{"type":"response.create","model":"gpt-5","input":[]}`)
++	require.Equal(t, "error", gjson.GetBytes(codexAPIBridgeRead(t, bridge), "type").String())
++	terminal := codexAPIBridgeRead(t, bridge)
++	require.Equal(t, "response.completed", gjson.GetBytes(terminal, "type").String())
++	require.EqualValues(t, 5, gjson.GetBytes(terminal, "response.usage.input_tokens").Int())
++}
+diff --git a/backend/internal/service/openai_ws_http_bridge.go b/backend/internal/service/openai_ws_http_bridge.go
+index 066c769c2..07fa7f751 100644
+--- a/backend/internal/service/openai_ws_http_bridge.go
++++ b/backend/internal/service/openai_ws_http_bridge.go
+@@ -253,7 +253,9 @@ func prepareOpenAIWSHTTPBridgeBody(account *Account, payload []byte) ([]byte, er
+ 	delete(body, "type")
+ 	delete(body, "generate")
+ 	delete(body, "previous_response_id")
+-	deleteOpenAIResponsesNoneReasoningEffortFromObject(account, body)
++	if account == nil || !account.IsCodexAPI() {
++		deleteOpenAIResponsesNoneReasoningEffortFromObject(account, body)
++	}
+ 	body["stream"] = true
+ 	return json.Marshal(body)
+ }
+@@ -314,7 +316,7 @@ func (c *openAIWSToolCallReplayCollector) addAllItem(item gjson.Result) {
+ 	if _, ok := c.allSeen[key]; ok {
+ 		return
+ 	}
+-	c.allSeen[key] = struct{}{}
++	c.allSeen[strings.Clone(key)] = struct{}{}
+ 	c.allItems = append(c.allItems, json.RawMessage(raw))
+ }
+ 
+@@ -342,7 +344,7 @@ func (c *openAIWSToolCallReplayCollector) addItem(item gjson.Result) {
+ 	if _, ok := c.seen[key]; ok {
+ 		return
+ 	}
+-	c.seen[key] = struct{}{}
++	c.seen[strings.Clone(key)] = struct{}{}
+ 	c.items = append(c.items, json.RawMessage(raw))
+ }
+ 
+diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay.go b/backend/internal/service/openai_ws_v2/passthrough_relay.go
+index e9dc6890d..448e0c2f7 100644
+--- a/backend/internal/service/openai_ws_v2/passthrough_relay.go
++++ b/backend/internal/service/openai_ws_v2/passthrough_relay.go
+@@ -24,6 +24,14 @@ type FrameConn interface {
+ 	Close() error
+ }
+ 
++type PreparedFrameWrite func() error
++
++// FrameWritePreparer rejects connection-local protocol errors before the relay
++// attributes a new request model or start time to an accepted upstream turn.
++type FrameWritePreparer interface {
++	PrepareWriteFrame(context.Context, coderws.MessageType, []byte) (PreparedFrameWrite, []byte, error)
++}
++
+ type Usage struct {
+ 	InputTokens              int
+ 	ImageInputTokens         int
+@@ -205,7 +213,23 @@ func Relay(
+ 		defer cancel()
+ 		return upstreamConn.WriteFrame(writeCtx, msgType, payload)
+ 	}
++	var writeClient func(coderws.MessageType, []byte) error
+ 	writeClientFrameUpstream := func(msgType coderws.MessageType, payload []byte) error {
++		acceptedAt := time.Time{}
++		write := func() error { return writeUpstream(msgType, payload) }
++		if preparer, ok := upstreamConn.(FrameWritePreparer); ok {
++			acceptedAt = nowFn()
++			writeCtx, cancel := context.WithTimeout(relayCtx, writeTimeout)
++			defer cancel()
++			prepared, rejection, err := preparer.PrepareWriteFrame(writeCtx, msgType, payload)
++			if err != nil {
++				return err
++			}
++			if len(rejection) > 0 {
++				return writeClient(coderws.MessageText, rejection)
++			}
++			write = prepared
++		}
+ 		isResponseCreate := isClientResponseCreateFrame(msgType, payload)
+ 		if isResponseCreate {
+ 			state.setRequestModel(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
+@@ -214,7 +238,10 @@ func Relay(
+ 				turnStartedAt = options.TakeNextTurnStartedAt()
+ 			}
+ 			if turnStartedAt.IsZero() {
+-				turnStartedAt = nowFn()
++				turnStartedAt = acceptedAt
++				if turnStartedAt.IsZero() {
++					turnStartedAt = nowFn()
++				}
+ 			}
+ 			state.setPendingTurnStartedAt(turnStartedAt)
+ 			// The policy-enforcing client connection has accepted this turn.
+@@ -222,7 +249,7 @@ func Relay(
+ 			// with the transport returning from WriteFrame.
+ 			state.turnWroteDownstream.Store(false)
+ 		}
+-		err := writeUpstream(msgType, payload)
++		err := write()
+ 		if err != nil && isResponseCreate {
+ 			// The relay exits on this error, but retain the previous turn's state
+ 			// for accurate diagnostics while the two relay goroutines settle.
+@@ -230,7 +257,7 @@ func Relay(
+ 		}
+ 		return err
+ 	}
+-	writeClient := func(msgType coderws.MessageType, payload []byte) error {
++	writeClient = func(msgType coderws.MessageType, payload []byte) error {
+ 		// 下行写超时故意不挂在 relayCtx 上：coder/websocket 在已武装的 write
+ 		// ctx 被取消时会直接硬关连接（context.AfterFunc 的 stop 不等待执行中
+ 		// 的回调），外部取消若落在一次已成功写入的解除武装窗口内，会连同尚未
+-- 
+2.43.0
+
