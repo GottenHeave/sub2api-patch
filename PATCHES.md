@@ -23,6 +23,7 @@ Row 18 was added on 2026-09-21.
 The early new-model import was removed on 2026-09-23 after upstream included it.
 Row 19 was added on 2026-10-01.
 Row 20 was added on 2026-10-05 against Codex API 592d61325adf.
+Row 20 was updated on 2026-10-19 for live SSE first-token and WS per-turn timing.
 Row 21 was added on 2026-10-05 to retain Realtime session inspection.
 Row 22 was added on 2026-10-05 to retain WebSocket handshake error bodies.
 
@@ -47,7 +48,7 @@ Row 22 was added on 2026-10-05 to retain WebSocket handshake error bodies.
 | 17: Dedicated Codex API accounts | Forward native/public Responses and model catalogs without local protocol transforms; enforce dedicated groups and credential validity | New handler/service/repository helpers and tests, guarded account/group/transport/routes/billing changes, account UI | 55 | +2449 / -60 |
 | 18: Codex API billing and entrypoints | Use the OAuth service-tier contract and select public/native Responses and model catalogs by request path, never client metadata | Service-tier billing and parity test, dedicated handler and handler/route tests | 5 | +86 / -15 |
 | 19: Codex API error passthrough tests | Preserve plan/model/parameter errors, rate limits and SSE failures without local retries or cooldowns; allow subsequent requests | `server/routes/codex_api_gateway_test.go` only | 1 | +57 / -14 |
-| 20: Codex API subscription endpoints | Align inference adapters and WebSocket relay with the gateway; skip account management and independent upstream credentials | Dedicated handler, shared endpoint policy, transport, inspection, resource cache, usage and route tests | 13 | +1171 / -74 |
+| 20: Codex API subscription endpoints | Align inference adapters and WebSocket relay with the gateway; record live SSE first-token and WS per-turn timing; skip account management and independent upstream credentials | Dedicated handler, shared endpoint policy, transport, inspection, resource cache, usage, WS relay timing and tests | 15 | +1434 / -90 |
 | 21: Codex API Realtime inspection | Use the existing Realtime moderation protocol and session model for REST and WebSocket inspection | Dedicated WS handler, shared inspection and regression test | 3 | +30 / -6 |
 | 22: Codex API handshake error bodies | Finish reading failed handshake bodies before the WebSocket library cancels its context | WebSocket transport and existing handshake test | 2 | +12 / -2 |
 
@@ -122,6 +123,10 @@ For separate capabilities:
 - Patch 20 follows patch 19 and expands subscription inference adapters. It
   shares one method/path allowlist across dispatch, transport and registration;
   no second permission system or independent upstream credentials are added.
+  Live SSE timing reuses the configured OpenAI TTFT mode; WS timing reuses the
+  relay's per-turn result, including deltas without response IDs in later turns.
+  Compressed SSE timing stays unset because observation decodes it only after
+  relay completion; nonstream responses do not synthesize a first-token time.
 - Patch 21 follows patch 20 and selects the existing Realtime inspection
   contract for subscription calls and sidebands, without modifying wire bytes.
 - Patch 22 follows patch 21 and retains complete HTTP error bodies when
