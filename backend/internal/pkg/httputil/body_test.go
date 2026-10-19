@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -139,5 +141,57 @@ func TestReadRequestBodyWithPrealloc_RespectsIdentityEncoding(t *testing.T) {
 	}
 	if string(got) != samplePayload {
 		t.Fatalf("body mismatch: got %q", got)
+	}
+}
+
+func TestReadRequestBodyWithPrealloc_DecompressionLimit(t *testing.T) {
+	for _, encoding := range []string{"zstd", "gzip", "x-gzip", "deflate"} {
+		for _, delta := range []int{0, 1} {
+			name := encoding + "/at limit"
+			if delta > 0 {
+				name = encoding + "/over limit"
+			}
+			t.Run(name, func(t *testing.T) {
+				payload := bytes.Repeat([]byte{'x'}, maxDecompressedBodySize+delta)
+				var compressed bytes.Buffer
+				var writer io.WriteCloser
+				switch encoding {
+				case "zstd":
+					var err error
+					writer, err = zstd.NewWriter(&compressed, zstd.WithEncoderConcurrency(1))
+					if err != nil {
+						t.Fatal(err)
+					}
+				case "gzip", "x-gzip":
+					writer = gzip.NewWriter(&compressed)
+				case "deflate":
+					writer = zlib.NewWriter(&compressed)
+				}
+				if _, err := writer.Write(payload); err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				request := newRequestWithBody(t, compressed.Bytes(), encoding)
+				got, err := ReadRequestBodyWithPrealloc(request)
+				if delta == 0 {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Equal(payload, got) {
+						t.Fatalf("decoded body mismatch: got %d bytes, want %d", len(got), len(payload))
+					}
+					return
+				}
+				var limitErr *http.MaxBytesError
+				if !errors.As(err, &limitErr) || limitErr.Limit != maxDecompressedBodySize || got != nil {
+					t.Fatalf("expected bounded decompression error and no partial body, got %d bytes, %v", len(got), err)
+				}
+				if request.Header.Get("Content-Encoding") != encoding {
+					t.Fatal("failed decoding must retain the original encoding header")
+				}
+			})
+		}
 	}
 }
