@@ -19,7 +19,7 @@ const (
 	requestBodyReadInitCap    = 512
 	requestBodyReadMaxInitCap = 1 << 20
 	jsonUTF8BOMLen            = 3
-	// maxDecompressedBodySize limits the decompressed request body to 64 MB
+	// maxDecompressedBodySize limits the decompressed request body to 64 MiB
 	// to prevent decompression bomb attacks.
 	maxDecompressedBodySize  = 64 << 20
 	maxRequestZstdWindowSize = 8 << 20
