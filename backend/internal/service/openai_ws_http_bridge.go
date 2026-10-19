@@ -253,7 +253,9 @@ func prepareOpenAIWSHTTPBridgeBody(account *Account, payload []byte) ([]byte, er
 	delete(body, "type")
 	delete(body, "generate")
 	delete(body, "previous_response_id")
-	deleteOpenAIResponsesNoneReasoningEffortFromObject(account, body)
+	if account == nil || !account.IsCodexAPI() {
+		deleteOpenAIResponsesNoneReasoningEffortFromObject(account, body)
+	}
 	body["stream"] = true
 	return json.Marshal(body)
 }
@@ -314,7 +316,7 @@ func (c *openAIWSToolCallReplayCollector) addAllItem(item gjson.Result) {
 	if _, ok := c.allSeen[key]; ok {
 		return
 	}
-	c.allSeen[key] = struct{}{}
+	c.allSeen[strings.Clone(key)] = struct{}{}
 	c.allItems = append(c.allItems, json.RawMessage(raw))
 }
 
@@ -342,7 +344,7 @@ func (c *openAIWSToolCallReplayCollector) addItem(item gjson.Result) {
 	if _, ok := c.seen[key]; ok {
 		return
 	}
-	c.seen[key] = struct{}{}
+	c.seen[strings.Clone(key)] = struct{}{}
 	c.items = append(c.items, json.RawMessage(raw))
 }
 
