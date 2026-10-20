@@ -82,9 +82,10 @@ Row 23 was added on 2026-10-19 for connection-local large-request HTTP bridging.
 - Codex API accounts use the OpenAI-only string type `codex-api` and dedicated
   groups. Configure the gateway deployment URL and gateway key, then bind the
   user's API key to that group. Native Responses and model requests use the
-  native gateway endpoints; `/v1` requests use Codex API's public adapters.
-  Request paths select these contracts; client headers and `client_version`
-  do not switch them. Direct HTTP and native WS forwarding preserve their request contracts. Compact
+  native gateway endpoints; `/v1` requests use the gateway's compatible entrypoint.
+  Sub2API selects endpoints by request path, not client headers or `client_version`.
+  The gateway owns native/public interpretation within each endpoint.
+  Direct HTTP and native WS forwarding preserve their request contracts. Compact
   uses its JSON facade. Model catalogs, request bodies and upstream errors are
   not locally mapped, repaired or synthesized. Patch 20 also supports images,
   file upload, subscription transcription, search, memory trace summarization,
@@ -103,8 +104,11 @@ Row 23 was added on 2026-10-19 for connection-local large-request HTTP bridging.
   before switching; HTTP warmups and incomplete item references are rejected.
   Responses HTTP/client WS bodies and replay payloads are bounded to 64 MiB;
   replay has at most 32 streams and 8 KiB correlation identifiers. Other
-  dedicated endpoints retain 16 MiB. The paired Codex API gateway must support
-  the same 64 MiB HTTP limit; its original revision still rejects above 16 MiB.
+  dedicated endpoints retain 16 MiB. Codex API revision
+  `92dd2b30d7534b6f44873c20c8d29b8e52a81589` defaults HTTP, decoded zstd and
+  client WS limits to 64 MiB. Its `--max-request-bytes` flag or
+  `CODEX_GATEWAY_MAX_REQUEST_BYTES` can override that limit; smaller gateway
+  or proxy limits still apply. The 15 MiB bridge threshold remains local policy.
   No cross-connection history, persistence, or standalone public HTTP
   previous_response_id emulation is added. Canceled HTTP requests cannot report
   usage that the provider did not emit before cancellation.
@@ -147,7 +151,10 @@ For separate capabilities:
   WebSocket dialing fails. It changes only transport body ownership and tests.
 - Patch 23 follows patch 22 and reuses shared threshold, replay, SSE and relay
   mechanisms for dedicated Responses HTTP bridging. Native prepared frames use
-  the native HTTP contract; public requests retain public adaptation. Its
+  the native HTTP contract. Unprepared public frames use `/v1/responses`, but
+  metadata-bearing frames become native-selected after the bridge adds
+  `stream:true`; public model/tool/Lite adaptation is not supported for that
+  shape. No selector header or metadata removal is added. Its
   bounded decompression rejects oversized output instead of returning a
   truncated inspection body. No account scheduling or billing schema changes.
 - GPT-6 Sol/Luna and Claude Opus 5.5 support now comes from upstream; the early
