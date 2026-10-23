@@ -22,14 +22,15 @@ Subject: [PATCH 17/17] feat: add dedicated Codex API accounts for native
  .../repository/codex_api_transport_test.go    |  93 +++++++
  backend/internal/repository/group_repo.go     |  57 +++-
  backend/internal/repository/http_upstream.go  |  20 +-
- .../internal/repository/usage_billing_repo.go |   2 +-
  .../usage_billing_repo_integration_test.go    |  13 +-
  .../server/routes/codex_api_gateway_test.go   | 119 +++++++++
  backend/internal/server/routes/gateway.go     |  10 +-
  .../routes/gateway_model_allowlist_test.go    |   6 +-
  .../internal/server/routes/gateway_test.go    |   2 +-
+ backend/internal/service/account.go          |   2 +-
  backend/internal/service/account_codex_api.go |  98 +++++++
  .../service/account_codex_api_test.go         |  88 ++++++
+ .../account_quota_service_account_test.go    |   1 +
  backend/internal/service/account_service.go   |  20 +-
  .../service/account_test_codex_api.go         |  86 ++++++
  .../service/account_test_codex_api_test.go    |  86 ++++++
@@ -43,7 +44,6 @@ Subject: [PATCH 17/17] feat: add dedicated Codex API accounts for native
  backend/internal/service/codex_api_usage.go   | 184 +++++++++++++
  .../internal/service/codex_api_usage_test.go  | 128 +++++++++
  backend/internal/service/domain_constants.go  |   1 +
- .../internal/service/gateway_usage_billing.go |   4 +-
  .../internal/service/http_upstream_profile.go |   3 +-
  .../service/openai_account_scheduler.go       |   3 +
  .../service/openai_gateway_scheduling.go      |   3 +
@@ -60,7 +60,7 @@ Subject: [PATCH 17/17] feat: add dedicated Codex API accounts for native
  .../__tests__/AccountTestModal.spec.ts        |  34 +++
  .../components/common/PlatformTypeBadge.vue   |   2 +
  frontend/src/types/index.ts                   |   2 +-
- 55 files changed, 2449 insertions(+), 60 deletions(-)
+ 55 files changed, 2448 insertions(+), 58 deletions(-)
  create mode 100644 backend/internal/handler/admin/account_codex_api_test.go
  create mode 100644 backend/internal/handler/codex_api_gateway.go
  create mode 100644 backend/internal/handler/codex_api_gateway_test.go
@@ -1327,15 +1327,6 @@ index b27f20ece3144df0516925985a02c8b1827a4ade..e0215308abab56256ecffc790d3e329d
  	transport := &http.Transport{
 +		DisableCompression:    protocolMode == upstreamProtocolModeRaw,
  		DialContext:           newUpstreamDialer().DialContext,
-diff --git a/backend/internal/repository/usage_billing_repo.go b/backend/internal/repository/usage_billing_repo.go
-index ce0adc2772d5cb465ab4e241c2dbba8507206174..7227abdedc2fe1ee790740eed096bc58ff1340ad 100644
---- a/backend/internal/repository/usage_billing_repo.go
-+++ b/backend/internal/repository/usage_billing_repo.go
-@@ -203,3 +203,3 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
- 
--	if cmd.AccountQuotaCost > 0 && (strings.EqualFold(cmd.AccountType, service.AccountTypeAPIKey) || strings.EqualFold(cmd.AccountType, service.AccountTypeBedrock)) {
-+	if cmd.AccountQuotaCost > 0 && (strings.EqualFold(cmd.AccountType, service.AccountTypeAPIKey) || strings.EqualFold(cmd.AccountType, service.AccountTypeBedrock) || strings.EqualFold(cmd.AccountType, service.AccountTypeCodexAPI)) {
- 		quotaState, err := incrementUsageBillingAccountQuota(ctx, tx, cmd.AccountID, cmd.AccountQuotaCost)
 diff --git a/backend/internal/repository/usage_billing_repo_integration_test.go b/backend/internal/repository/usage_billing_repo_integration_test.go
 index e8d4d32707fbd3393c1f966303a2117cf43165aa..c69b47022515ab320833d08cd9e9cff7a49e2d5f 100644
 --- a/backend/internal/repository/usage_billing_repo_integration_test.go
@@ -1550,6 +1541,15 @@ index 3f545b22ecf7f8ad7e6e42366be6a8545e86396a..988e4c6ed574b15cd0ea0e47123a3f6d
 -			OpenAIGateway: &handler.OpenAIGatewayHandler{},
 +			OpenAIGateway: newOrdinaryRoutesOpenAIHandler(cfg),
  			AsyncImage:    handler.NewAsyncImageHandler(nil, nil),
+diff --git a/backend/internal/service/account.go b/backend/internal/service/account.go
+index 8899c2d70d3a093ddd782bfd8f758f960aa09d28..6bb6392c794f94588356d62062cd8b9d65ce9331 100644
+--- a/backend/internal/service/account.go
++++ b/backend/internal/service/account.go
+@@ -1437,3 +1437,3 @@ func AccountTypeSupportsQuota(accountType string) bool {
+ 	switch strings.ToLower(accountType) {
+-	case AccountTypeAPIKey, AccountTypeBedrock, AccountTypeServiceAccount:
++	case AccountTypeAPIKey, AccountTypeBedrock, AccountTypeServiceAccount, AccountTypeCodexAPI:
+ 		return true
 diff --git a/backend/internal/service/account_codex_api.go b/backend/internal/service/account_codex_api.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..05b9ac5b48f04427488fd3ec6939939035a041f4
@@ -1748,6 +1748,14 @@ index 0000000000000000000000000000000000000000..13d8f5cb58c73f568c9db6cb2918cea6
 +	require.NotEmpty(t, openAICompatibleAccountEligibilityFailureReasonBeforeProfit(context.Background(), account, PlatformOpenAI, "", false, ""))
 +	require.False(t, account.IsOpenAIApiKey())
 +}
+diff --git a/backend/internal/service/account_quota_service_account_test.go b/backend/internal/service/account_quota_service_account_test.go
+index 6358f3202417ec6f0a4986c23cb8d3033d19f21e..b497ab90947456ede2b69e64cc536aff88d356ef 100644
+--- a/backend/internal/service/account_quota_service_account_test.go
++++ b/backend/internal/service/account_quota_service_account_test.go
+@@ -17,2 +17,3 @@ func TestAccountSupportsAccountQuota(t *testing.T) {
+ 		{AccountTypeServiceAccount, true},
++		{AccountTypeCodexAPI, true},
+ 		{AccountTypeOAuth, false},
 diff --git a/backend/internal/service/account_service.go b/backend/internal/service/account_service.go
 index 205907abc1cdd6c7ef51665b71b5b74f1500bc35..f8b1d4dbd45cd966948fa67956352cd039e383ab 100644
 --- a/backend/internal/service/account_service.go
@@ -2679,20 +2687,6 @@ index 883ac9f0d59f9fb3af29966251c330eb606057dc..4cafafffd1b2e85b8f1e9e80069f219a
  	AccountTypeServiceAccount = domain.AccountTypeServiceAccount // Google Service Account 类型账号（用于 Vertex AI）
 +	AccountTypeCodexAPI       = domain.AccountTypeCodexAPI
  )
-diff --git a/backend/internal/service/gateway_usage_billing.go b/backend/internal/service/gateway_usage_billing.go
-index 1e1a0f84779b7230a00a1b67a38f97c37356ef73..5f757627beab8aaa858f60eb1bd6d402b5168bc4 100644
---- a/backend/internal/service/gateway_usage_billing.go
-+++ b/backend/internal/service/gateway_usage_billing.go
-@@ -128,3 +128,3 @@ func (p *postUsageBillingParams) shouldUpdateRateLimits() bool {
- func (p *postUsageBillingParams) shouldUpdateAccountQuota() bool {
--	return p.Cost.TotalCost > 0 && p.Account.IsAPIKeyOrBedrock() && p.Account.HasAnyQuotaLimit()
-+	return p.Cost.TotalCost > 0 && (p.Account.IsAPIKeyOrBedrock() || p.Account.IsCodexAPI()) && p.Account.HasAnyQuotaLimit()
- }
-@@ -494,3 +494,3 @@ func notifyAccountQuota(p *postUsageBillingParams, deps *billingDeps, result *Us
- 	}()
--	if p.Cost.TotalCost <= 0 || p.Account == nil || !p.Account.IsAPIKeyOrBedrock() || deps.balanceNotifyService == nil {
-+	if p.Cost.TotalCost <= 0 || p.Account == nil || (!p.Account.IsAPIKeyOrBedrock() && !p.Account.IsCodexAPI()) || deps.balanceNotifyService == nil {
- 		slog.Debug("notifyAccountQuota: skipped",
 diff --git a/backend/internal/service/http_upstream_profile.go b/backend/internal/service/http_upstream_profile.go
 index 92020abb357c5822bd2271eebe30baf6ff97aabc..c76fd2337927ad40dd07f31538728b3fb92c6a17 100644
 --- a/backend/internal/service/http_upstream_profile.go
