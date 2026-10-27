@@ -685,7 +685,7 @@ index 46d78ac5b72395335ccd2e77ad45c7263ee49659..b11e55627e7b0aea43bf8d36ebe4c8d4
 +	expectOrdinaryCredentialAccount(mock)
  	mock.ExpectExec(`(?s)UPDATE accounts.*credentials IS DISTINCT FROM \$1::jsonb.*- 'upstream_billing_probe'`).
 @@ -375,2 +376,3 @@ func TestUpdateWithAccountBillingSettingsRollsBackWhenOutboxFails(t *testing.T)
- 			AddRow(true, false, true, []byte(`true`), []byte(`true`), []byte(`{"status":"ok"}`), nil, nil, nil, false, nil, nil))
+ 			AddRow(true, false, true, []byte(`true`), []byte(`true`), []byte(`{"status":"ok"}`), nil, nil, nil, false, nil, nil, nil, nil))
 +	mock.ExpectQuery("SELECT ag.group_id").WillReturnRows(sqlmock.NewRows([]string{"group_id"}))
  	mock.ExpectExec(`(?s)UPDATE .*accounts.*SET.*WHERE .*id.*`).
 @@ -438,2 +440,3 @@ func TestUpdateCredentialsRollsBackWhenOutboxFails(t *testing.T) {
