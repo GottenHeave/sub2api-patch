@@ -331,7 +331,7 @@ index dfebb47a50efa054e945a27e2bf6ad40c62bc901..d88b8df16c9dcd42782ae4028333ba9e
 --- a/backend/internal/service/openai_gateway_passthrough.go
 +++ b/backend/internal/service/openai_gateway_passthrough.go
 @@ -165,3 +165,3 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
- 		}
+ 	if account != nil && account.UsesOpenAICodexProtocol() {
 -		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() {
 +		if isOpenAICodexModel(reqModel) && !gjson.GetBytes(body, "instructions").Exists() && !hasOpenAICodexExplicitSystemPromptBody(body) {
  			nextBody, setErr := sjson.SetBytes(body, "instructions", defaultCodexSynthInstructions(reqModel))

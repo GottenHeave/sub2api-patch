@@ -138,7 +138,7 @@ index 2986f6abeb6a22e978ad924bc4408f1d3959eff2..05ba69fa43bfd800789e1fb7bd75f48f
 +	)
 +}
 +
- // selectAccountWithScheduler wraps selectAccountWithSchedulerOnce with a
+ // selectAccountWithScheduler wraps selectAccountWithSchedulerBySize with a
 diff --git a/backend/internal/service/openai_gateway_scheduling.go b/backend/internal/service/openai_gateway_scheduling.go
 index a90bad3e2589150945deaa201cfb3956264662d3..a3e3e00f5d9673419ef5ea66bfda6434c74e80e4 100644
 --- a/backend/internal/service/openai_gateway_scheduling.go

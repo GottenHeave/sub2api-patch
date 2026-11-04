@@ -2819,7 +2819,7 @@ index c6616c679f5b09c2bb0bf08861dedc8d7877fa10..0bc22afc9ab6e5458b3818378bf686aa
 @@ -3929,2 +3937,3 @@ import HelpTooltip from '@/components/common/HelpTooltip.vue'
  import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
 +import CodexAPICredentialsFields from '@/components/account/CodexAPICredentialsFields.vue'
- import PlatformIcon from '@/components/common/PlatformIcon.vue'
+ import OpenAIImageSizeTiersField from '@/components/account/OpenAIImageSizeTiersField.vue'
 @@ -4149,3 +4158,5 @@ const step = ref(1)
  const submitting = ref(false)
 -const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
@@ -2894,7 +2894,7 @@ index 4e9bbff7a12a7b10df322692d402e4ad493d3007..7f7ad67744f2e44e2a1d2cdf8cde2b82
 @@ -3045,2 +3047,3 @@ import HelpTooltip from '@/components/common/HelpTooltip.vue'
  import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
 +import CodexAPICredentialsFields from '@/components/account/CodexAPICredentialsFields.vue'
- import Toggle from '@/components/common/Toggle.vue'
+ import OpenAIImageSizeTiersField from '@/components/account/OpenAIImageSizeTiersField.vue'
 @@ -3470,3 +3473,3 @@ const ACCOUNT_SCHEDULING_THRESHOLD_CREDENTIAL_KEY = 'account_scheduling_threshol
  const supportsAccountSchedulingThresholdOverride = computed(() =>
 -  supportsAccountSchedulingThresholdOverridePlatform(props.account?.platform)
