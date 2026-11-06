@@ -9,7 +9,7 @@ Subject: [PATCH] feat: bridge large Codex API turns with connection-local
  .../handler/codex_api_gateway_test.go         |  73 +-
  .../internal/handler/codex_api_websocket.go   |   8 +-
  .../codex_api_websocket_bridge_test.go        | 123 ++++
- backend/internal/pkg/httputil/body.go         |  19 +-
+ backend/internal/pkg/httputil/body.go         |   2 +-
  backend/internal/pkg/httputil/body_test.go    |  54 ++
  .../service/codex_api_websocket_bridge.go     | 681 ++++++++++++++++++
  ..._api_websocket_bridge_audit_limits_test.go |  23 +
@@ -18,7 +18,7 @@ Subject: [PATCH] feat: bridge large Codex API turns with connection-local
  .../codex_api_websocket_bridge_test.go        | 378 ++++++++++
  .../internal/service/openai_ws_http_bridge.go |   8 +-
  .../service/openai_ws_v2/passthrough_relay.go |  33 +-
- 13 files changed, 1790 insertions(+), 25 deletions(-)
+ 13 files changed, 1776 insertions(+), 22 deletions(-)
  create mode 100644 backend/internal/handler/codex_api_websocket_bridge_test.go
  create mode 100644 backend/internal/service/codex_api_websocket_bridge.go
  create mode 100644 backend/internal/service/codex_api_websocket_bridge_audit_limits_test.go
@@ -333,56 +333,16 @@ diff --git a/backend/internal/pkg/httputil/body.go b/backend/internal/pkg/httput
 index 3a6fab4b7..2cc82e198 100644
 --- a/backend/internal/pkg/httputil/body.go
 +++ b/backend/internal/pkg/httputil/body.go
-@@ -17,7 +17,7 @@ const (
+@@ -17,8 +17,8 @@ const (
  	requestBodyReadInitCap    = 512
  	requestBodyReadMaxInitCap = 1 << 20
  	jsonUTF8BOMLen            = 3
 -	// maxDecompressedBodySize limits the decompressed request body to 64 MB
 +	// maxDecompressedBodySize limits the decompressed request body to 64 MiB
  	// to prevent decompression bomb attacks.
- 	maxDecompressedBodySize = 64 << 20
+ 	maxDecompressedBodySize  = 64 << 20
+ 	maxRequestZstdWindowSize = 8 << 20
  )
-@@ -173,26 +173,37 @@ func decompressRequestBody(encoding string, raw []byte) ([]byte, error) {
- 			return nil, err
- 		}
- 		defer dec.Close()
--		return io.ReadAll(io.LimitReader(dec, maxDecompressedBodySize))
-+		return readDecompressedRequestBody(dec)
- 	case "gzip", "x-gzip":
- 		gr, err := gzip.NewReader(bytes.NewReader(raw))
- 		if err != nil {
- 			return nil, err
- 		}
- 		defer func() { _ = gr.Close() }()
--		return io.ReadAll(io.LimitReader(gr, maxDecompressedBodySize))
-+		return readDecompressedRequestBody(gr)
- 	case "deflate":
- 		zr, err := zlib.NewReader(bytes.NewReader(raw))
- 		if err != nil {
- 			return nil, err
- 		}
- 		defer func() { _ = zr.Close() }()
--		return io.ReadAll(io.LimitReader(zr, maxDecompressedBodySize))
-+		return readDecompressedRequestBody(zr)
- 	default:
- 		return nil, errors.New("unsupported Content-Encoding")
- 	}
- }
- 
-+func readDecompressedRequestBody(reader io.Reader) ([]byte, error) {
-+	body, err := readRequestBodyChunks(io.LimitReader(reader, maxDecompressedBodySize+1), requestBodyReadInitCap, -1)
-+	if err != nil {
-+		return nil, err
-+	}
-+	if len(body) > maxDecompressedBodySize {
-+		return nil, &http.MaxBytesError{Limit: maxDecompressedBodySize}
-+	}
-+	return body, nil
-+}
-+
- // NormalizeLenientJSONRequestBody escapes raw control bytes that broken
- // OpenAI-compatible clients sometimes place inside JSON strings.
- func NormalizeLenientJSONRequestBody(body []byte, maxNormalizedBytes int64) ([]byte, error) {
 diff --git a/backend/internal/pkg/httputil/body_test.go b/backend/internal/pkg/httputil/body_test.go
 index ed8355d50..4619cb0b5 100644
 --- a/backend/internal/pkg/httputil/body_test.go

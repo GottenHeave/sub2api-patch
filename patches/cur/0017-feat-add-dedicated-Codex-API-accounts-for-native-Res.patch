@@ -1303,7 +1303,7 @@ index b27f20ece3144df0516925985a02c8b1827a4ade..e0215308abab56256ecffc790d3e329d
 +	if profile != service.HTTPUpstreamProfileRaw {
 +		client = httpClientWithGrokAccessDeniedFallback(client)
 +	}
- 	resp, err := doUpstreamRequest(client, req)
+ 	resp, err := doUpstreamRequest(client, req, s.upstreamDrainTimeout())
 @@ -246,2 +251,5 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
  func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 +	if req != nil && service.HTTPUpstreamProfileFromContext(req.Context()) == service.HTTPUpstreamProfileRaw {
