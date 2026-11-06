@@ -30,6 +30,11 @@ func (s *OpenAIGatewayService) buildCodexAPIRequest(ctx context.Context, account
 	if targetPath == "" || CodexAPITarget(policyRequest) != targetPath {
 		return nil, fmt.Errorf("unsupported Codex API endpoint")
 	}
+	return s.buildCodexAPIUpstreamRequest(ctx, account, incoming, targetPath)
+}
+
+// Admin-only queries reuse transport safeguards without extending public routes.
+func (s *OpenAIGatewayService) buildCodexAPIUpstreamRequest(ctx context.Context, account *Account, incoming *http.Request, targetPath string) (*http.Request, error) {
 	base, err := s.validateUpstreamBaseURL(strings.TrimSpace(account.GetCredential("base_url")))
 	if err != nil {
 		return nil, err
