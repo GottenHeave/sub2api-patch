@@ -254,6 +254,7 @@ func ProvideAccountUsageService(
 		tlsFPProfileService,
 	)
 	service.agentIdentityWS = openAIGatewayService
+	service.openaiGatewayService = openAIGatewayService
 	if opsService != nil {
 		service.opsMonitoring = opsService
 	}
