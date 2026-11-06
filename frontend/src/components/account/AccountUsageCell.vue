@@ -122,6 +122,27 @@
       </ClaudeResetCreditsCell>
     </template>
 
+    <template v-else-if="isCodexAPI">
+      <div v-if="loading" class="h-3 w-24 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+      <div v-else-if="error" class="max-w-[200px] truncate text-xs text-red-500" :title="error">{{ error }}</div>
+      <div v-else-if="codexAPIQuotaGroups.length" class="space-y-1">
+        <div v-for="(group, index) in codexAPIQuotaGroups" :key="index" class="space-y-1">
+          <div v-if="group.name" class="max-w-[200px] truncate text-[10px] text-gray-500" :title="group.name">{{ group.name }}</div>
+          <UsageProgressBar
+            v-for="(window, windowIndex) in group.windows"
+            :key="windowIndex"
+            :label="codexAPIWindowLabel(window.limit_window_seconds)"
+            label-width="auto"
+            :utilization="window.used_percent"
+            :resets-at="window.resetsAt"
+            :title="window.resetTitle"
+            :color="windowIndex === 0 ? 'indigo' : 'emerald'"
+          />
+        </div>
+      </div>
+      <div v-else class="text-xs text-gray-400">-</div>
+    </template>
+
     <!-- OpenAI OAuth accounts: single source from /usage API -->
     <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
       <div v-if="hasOpenAIUsageFallback" class="space-y-1">
@@ -751,6 +772,7 @@ import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'v
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
+import type { OpenAIRateLimitWindow } from '@/api/admin/accounts'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
@@ -838,8 +860,46 @@ const isGeminiVertex = computed(() => {
   return props.account.platform === 'gemini' && props.account.type === 'service_account'
 })
 
-// Show usage windows for OAuth and Setup Token accounts
+const isCodexAPI = computed(() => props.account.platform === 'openai' && props.account.type === 'codex-api')
+
+const codexAPIQuotaGroups = computed(() => {
+  const quota = usageInfo.value?.codex_api_quota
+  return [
+    { name: '', rateLimit: quota?.rate_limit },
+    ...(quota?.additional_rate_limits ?? []).map(limit => ({
+      name: limit.limit_name || limit.metered_feature,
+      rateLimit: limit.rate_limit
+    }))
+  ].map(group => ({
+    name: group.name,
+    windows: [group.rateLimit?.primary_window, group.rateLimit?.secondary_window]
+      .filter(window => window != null)
+      .map(window => {
+        const resetsAt = codexAPIResetAt(window)
+        return { ...window, resetsAt, resetTitle: resetsAt ? new Date(resetsAt).toLocaleString() : undefined }
+      })
+  })).filter(group => group.windows.length > 0)
+})
+
+const codexAPIWindowLabel = (seconds: number): string => {
+  for (const [unit, duration] of [['d', 86400], ['h', 3600], ['m', 60]] as const) {
+    if (seconds > 0 && seconds % duration === 0) return `${seconds / duration}${unit}`
+  }
+  return `${seconds}s`
+}
+
+const codexAPIResetAt = (window: OpenAIRateLimitWindow): string | undefined => {
+  const resetAt = window.reset_at > 0
+    ? window.reset_at
+    : window.reset_after_seconds > 0
+      ? (usageInfo.value?.codex_api_quota?.fetched_at ?? 0) + window.reset_after_seconds
+      : 0
+  return resetAt > 0 ? new Date(resetAt * 1000).toISOString() : undefined
+}
+
+// Show usage windows for subscription accounts
 const showUsageWindows = computed(() => {
+  if (isCodexAPI.value) return true
   // Gemini: we can always compute local usage windows from DB logs (simulated quotas).
   // 第三方上游 API Key 没有模拟配额，按普通 Key 账号展示今日统计与额度进度条。
   if (props.account.platform === 'gemini') return !isGeminiThirdPartyApiKey.value
@@ -865,7 +925,7 @@ const shouldFetchUsage = computed(() => {
     return props.account.type === 'oauth'
   }
   if (props.account.platform === 'openai') {
-    return props.account.type === 'oauth'
+    return props.account.type === 'oauth' || isCodexAPI.value
   }
   return false
 })
