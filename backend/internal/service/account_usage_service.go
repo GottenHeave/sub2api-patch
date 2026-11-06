@@ -197,6 +197,8 @@ type AICredit struct {
 
 // UsageInfo 账号使用量信息
 type UsageInfo struct {
+	CodexAPIQuota *OpenAIQuotaUsage `json:"codex_api_quota,omitempty"`
+
 	Source             string         `json:"source,omitempty"`               // "passive" or "active"
 	UpdatedAt          *time.Time     `json:"updated_at,omitempty"`           // 更新时间
 	FiveHour           *UsageProgress `json:"five_hour"`                      // 5小时窗口
@@ -317,6 +319,7 @@ type AccountUsageService struct {
 	grokQuotaFetcher        *GrokQuotaFetcher
 	grokQuotaService        *GrokQuotaService
 	openAIQuotaService      *OpenAIQuotaService
+	openaiGatewayService    *OpenAIGatewayService
 	cache                   *UsageCache
 	identityCache           IdentityCache
 	tlsFPProfileService     *TLSFingerprintProfileService
@@ -372,6 +375,9 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 		return nil, fmt.Errorf("account is required")
 	}
 	accountID := account.ID
+	if account.IsCodexAPI() {
+		return s.getCodexAPIUsage(ctx, account)
+	}
 
 	// Dedicated UI load-test accounts must remain fully interactive without ever
 	// contacting Anthropic with synthetic credentials. Reuse the same persisted

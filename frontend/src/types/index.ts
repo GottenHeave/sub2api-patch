@@ -1,6 +1,7 @@
 /**
  * Core Type Definitions for Sub2API Frontend
  */
+import type { OpenAIQuotaUsage } from '@/api/admin/accounts'
 
 // ==================== Common Types ====================
 
@@ -1504,6 +1505,7 @@ export interface GrokBillingSummary {
 }
 
 export interface AccountUsageInfo {
+  codex_api_quota?: OpenAIQuotaUsage | null
   source?: 'passive' | 'active'
   updated_at: string | null
   five_hour: UsageProgress | null
