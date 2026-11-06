@@ -7,12 +7,14 @@ const {
   listAccounts,
   listWithEtag,
   getBatchTodayStats,
+  getBatchUsage,
   getAllProxies,
   getAllGroups
 } = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
   getBatchTodayStats: vi.fn(),
+  getBatchUsage: vi.fn(),
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn()
 }))
@@ -23,6 +25,7 @@ vi.mock('@/api/admin', () => ({
       list: listAccounts,
       listWithEtag,
       getBatchTodayStats,
+      getBatchUsage,
       getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({ enabled: true, interval_minutes: 30 }),
       delete: vi.fn(),
       batchClearError: vi.fn(),
@@ -77,6 +80,7 @@ const DataTableStub = {
       </template>
       <div v-for="row in data" :key="row.id" data-test="account-rate">
         <slot name="cell-rate_multiplier" :row="row" />
+        <slot name="cell-usage" :row="row" />
       </div>
     </div>
   `
@@ -138,6 +142,7 @@ describe('admin AccountsView usage windows hint', () => {
     listAccounts.mockReset()
     listWithEtag.mockReset()
     getBatchTodayStats.mockReset()
+    getBatchUsage.mockReset()
     getAllProxies.mockReset()
     getAllGroups.mockReset()
 
@@ -154,6 +159,7 @@ describe('admin AccountsView usage windows hint', () => {
       data: null
     })
     getBatchTodayStats.mockResolvedValue({ stats: {} })
+    getBatchUsage.mockResolvedValue({ usage: {}, errors: {} })
     getAllProxies.mockResolvedValue([])
     getAllGroups.mockResolvedValue([])
   })
@@ -166,6 +172,17 @@ describe('admin AccountsView usage windows hint', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-test="account-filters"]').attributes('data-group-count')).toBe('1')
+  })
+
+  it('includes Codex API accounts in batch usage requests', async () => {
+    const account = { id: 91, name: 'codex-gateway', platform: 'openai', type: 'codex-api', extra: {} }
+    listAccounts.mockResolvedValueOnce({ items: [account], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    const cell = wrapper.getComponent({ name: 'AccountUsageCell' })
+    cell.props('requestBatchedUsage')(account)
+    await vi.waitFor(() => expect(getBatchUsage).toHaveBeenCalledWith([91], false))
+    wrapper.unmount()
   })
 
   it('renders an explanatory tooltip next to the usage windows column header', async () => {
