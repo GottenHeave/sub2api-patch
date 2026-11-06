@@ -150,6 +150,100 @@ describe('AccountUsageCell', () => {
     wrapper.unmount()
   })
 
+  it('loads Codex API subscription windows without OAuth reset controls', async () => {
+    getUsage.mockResolvedValue({
+      codex_api_quota: {
+        fetched_at: 1793966400,
+        rate_limit: {
+          primary_window: { used_percent: 23, limit_window_seconds: 18000, reset_after_seconds: 3600, reset_at: 1793970000 },
+          secondary_window: null
+        },
+        additional_rate_limits: [{
+          limit_name: 'Codex Spark',
+          metered_feature: 'spark',
+          rate_limit: {
+            primary_window: { used_percent: 67, limit_window_seconds: 604800, reset_after_seconds: 7200, reset_at: 1793973600 }
+          }
+        }]
+      }
+    })
+    const wrapper = mount(AccountUsageCell, {
+      props: { account: makeAccount({ id: 9100, platform: 'openai', type: 'codex-api' }) },
+      global: { stubs: { OpenAIQuotaResetCell: true } }
+    })
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenCalledWith(9100)
+    const bars = wrapper.findAllComponents({ name: 'UsageProgressBar' })
+    expect(bars).toHaveLength(2)
+    expect(bars[0].props()).toMatchObject({ label: '5h', utilization: 23, resetsAt: '2026-11-06T13:00:00.000Z' })
+    expect(bars[1].props()).toMatchObject({ label: '7d', utilization: 67, resetsAt: '2026-11-06T14:00:00.000Z' })
+    expect(wrapper.text()).toContain('Codex Spark')
+    expect(wrapper.text()).toContain('23%')
+    expect(wrapper.text()).toContain('67%')
+    expect(wrapper.findComponent({ name: 'OpenAIQuotaResetCell' }).exists()).toBe(false)
+
+    await wrapper.setProps({ manualRefreshToken: 1 })
+    await flushPromises()
+    expect(getUsage).toHaveBeenCalledTimes(2)
+    expect(getUsage).toHaveBeenLastCalledWith(9100)
+    wrapper.unmount()
+  })
+
+  it('uses the account table batch loader for Codex API usage and exposes errors', async () => {
+    const requestBatchedUsage = vi.fn()
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 9101, platform: 'openai', type: 'codex-api' }),
+        requestBatchedUsage,
+        batchedUsageError: 'Codex API usage returned HTTP 401'
+      }
+    })
+    await flushPromises()
+
+    expect(requestBatchedUsage).toHaveBeenCalled()
+    expect(getUsage).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Codex API usage returned HTTP 401')
+    expect(wrapper.findComponent({ name: 'UsageProgressBar' }).exists()).toBe(false)
+
+    await wrapper.setProps({ manualRefreshToken: 1 })
+    await flushPromises()
+    expect(requestBatchedUsage).toHaveBeenLastCalledWith(expect.objectContaining({ id: 9101 }), { force: true })
+    wrapper.unmount()
+  })
+
+  it('does not synthesize Codex API windows when quota is absent', async () => {
+    getUsage.mockResolvedValue({ codex_api_quota: { fetched_at: 1793966400 } })
+    const wrapper = mount(AccountUsageCell, {
+      props: { account: makeAccount({ id: 9102, platform: 'openai', type: 'codex-api' }) }
+    })
+    await flushPromises()
+    expect(getUsage).toHaveBeenCalledWith(9102)
+    expect(wrapper.text()).toBe('-')
+    expect(wrapper.findComponent({ name: 'UsageProgressBar' }).exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('uses actual Codex API durations and derives reset time when only a countdown is available', async () => {
+    getUsage.mockResolvedValue({
+      codex_api_quota: {
+        fetched_at: 1793966400,
+        rate_limit: {
+          primary_window: null,
+          secondary_window: { used_percent: 0, limit_window_seconds: 3600, reset_after_seconds: 1800, reset_at: 0 }
+        }
+      }
+    })
+    const wrapper = mount(AccountUsageCell, {
+      props: { account: makeAccount({ id: 9103, platform: 'openai', type: 'codex-api' }) }
+    })
+    await flushPromises()
+    const bar = wrapper.getComponent({ name: 'UsageProgressBar' })
+    expect(bar.props()).toMatchObject({ label: '1h', utilization: 0, resetsAt: '2026-11-06T12:30:00.000Z' })
+    expect(bar.attributes('title')).toBe(new Date('2026-11-06T12:30:00.000Z').toLocaleString())
+    wrapper.unmount()
+  })
+
   it('renders eligible Ollama Cloud state and forwards query updates', async () => {
     const wrapper = mount(AccountUsageCell, {
       props: {
