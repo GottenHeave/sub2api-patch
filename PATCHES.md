@@ -28,6 +28,7 @@ Row 20 was updated on 2026-10-19 for live SSE first-token and WS per-turn timing
 Row 21 was added on 2026-10-05 to retain Realtime session inspection.
 Row 22 was added on 2026-10-05 to retain WebSocket handshake error bodies.
 Row 23 was added on 2026-10-19 for connection-local large-request HTTP bridging.
+Row 24 was added on 2026-11-06 for Codex API subscription quota in account usage.
 
 | Patch | Purpose | Affected scope | Files | Diff |
 | --- | --- | --- | ---: | ---: |
@@ -54,6 +55,7 @@ Row 23 was added on 2026-10-19 for connection-local large-request HTTP bridging.
 | 21: Codex API Realtime inspection | Use the existing Realtime moderation protocol and session model for REST and WebSocket inspection | Dedicated WS handler, shared inspection and regression test | 3 | +30 / -6 |
 | 22: Codex API handshake error bodies | Finish reading failed handshake bodies before the WebSocket library cancels its context | WebSocket transport and existing handshake test | 2 | +12 / -2 |
 | 23: Codex API large-request bridge | Reuse HTTP bridging and complete connection-local replay, retain native continuation and bound Responses ingress/decompression | Dedicated HTTP/WS handlers, bridge, shared replay/relay/decoder helpers and tests | 13 | +1790 / -25 |
+| 24: Codex API subscription quota | Query the configured gateway and show subscription windows through existing account usage loading; keep public inference routes unchanged | Account usage service, shared transport builder, provider wiring, account usage UI/types/batch eligibility and tests | 10 | +359 / -3 |
 
 ## Behavior boundaries
 

@@ -1,0 +1,488 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sub2api-patch automation <actions@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 19:02:15 +0000
+Subject: [PATCH 24/24] feat: show Codex API subscription quota in account
+ usage
+
+---
+ .../service/account_usage_codex_api.go        |  57 +++++++++
+ .../service/account_usage_codex_api_test.go   | 114 ++++++++++++++++++
+ .../internal/service/account_usage_service.go |   6 +
+ .../internal/service/codex_api_transport.go   |   5 +
+ backend/internal/service/wire.go              |   1 +
+ .../components/account/AccountUsageCell.vue   |  64 +++++++++-
+ .../__tests__/AccountUsageCell.spec.ts        |  94 +++++++++++++++
+ frontend/src/types/index.ts                   |   2 +
+ frontend/src/views/admin/AccountsView.vue     |   2 +-
+ .../AccountsView.usageWindowsHint.spec.ts     |  17 +++
+ 10 files changed, 359 insertions(+), 3 deletions(-)
+ create mode 100644 backend/internal/service/account_usage_codex_api.go
+ create mode 100644 backend/internal/service/account_usage_codex_api_test.go
+
+diff --git a/backend/internal/service/account_usage_codex_api.go b/backend/internal/service/account_usage_codex_api.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c9d8d2da8de2a983f02587c085fc19a50bff8346
+--- /dev/null
++++ b/backend/internal/service/account_usage_codex_api.go
+@@ -0,0 +1,57 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"time"
++)
++
++func (s *AccountUsageService) getCodexAPIUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
++	gateway := s.openaiGatewayService
++	if gateway == nil || gateway.httpUpstream == nil {
++		return nil, fmt.Errorf("Codex API usage service is unavailable")
++	}
++	ctx, cancel := context.WithTimeout(ctx, openaiQuotaUpstreamTimeout)
++	defer cancel()
++	incoming, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/backend-api/wham/usage", nil)
++	if err != nil {
++		return nil, err
++	}
++	req, err := gateway.buildCodexAPIUpstreamRequest(ctx, account, incoming, incoming.URL.Path)
++	if err != nil {
++		return nil, fmt.Errorf("invalid Codex API usage configuration")
++	}
++	proxyURL := ""
++	if account.Proxy != nil {
++		proxyURL = account.Proxy.URL()
++	}
++	resp, err := gateway.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
++	if err != nil {
++		return nil, fmt.Errorf("Codex API usage request failed")
++	}
++	defer func() { _ = resp.Body.Close() }()
++	if resp.StatusCode != http.StatusOK {
++		return nil, fmt.Errorf("Codex API usage returned HTTP %d", resp.StatusCode)
++	}
++	const maxBody = 1 << 20
++	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
++	if err != nil || len(body) > maxBody {
++		return nil, fmt.Errorf("invalid Codex API usage response")
++	}
++	var payload OpenAIQuotaUsage
++	if err := json.Unmarshal(body, &payload); err != nil {
++		return nil, fmt.Errorf("invalid Codex API usage response")
++	}
++	now := time.Now()
++	return &UsageInfo{
++		UpdatedAt: &now,
++		CodexAPIQuota: &OpenAIQuotaUsage{
++			RateLimit:            payload.RateLimit,
++			AdditionalRateLimits: payload.AdditionalRateLimits,
++			FetchedAt:            now.Unix(),
++		},
++	}, nil
++}
+diff --git a/backend/internal/service/account_usage_codex_api_test.go b/backend/internal/service/account_usage_codex_api_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..3e5ab5f0ddfe7f051c46e8f9df5fd25d8ef14b82
+--- /dev/null
++++ b/backend/internal/service/account_usage_codex_api_test.go
+@@ -0,0 +1,114 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++	"github.com/tidwall/gjson"
++)
++
++func TestAccountUsageCodexAPIQueriesGateway(t *testing.T) {
++	account := newCodexModelsAPIKeyTestAccount("https://gateway.example/prefix/v1")
++	account.Type = AccountTypeCodexAPI
++	calls := 0
++	gateway := newCodexModelsAPIKeyTestService(&codexModelsHTTPUpstreamStub{do: func(req *http.Request, _ string, id int64, concurrency int) (*http.Response, error) {
++		calls++
++		require.Equal(t, account.ID, id)
++		require.Equal(t, account.Concurrency, concurrency)
++		require.Equal(t, http.MethodGet, req.Method)
++		require.Equal(t, "https://gateway.example/prefix/backend-api/wham/usage", req.URL.String())
++		require.Equal(t, "Bearer sk-upstream", req.Header.Get("Authorization"))
++		require.Empty(t, req.Header.Get("ChatGPT-Account-ID"))
++		require.True(t, HTTPUpstreamRedirectsDisabled(req.Context()))
++		require.Equal(t, HTTPUpstreamProfileRaw, HTTPUpstreamProfileFromContext(req.Context()))
++		deadline, ok := req.Context().Deadline()
++		require.True(t, ok)
++		require.WithinDuration(t, time.Now().Add(openaiQuotaUpstreamTimeout), deadline, time.Second)
++		return ordinaryModelsUpstreamResponse(`{"email":"private@example.com","rate_limit":{"allowed":true,"primary_window":{"used_percent":23,"limit_window_seconds":18000,"reset_after_seconds":3600,"reset_at":1793970000},"secondary_window":null},"additional_rate_limits":[{"limit_name":"Codex Spark","metered_feature":"spark","rate_limit":{"primary_window":{"used_percent":67,"limit_window_seconds":604800,"reset_after_seconds":7200,"reset_at":1793973600}}}]}`), nil
++	}})
++	svc := ProvideAccountUsageService(codexAPIConnectionTestRepository{account: account}, nil, nil, nil, nil, nil, nil, nil, NewUsageCache(), nil, nil, gateway)
++	usage, err := svc.GetUsage(t.Context(), account.ID)
++	require.NoError(t, err)
++	require.Equal(t, 1, calls)
++	body, err := json.Marshal(usage)
++	require.NoError(t, err)
++	quota := gjson.GetBytes(body, "codex_api_quota")
++	require.Equal(t, float64(23), quota.Get("rate_limit.primary_window.used_percent").Float())
++	require.Equal(t, int64(18000), quota.Get("rate_limit.primary_window.limit_window_seconds").Int())
++	require.Equal(t, int64(3600), quota.Get("rate_limit.primary_window.reset_after_seconds").Int())
++	require.Equal(t, int64(1793970000), quota.Get("rate_limit.primary_window.reset_at").Int())
++	require.False(t, quota.Get("rate_limit.secondary_window").Exists())
++	require.Equal(t, float64(67), quota.Get("additional_rate_limits.0.rate_limit.primary_window.used_percent").Float())
++	require.Positive(t, quota.Get("fetched_at").Int())
++	require.NotContains(t, string(body), "private@example.com")
++	require.Nil(t, usage.FiveHour)
++	require.Nil(t, usage.SevenDay)
++
++	_, err = gateway.RoundTripCodexAPI(t.Context(), account, httptest.NewRequest(http.MethodGet, "/backend-api/wham/usage", nil), "/backend-api/wham/usage")
++	require.Error(t, err, "admin usage must not extend the public forwarding policy")
++	require.Equal(t, 1, calls)
++}
++
++func TestAccountUsageCodexAPIFailures(t *testing.T) {
++	for _, tc := range []struct {
++		name   string
++		status int
++		body   string
++		err    error
++		want   string
++	}{
++		{name: "unauthorized", status: http.StatusUnauthorized, body: "private response", want: "HTTP 401"},
++		{name: "rate limited", status: http.StatusTooManyRequests, want: "HTTP 429"},
++		{name: "redirect", status: http.StatusTemporaryRedirect, want: "HTTP 307"},
++		{name: "invalid JSON", status: http.StatusOK, body: "not JSON", want: "invalid Codex API usage response"},
++		{name: "oversized", status: http.StatusOK, body: strings.Repeat(" ", (1<<20)+1), want: "invalid Codex API usage response"},
++		{name: "transport", err: errors.New("private transport details"), want: "Codex API usage request failed"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			gateway := newCodexModelsAPIKeyTestService(&codexModelsHTTPUpstreamStub{do: func(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
++				if tc.err != nil {
++					return nil, tc.err
++				}
++				resp := ordinaryModelsUpstreamResponse(tc.body)
++				resp.StatusCode = tc.status
++				return resp, nil
++			}})
++			account := newCodexModelsAPIKeyTestAccount("https://gateway.example")
++			account.Type = AccountTypeCodexAPI
++			svc := ProvideAccountUsageService(codexAPIConnectionTestRepository{account: account}, nil, nil, nil, nil, nil, nil, nil, NewUsageCache(), nil, nil, gateway)
++			usage, err := svc.GetUsage(context.Background(), account.ID)
++			require.ErrorContains(t, err, tc.want)
++			require.Nil(t, usage)
++			require.NotContains(t, err.Error(), "private")
++		})
++	}
++}
++
++func TestAccountUsageCodexAPIMissingWindows(t *testing.T) {
++	for _, body := range []string{`{}`, `{"rate_limit":{"primary_window":null,"secondary_window":null}}`} {
++		t.Run(body, func(t *testing.T) {
++			gateway := newCodexModelsAPIKeyTestService(&codexModelsHTTPUpstreamStub{do: func(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
++				return ordinaryModelsUpstreamResponse(body), nil
++			}})
++			account := newCodexModelsAPIKeyTestAccount("https://gateway.example")
++			account.Type = AccountTypeCodexAPI
++			svc := ProvideAccountUsageService(codexAPIConnectionTestRepository{account: account}, nil, nil, nil, nil, nil, nil, nil, NewUsageCache(), nil, nil, gateway)
++			usage, err := svc.GetUsage(t.Context(), account.ID)
++			require.NoError(t, err)
++			require.NotNil(t, usage.CodexAPIQuota)
++			if usage.CodexAPIQuota.RateLimit != nil {
++				require.Nil(t, usage.CodexAPIQuota.RateLimit.PrimaryWindow)
++				require.Nil(t, usage.CodexAPIQuota.RateLimit.SecondaryWindow)
++			}
++			require.Nil(t, usage.FiveHour)
++			require.Nil(t, usage.SevenDay)
++		})
++	}
++}
+diff --git a/backend/internal/service/account_usage_service.go b/backend/internal/service/account_usage_service.go
+index 1516e0822c824988fc7794e2f1e1a7568687345e..0f8a3044daccdff45b7f4018e348b9aee040716e 100644
+--- a/backend/internal/service/account_usage_service.go
++++ b/backend/internal/service/account_usage_service.go
+@@ -184,2 +184,4 @@ type AICredit struct {
+ type UsageInfo struct {
++	CodexAPIQuota *OpenAIQuotaUsage `json:"codex_api_quota,omitempty"`
++
+ 	Source             string         `json:"source,omitempty"`               // "passive" or "active"
+@@ -301,2 +303,3 @@ type AccountUsageService struct {
+ 	openAIQuotaService      *OpenAIQuotaService
++	openaiGatewayService    *OpenAIGatewayService
+ 	cache                   *UsageCache
+@@ -356,2 +359,5 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
+ 	accountID := account.ID
++	if account.IsCodexAPI() {
++		return s.getCodexAPIUsage(ctx, account)
++	}
+ 
+diff --git a/backend/internal/service/codex_api_transport.go b/backend/internal/service/codex_api_transport.go
+index 0fbe43a99751841c22bc64b5d1a7e3a952097793..f906325e29ab6328bd66090775d06c950e0fe829 100644
+--- a/backend/internal/service/codex_api_transport.go
++++ b/backend/internal/service/codex_api_transport.go
+@@ -32,2 +32,7 @@ func (s *OpenAIGatewayService) buildCodexAPIRequest(ctx context.Context, account
+ 	}
++	return s.buildCodexAPIUpstreamRequest(ctx, account, incoming, targetPath)
++}
++
++// Admin-only queries reuse transport safeguards without extending public routes.
++func (s *OpenAIGatewayService) buildCodexAPIUpstreamRequest(ctx context.Context, account *Account, incoming *http.Request, targetPath string) (*http.Request, error) {
+ 	base, err := s.validateUpstreamBaseURL(strings.TrimSpace(account.GetCredential("base_url")))
+diff --git a/backend/internal/service/wire.go b/backend/internal/service/wire.go
+index d24d33a1a406fc5522b0d50b5ffead92567a1f51..b048e084be4f59e2f8cb37ec44a1af4beb27984b 100644
+--- a/backend/internal/service/wire.go
++++ b/backend/internal/service/wire.go
+@@ -255,2 +255,3 @@ func ProvideAccountUsageService(
+ 	service.agentIdentityWS = openAIGatewayService
++	service.openaiGatewayService = openAIGatewayService
+ 	return service
+diff --git a/frontend/src/components/account/AccountUsageCell.vue b/frontend/src/components/account/AccountUsageCell.vue
+index a12527b82bcf4126476eb312f1b56271e5a77bc8..79be12207795cf8b8d02c26c425ada7d422e9387 100644
+--- a/frontend/src/components/account/AccountUsageCell.vue
++++ b/frontend/src/components/account/AccountUsageCell.vue
+@@ -124,2 +124,23 @@
+ 
++    <template v-else-if="isCodexAPI">
++      <div v-if="loading" class="h-3 w-24 animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
++      <div v-else-if="error" class="max-w-[200px] truncate text-xs text-red-500" :title="error">{{ error }}</div>
++      <div v-else-if="codexAPIQuotaGroups.length" class="space-y-1">
++        <div v-for="(group, index) in codexAPIQuotaGroups" :key="index" class="space-y-1">
++          <div v-if="group.name" class="max-w-[200px] truncate text-[10px] text-gray-500" :title="group.name">{{ group.name }}</div>
++          <UsageProgressBar
++            v-for="(window, windowIndex) in group.windows"
++            :key="windowIndex"
++            :label="codexAPIWindowLabel(window.limit_window_seconds)"
++            label-width="auto"
++            :utilization="window.used_percent"
++            :resets-at="window.resetsAt"
++            :title="window.resetTitle"
++            :color="windowIndex === 0 ? 'indigo' : 'emerald'"
++          />
++        </div>
++      </div>
++      <div v-else class="text-xs text-gray-400">-</div>
++    </template>
++
+     <!-- OpenAI OAuth accounts: single source from /usage API -->
+@@ -705,2 +726,3 @@ import { adminAPI } from '@/api/admin'
+ import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
++import type { OpenAIRateLimitWindow } from '@/api/admin/accounts'
+ import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
+@@ -792,4 +814,42 @@ const isGeminiVertex = computed(() => {
+ 
+-// Show usage windows for OAuth and Setup Token accounts
++const isCodexAPI = computed(() => props.account.platform === 'openai' && props.account.type === 'codex-api')
++
++const codexAPIQuotaGroups = computed(() => {
++  const quota = usageInfo.value?.codex_api_quota
++  return [
++    { name: '', rateLimit: quota?.rate_limit },
++    ...(quota?.additional_rate_limits ?? []).map(limit => ({
++      name: limit.limit_name || limit.metered_feature,
++      rateLimit: limit.rate_limit
++    }))
++  ].map(group => ({
++    name: group.name,
++    windows: [group.rateLimit?.primary_window, group.rateLimit?.secondary_window]
++      .filter(window => window != null)
++      .map(window => {
++        const resetsAt = codexAPIResetAt(window)
++        return { ...window, resetsAt, resetTitle: resetsAt ? new Date(resetsAt).toLocaleString() : undefined }
++      })
++  })).filter(group => group.windows.length > 0)
++})
++
++const codexAPIWindowLabel = (seconds: number): string => {
++  for (const [unit, duration] of [['d', 86400], ['h', 3600], ['m', 60]] as const) {
++    if (seconds > 0 && seconds % duration === 0) return `${seconds / duration}${unit}`
++  }
++  return `${seconds}s`
++}
++
++const codexAPIResetAt = (window: OpenAIRateLimitWindow): string | undefined => {
++  const resetAt = window.reset_at > 0
++    ? window.reset_at
++    : window.reset_after_seconds > 0
++      ? (usageInfo.value?.codex_api_quota?.fetched_at ?? 0) + window.reset_after_seconds
++      : 0
++  return resetAt > 0 ? new Date(resetAt * 1000).toISOString() : undefined
++}
++
++// Show usage windows for subscription accounts
+ const showUsageWindows = computed(() => {
++  if (isCodexAPI.value) return true
+   // Gemini: we can always compute local usage windows from DB logs (simulated quotas).
+@@ -819,3 +879,3 @@ const shouldFetchUsage = computed(() => {
+   if (props.account.platform === 'openai') {
+-    return props.account.type === 'oauth'
++    return props.account.type === 'oauth' || isCodexAPI.value
+   }
+diff --git a/frontend/src/components/account/__tests__/AccountUsageCell.spec.ts b/frontend/src/components/account/__tests__/AccountUsageCell.spec.ts
+index acbf0884ca46ef601fe6b74494a3aade211c49cf..d4e4749cf86a84b95b2833be3bfe3e157e7dbaad 100644
+--- a/frontend/src/components/account/__tests__/AccountUsageCell.spec.ts
++++ b/frontend/src/components/account/__tests__/AccountUsageCell.spec.ts
+@@ -132,2 +132,96 @@ describe('AccountUsageCell', () => {
+ 
++  it('loads Codex API subscription windows without OAuth reset controls', async () => {
++    getUsage.mockResolvedValue({
++      codex_api_quota: {
++        fetched_at: 1793966400,
++        rate_limit: {
++          primary_window: { used_percent: 23, limit_window_seconds: 18000, reset_after_seconds: 3600, reset_at: 1793970000 },
++          secondary_window: null
++        },
++        additional_rate_limits: [{
++          limit_name: 'Codex Spark',
++          metered_feature: 'spark',
++          rate_limit: {
++            primary_window: { used_percent: 67, limit_window_seconds: 604800, reset_after_seconds: 7200, reset_at: 1793973600 }
++          }
++        }]
++      }
++    })
++    const wrapper = mount(AccountUsageCell, {
++      props: { account: makeAccount({ id: 9100, platform: 'openai', type: 'codex-api' }) },
++      global: { stubs: { OpenAIQuotaResetCell: true } }
++    })
++    await flushPromises()
++
++    expect(getUsage).toHaveBeenCalledWith(9100)
++    const bars = wrapper.findAllComponents({ name: 'UsageProgressBar' })
++    expect(bars).toHaveLength(2)
++    expect(bars[0].props()).toMatchObject({ label: '5h', utilization: 23, resetsAt: '2026-11-06T13:00:00.000Z' })
++    expect(bars[1].props()).toMatchObject({ label: '7d', utilization: 67, resetsAt: '2026-11-06T14:00:00.000Z' })
++    expect(wrapper.text()).toContain('Codex Spark')
++    expect(wrapper.text()).toContain('23%')
++    expect(wrapper.text()).toContain('67%')
++    expect(wrapper.findComponent({ name: 'OpenAIQuotaResetCell' }).exists()).toBe(false)
++
++    await wrapper.setProps({ manualRefreshToken: 1 })
++    await flushPromises()
++    expect(getUsage).toHaveBeenCalledTimes(2)
++    expect(getUsage).toHaveBeenLastCalledWith(9100)
++    wrapper.unmount()
++  })
++
++  it('uses the account table batch loader for Codex API usage and exposes errors', async () => {
++    const requestBatchedUsage = vi.fn()
++    const wrapper = mount(AccountUsageCell, {
++      props: {
++        account: makeAccount({ id: 9101, platform: 'openai', type: 'codex-api' }),
++        requestBatchedUsage,
++        batchedUsageError: 'Codex API usage returned HTTP 401'
++      }
++    })
++    await flushPromises()
++
++    expect(requestBatchedUsage).toHaveBeenCalled()
++    expect(getUsage).not.toHaveBeenCalled()
++    expect(wrapper.text()).toContain('Codex API usage returned HTTP 401')
++    expect(wrapper.findComponent({ name: 'UsageProgressBar' }).exists()).toBe(false)
++
++    await wrapper.setProps({ manualRefreshToken: 1 })
++    await flushPromises()
++    expect(requestBatchedUsage).toHaveBeenLastCalledWith(expect.objectContaining({ id: 9101 }), { force: true })
++    wrapper.unmount()
++  })
++
++  it('does not synthesize Codex API windows when quota is absent', async () => {
++    getUsage.mockResolvedValue({ codex_api_quota: { fetched_at: 1793966400 } })
++    const wrapper = mount(AccountUsageCell, {
++      props: { account: makeAccount({ id: 9102, platform: 'openai', type: 'codex-api' }) }
++    })
++    await flushPromises()
++    expect(getUsage).toHaveBeenCalledWith(9102)
++    expect(wrapper.text()).toBe('-')
++    expect(wrapper.findComponent({ name: 'UsageProgressBar' }).exists()).toBe(false)
++    wrapper.unmount()
++  })
++
++  it('uses actual Codex API durations and derives reset time when only a countdown is available', async () => {
++    getUsage.mockResolvedValue({
++      codex_api_quota: {
++        fetched_at: 1793966400,
++        rate_limit: {
++          primary_window: null,
++          secondary_window: { used_percent: 0, limit_window_seconds: 3600, reset_after_seconds: 1800, reset_at: 0 }
++        }
++      }
++    })
++    const wrapper = mount(AccountUsageCell, {
++      props: { account: makeAccount({ id: 9103, platform: 'openai', type: 'codex-api' }) }
++    })
++    await flushPromises()
++    const bar = wrapper.getComponent({ name: 'UsageProgressBar' })
++    expect(bar.props()).toMatchObject({ label: '1h', utilization: 0, resetsAt: '2026-11-06T12:30:00.000Z' })
++    expect(bar.attributes('title')).toBe(new Date('2026-11-06T12:30:00.000Z').toLocaleString())
++    wrapper.unmount()
++  })
++
+   it('renders eligible Ollama Cloud state and forwards query updates', async () => {
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 8a703b626223a54e62b24e1e58a23a92c299e3fe..7d83a3a028ec5e992c7c78b99482f7e1c733fb7b 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -3,2 +3,3 @@
+  */
++import type { OpenAIQuotaUsage } from '@/api/admin/accounts'
+ 
+@@ -1493,2 +1494,3 @@ export interface GrokBillingSummary {
+ export interface AccountUsageInfo {
++  codex_api_quota?: OpenAIQuotaUsage | null
+   source?: 'passive' | 'active'
+diff --git a/frontend/src/views/admin/AccountsView.vue b/frontend/src/views/admin/AccountsView.vue
+index 6d71337fddcda8fb032ee918913249075fb597e6..0d56cfd75fcdf7984cf092dd540c041032603dfa 100644
+--- a/frontend/src/views/admin/AccountsView.vue
++++ b/frontend/src/views/admin/AccountsView.vue
+@@ -770,3 +770,3 @@ const accountSupportsBatchUsage = (account: Account) => {
+   if (account.platform === 'antigravity') return account.type === 'oauth'
+-  if (account.platform === 'openai') return account.type === 'oauth'
++  if (account.platform === 'openai') return account.type === 'oauth' || account.type === 'codex-api'
+   if (account.platform === 'grok') return account.type === 'oauth'
+diff --git a/frontend/src/views/admin/__tests__/AccountsView.usageWindowsHint.spec.ts b/frontend/src/views/admin/__tests__/AccountsView.usageWindowsHint.spec.ts
+index 9f25d0dcd342231845c5e4981978912c2ece2e01..609db78a55421cee269173dc071372554bfcd525 100644
+--- a/frontend/src/views/admin/__tests__/AccountsView.usageWindowsHint.spec.ts
++++ b/frontend/src/views/admin/__tests__/AccountsView.usageWindowsHint.spec.ts
+@@ -9,2 +9,3 @@ const {
+   getBatchTodayStats,
++  getBatchUsage,
+   getAllProxies,
+@@ -15,2 +16,3 @@ const {
+   getBatchTodayStats: vi.fn(),
++  getBatchUsage: vi.fn(),
+   getAllProxies: vi.fn(),
+@@ -25,2 +27,3 @@ vi.mock('@/api/admin', () => ({
+       getBatchTodayStats,
++      getBatchUsage,
+       getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({ enabled: true, interval_minutes: 30 }),
+@@ -79,2 +82,3 @@ const DataTableStub = {
+         <slot name="cell-rate_multiplier" :row="row" />
++        <slot name="cell-usage" :row="row" />
+       </div>
+@@ -140,2 +144,3 @@ describe('admin AccountsView usage windows hint', () => {
+     getBatchTodayStats.mockReset()
++    getBatchUsage.mockReset()
+     getAllProxies.mockReset()
+@@ -156,2 +161,3 @@ describe('admin AccountsView usage windows hint', () => {
+     getBatchTodayStats.mockResolvedValue({ stats: {} })
++    getBatchUsage.mockResolvedValue({ usage: {}, errors: {} })
+     getAllProxies.mockResolvedValue([])
+@@ -170,2 +176,13 @@ describe('admin AccountsView usage windows hint', () => {
+ 
++  it('includes Codex API accounts in batch usage requests', async () => {
++    const account = { id: 91, name: 'codex-gateway', platform: 'openai', type: 'codex-api', extra: {} }
++    listAccounts.mockResolvedValueOnce({ items: [account], total: 1, page: 1, page_size: 20, pages: 1 })
++    const wrapper = mountView()
++    await flushPromises()
++    const cell = wrapper.getComponent({ name: 'AccountUsageCell' })
++    cell.props('requestBatchedUsage')(account)
++    await vi.waitFor(() => expect(getBatchUsage).toHaveBeenCalledWith([91], false))
++    wrapper.unmount()
++  })
++
+   it('renders an explanatory tooltip next to the usage windows column header', async () => {
