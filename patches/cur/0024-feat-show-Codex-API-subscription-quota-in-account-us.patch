@@ -39,7 +39,7 @@ index 0000000000000000000000000000000000000000..c9d8d2da8de2a983f02587c085fc19a5
 +func (s *AccountUsageService) getCodexAPIUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
 +	gateway := s.openaiGatewayService
 +	if gateway == nil || gateway.httpUpstream == nil {
-+		return nil, fmt.Errorf("Codex API usage service is unavailable")
++		return nil, fmt.Errorf("codex API usage service is unavailable")
 +	}
 +	ctx, cancel := context.WithTimeout(ctx, openaiQuotaUpstreamTimeout)
 +	defer cancel()
@@ -57,11 +57,11 @@ index 0000000000000000000000000000000000000000..c9d8d2da8de2a983f02587c085fc19a5
 +	}
 +	resp, err := gateway.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 +	if err != nil {
-+		return nil, fmt.Errorf("Codex API usage request failed")
++		return nil, fmt.Errorf("codex API usage request failed")
 +	}
 +	defer func() { _ = resp.Body.Close() }()
 +	if resp.StatusCode != http.StatusOK {
-+		return nil, fmt.Errorf("Codex API usage returned HTTP %d", resp.StatusCode)
++		return nil, fmt.Errorf("codex API usage returned HTTP %d", resp.StatusCode)
 +	}
 +	const maxBody = 1 << 20
 +	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
