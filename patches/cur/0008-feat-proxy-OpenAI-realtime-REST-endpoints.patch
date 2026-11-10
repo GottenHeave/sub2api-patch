@@ -76,7 +76,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..c086a88f8959a80dd73f604f61970a2de8645f50
 --- /dev/null
 +++ b/backend/internal/handler/openai_realtime_calls.go
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,239 @@
 +package handler
 +
 +import (
@@ -123,11 +123,8 @@ index 0000000000000000000000000000000000000000..c086a88f8959a80dd73f604f61970a2d
 +
 +	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 +	if err != nil {
-+		if maxErr, ok := extractMaxBytesError(err); ok {
-+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
-+			return
-+		}
-+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
++		status, message := requestBodyReadFailure(reqLog, c.Request, err)
++		h.errorResponse(c, status, "invalid_request_error", message)
 +		return
 +	}
 +	parsed, err := service.ParseOpenAIRealtimeRESTRequest(c, body)

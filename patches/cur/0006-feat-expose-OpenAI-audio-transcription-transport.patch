@@ -15,7 +15,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..2f7a34a521ad47d2abe7946e7db0e7602257fc33
 --- /dev/null
 +++ b/backend/internal/handler/openai_audio_transcriptions.go
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,301 @@
 +package handler
 +
 +import (
@@ -65,11 +65,8 @@ index 0000000000000000000000000000000000000000..2f7a34a521ad47d2abe7946e7db0e760
 +
 +	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 +	if err != nil {
-+		if maxErr, ok := extractMaxBytesError(err); ok {
-+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
-+			return
-+		}
-+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
++		status, message := requestBodyReadFailure(reqLog, c.Request, err)
++		h.errorResponse(c, status, "invalid_request_error", message)
 +		return
 +	}
 +	if len(body) == 0 {

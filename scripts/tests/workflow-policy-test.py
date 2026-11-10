@@ -17,6 +17,12 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_endpoint_body_errors_use_upstream_classifier(self) -> None:
+        for prefix in ('0006-', '0008-'):
+            patch = next((ROOT / 'patches/cur').glob(prefix + '*.patch')).read_text()
+            self.assertNotIn('extractMaxBytesError', patch)
+            self.assertIn('requestBodyReadFailure(reqLog, c.Request, err)', patch)
+
     def test_subscription_patch_accepts_upstream_per_turn_token_timing(self) -> None:
         patch = ROOT / 'patches/cur/0020-feat-forward-Codex-API-subscription-inference-endpoi.patch'
         relay = 'backend/internal/service/openai_ws_v2/passthrough_relay.go'
