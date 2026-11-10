@@ -159,7 +159,7 @@ index 0000000000000000000000000000000000000000..3e5ab5f0ddfe7f051c46e8f9df5fd25d
 +		{name: "redirect", status: http.StatusTemporaryRedirect, want: "HTTP 307"},
 +		{name: "invalid JSON", status: http.StatusOK, body: "not JSON", want: "invalid Codex API usage response"},
 +		{name: "oversized", status: http.StatusOK, body: strings.Repeat(" ", (1<<20)+1), want: "invalid Codex API usage response"},
-+		{name: "transport", err: errors.New("private transport details"), want: "Codex API usage request failed"},
++		{name: "transport", err: errors.New("private transport details"), want: "codex API usage request failed"},
 +	} {
 +		t.Run(tc.name, func(t *testing.T) {
 +			gateway := newCodexModelsAPIKeyTestService(&codexModelsHTTPUpstreamStub{do: func(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
