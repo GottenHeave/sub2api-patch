@@ -57,25 +57,25 @@ index d76bc423fe366655923edb86e52864808dfa92fc..2fdf1976695f2c1a4dc283aee8da3c94
 +}
 +
  // isRateLimitActiveForKey 检查指定 key 的限流是否生效
-@@ -79,10 +118,13 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
+@@ -87,8 +126,8 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
  	keys := []string{modelKey}
-+	for _, scope := range modelRateLimitExtraScopesFromContext(ctx) {
-+		keys = appendModelRateLimitKey(keys, scope)
-+	}
  	switch a.Platform {
  	case PlatformAntigravity:
--		if isAntigravityGeminiModel(modelKey) && !isAntigravityGeminiImageModel(modelKey) && modelKey != antigravityGeminiModelRateLimitKey {
--			keys = append(keys, antigravityGeminiModelRateLimitKey)
-+		if isAntigravityGeminiModel(modelKey) && !isAntigravityGeminiImageModel(modelKey) {
-+			keys = appendModelRateLimitKey(keys, antigravityGeminiModelRateLimitKey)
- 		}
+-		return antigravityModelRateLimitKeys(a, modelKey)
++		keys = antigravityModelRateLimitKeys(a, modelKey)
  	case PlatformOpenAI:
 -		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) && modelKey != openAIImageGenerationRateLimitKey {
 -			keys = append(keys, openAIImageGenerationRateLimitKey)
 +		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) {
 +			keys = appendModelRateLimitKey(keys, openAIImageGenerationRateLimitKey)
  		}
-@@ -96,2 +138,15 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
+@@ -104,2 +143,5 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
+ 	}
++	for _, scope := range modelRateLimitExtraScopesFromContext(ctx) {
++		keys = appendModelRateLimitKey(keys, scope)
++	}
+ 	return keys
+@@ -108,2 +150,15 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
  
 +func appendModelRateLimitKey(keys []string, key string) []string {
 +	key = strings.TrimSpace(key)

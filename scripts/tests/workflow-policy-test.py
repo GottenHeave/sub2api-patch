@@ -17,6 +17,24 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_audio_patch_preserves_antigravity_scopes(self) -> None:
+        patch = next((ROOT / 'patches/cur').glob('0005-*.patch'))
+        relative = 'backend/internal/service/model_rate_limit.go'
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / relative
+            target.parent.mkdir(parents=True)
+            target.write_text((ROOT / 'scripts/tests/fixtures/upstream-model-rate-limit.go').read_text())
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            subprocess.run(['git', 'apply', '--include=' + relative, str(patch)],
+                           cwd=directory, check=True, capture_output=True)
+            source = target.read_text()
+            self.assertIn('keys = antigravityModelRateLimitKeys(a, modelKey)', source)
+            self.assertNotIn('return antigravityModelRateLimitKeys(a, modelKey)', source)
+            function = source.split('func (a *Account) modelRateLimitKeysForRequest', 1)[1]
+            self.assertLess(function.index('keys = antigravityModelRateLimitKeys'),
+                            function.index('for _, scope := range modelRateLimitExtraScopesFromContext'))
+            self.assertIn('keys = appendModelRateLimitKey(keys, scope)', function)
+
     def test_endpoint_body_errors_use_upstream_classifier(self) -> None:
         for prefix in ('0006-', '0008-'):
             patch = next((ROOT / 'patches/cur').glob(prefix + '*.patch')).read_text()
