@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,6 +17,32 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_subscription_patch_accepts_upstream_per_turn_token_timing(self) -> None:
+        patch = ROOT / 'patches/cur/0020-feat-forward-Codex-API-subscription-inference-endpoi.patch'
+        relay = 'backend/internal/service/openai_ws_v2/passthrough_relay.go'
+        # Upstream owns this implementation; replay must retain it unchanged.
+        source = '''package openai_ws_v2
+func observeUpstreamMessage() {
+    turnTiming := state.activeTurn
+    if turnTiming != nil && turnTiming.firstTokenMs == nil && isTokenEvent(eventType) {
+        ms := int(now.Sub(turnTiming.startAt).Milliseconds())
+        if ms >= 0 {
+            turnTiming.firstTokenMs = &ms
+        }
+    }
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / relay
+            target.parent.mkdir(parents=True)
+            target.write_text(source)
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            subprocess.run(['git', 'apply', '--include=' + relay, str(patch)],
+                           cwd=directory, check=True, capture_output=True)
+            self.assertEqual(target.read_text(), source)
+        self.assertIn('TestObserveUpstreamMessage_FirstTokenWithoutResponseIDEachTurn',
+                      patch.read_text())
+
     def test_patchset_push_and_sync_triggers_exist(self) -> None:
         self.assertRegex(VALIDATION, r"(?m)^  push:\n    branches:\n      - patchset$")
         self.assertRegex(SYNC, r"(?m)^  schedule:$")

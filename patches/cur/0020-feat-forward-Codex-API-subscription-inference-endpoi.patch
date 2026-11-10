@@ -1698,37 +1698,6 @@ index 0000000000000000000000000000000000000000..b98e405c67804c161a5d65e8477b0e8c
 +	}
 +	return conn, response, err
 +}
-diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay.go b/backend/internal/service/openai_ws_v2/passthrough_relay.go
-index e7ba749393f89fdb5c143069705bcef9ac096bcc..e9dc6890d6b5daa53dbdcf5d951628b70a07bdc4 100644
---- a/backend/internal/service/openai_ws_v2/passthrough_relay.go
-+++ b/backend/internal/service/openai_ws_v2/passthrough_relay.go
-@@ -775,8 +775,2 @@ func observeUpstreamMessage(
- 		}
--		if state.activeTurn != nil && state.activeTurn.firstTokenMs == nil {
--			tms := int(now.Sub(state.activeTurn.startAt).Milliseconds())
--			if tms >= 0 {
--				state.activeTurn.firstTokenMs = &tms
--			}
--		}
- 	}
-@@ -791,8 +785,2 @@ func observeUpstreamMessage(
- 		turnTiming = openAIWSRelayGetOrInitTurnTiming(state, responseID, now)
--		if turnTiming != nil && turnTiming.firstTokenMs == nil && isTokenEvent(eventType) {
--			ms := int(now.Sub(turnTiming.startAt).Milliseconds())
--			if ms >= 0 {
--				turnTiming.firstTokenMs = &ms
--			}
--		}
- 	} else {
-@@ -800,2 +788,8 @@ func observeUpstreamMessage(
- 	}
-+	if turnTiming != nil && turnTiming.firstTokenMs == nil && isTokenEvent(eventType) {
-+		ms := int(now.Sub(turnTiming.startAt).Milliseconds())
-+		if ms >= 0 {
-+			turnTiming.firstTokenMs = &ms
-+		}
-+	}
- 	observeRelayTurnResponseModel(turnTiming, firstRelayResponseModel(message), isTerminalEvent(eventType))
 diff --git a/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go b/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
 index 8e3a416617dcaa04fad99d2052ed84b7db3c4f63..d492d1d546f39f8d1c8917e9c10aaf09bacf908d 100644
 --- a/backend/internal/service/openai_ws_v2/passthrough_relay_internal_test.go
