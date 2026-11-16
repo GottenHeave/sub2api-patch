@@ -2812,10 +2812,6 @@ index c6616c679f5b09c2bb0bf08861dedc8d7877fa10..0bc22afc9ab6e5458b3818378bf686aa
 -        v-if="form.platform === 'openai'"
 +        v-if="form.platform === 'openai' && form.type !== 'codex-api'"
          class="border-t border-gray-200 pt-4 dark:border-dark-600"
-@@ -3075,2 +3082,3 @@
-             type="button"
-+            data-testid="create-openai-passthrough-toggle"
-             @click="openaiPassthroughEnabled = !openaiPassthroughEnabled"
 @@ -3929,2 +3937,3 @@ import HelpTooltip from '@/components/common/HelpTooltip.vue'
  import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
 +import CodexAPICredentialsFields from '@/components/account/CodexAPICredentialsFields.vue'

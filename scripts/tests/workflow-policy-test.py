@@ -17,6 +17,57 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_codex_account_patch_preserves_upstream_passthrough_selector(self) -> None:
+        patch = next((ROOT / 'patches/cur').glob('0017-*.patch')).read_text()
+        relative = 'frontend/src/components/account/CreateAccountModal.vue'
+        file_diff = patch.split(f'diff --git a/{relative} b/{relative}\n', 1)[1]
+        file_diff = file_diff.split('\ndiff --git ', 1)[0]
+        hunks = re.findall(r'(?ms)^@@ .*?(?=^@@ |\Z)', file_diff)
+        selector_hunks = [hunk for hunk in hunks if 'create-openai-passthrough-toggle' in hunk]
+        focused_patch = (f'--- a/{relative}\n+++ b/{relative}\n' + ''.join(selector_hunks)
+                         if selector_hunks else '')
+        source = '''          <button
+            type="button"
+            data-testid="create-openai-passthrough-toggle"
+            @click="openaiPassthroughEnabled = !openaiPassthroughEnabled"
+          >
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / relative
+            target.parent.mkdir(parents=True)
+            target.write_text(source)
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            result = subprocess.run(['git', 'apply', '--allow-empty', '-'], input=focused_patch,
+                                    cwd=directory, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(target.read_text(), source)
+        self.assertIn('form.platform === \'openai\' && form.type !== \'codex-api\'', file_diff)
+
+    def test_realtime_patch_preserves_upstream_client_session_identity(self) -> None:
+        patch = next((ROOT / 'patches/cur').glob('0007-*.patch')).read_text()
+        relative = 'backend/internal/service/openai_ws_v2_passthrough_adapter.go'
+        file_diff = patch.split(f'diff --git a/{relative} b/{relative}\n', 1)[1]
+        file_diff = file_diff.split('\ndiff --git ', 1)[0]
+        hunks = re.findall(r'(?ms)^@@ .*?(?=^@@ |\Z)', file_diff)
+        identity_hunks = [hunk for hunk in hunks
+                          if 'applyCodexAccountIdentityClientMetadataRaw' in hunk]
+        self.assertEqual(len(identity_hunks), 1)
+        # Exercise the conflicting hunk against an independent upstream fixture.
+        focused_patch = f'--- a/{relative}\n+++ b/{relative}\n' + identity_hunks[0]
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / relative
+            target.parent.mkdir(parents=True)
+            target.write_text((ROOT / 'scripts/tests/fixtures/upstream-ws-client-identity.go').read_text())
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            result = subprocess.run(['git', 'apply', '-'], input=focused_patch,
+                                    cwd=directory, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            source = target.read_text()
+            self.assertIn('if !isRealtime {\n\t\taccountScopedFirst', source)
+            self.assertIn('getAPIKeyIDFromContext(c), codexClientSessionID(c))', source)
+            self.assertIn('firstClientMessage = accountScopedFirst', source)
+            self.assertIn('"invalid websocket identity metadata", scopeErr)', source)
+
     def test_audio_patch_preserves_antigravity_scopes(self) -> None:
         patch = next((ROOT / 'patches/cur').glob('0005-*.patch'))
         relative = 'backend/internal/service/model_rate_limit.go'
