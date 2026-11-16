@@ -494,6 +494,14 @@ index e98b967e2..1d2692fdd 100644
  }
  
  // sessionContextDiscriminator 把请求上下文（客户端 IP / 归一化 UA / API Key ID）拼成
+diff --git a/backend/internal/service/chat_completions_metadata_test.go b/backend/internal/service/chat_completions_metadata_test.go
+--- a/backend/internal/service/chat_completions_metadata_test.go
++++ b/backend/internal/service/chat_completions_metadata_test.go
+@@ -151,3 +151,3 @@ func TestForwardAsChatCompletions_OAuthAccountKeepsSynthesizedMetadataUserID(t *testing.T) {
+-		account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "tok"}}
++		account := &Account{ID: 1, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "tok", "email": "owner@example.com"}}
+ 		_, err := svc.ForwardAsChatCompletions(context.Background(), chatMetaContext(body), account, body, nil)
+ 		require.NoError(t, err)
 diff --git a/backend/internal/service/gateway_oauth_metadata_test.go b/backend/internal/service/gateway_oauth_metadata_test.go
 index 09c4b9c03..86776e2df 100644
 --- a/backend/internal/service/gateway_oauth_metadata_test.go
