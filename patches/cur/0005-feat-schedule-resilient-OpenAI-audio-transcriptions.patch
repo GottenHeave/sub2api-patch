@@ -760,7 +760,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..ecea9e34910d7af6d9c17f7752ad4a02b0112812
 --- /dev/null
 +++ b/backend/internal/service/openai_audio_transcriptions_test.go
-@@ -0,0 +1,1015 @@
+@@ -0,0 +1,1021 @@
 +package service
 +
 +import (
@@ -813,6 +813,8 @@ index 0000000000000000000000000000000000000000..ecea9e34910d7af6d9c17f7752ad4a02
 +	c.Request = req
 +	return c, rec
 +}
++
++var _ AccountRepository = (*audioTranscriptionRateLimitAccountRepoStub)(nil)
 +
 +type audioTranscriptionRateLimitAccountRepoStub struct {
 +	rateLimitCalls        int
@@ -980,6 +982,10 @@ index 0000000000000000000000000000000000000000..ecea9e34910d7af6d9c17f7752ad4a02
 +}
 +
 +func (r *audioTranscriptionRateLimitAccountRepoStub) ClearModelRateLimits(context.Context, int64) error {
++	return nil
++}
++
++func (r *audioTranscriptionRateLimitAccountRepoStub) ClearModelRateLimit(context.Context, int64, string) error {
 +	return nil
 +}
 +
