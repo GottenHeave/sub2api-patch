@@ -17,6 +17,17 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_gpt62_patch_applies_after_upstream_import(self) -> None:
+        patch = next((ROOT / 'patches/cur').glob('0025-*.patch'))
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            result = subprocess.run(['git', 'apply', str(patch)], cwd=directory,
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            source = (Path(directory) / 'backend/internal/service/openai_gpt62_downstream_test.go').read_text()
+            for expected in ['gpt-6.2-sol', 'gpt-6.2-astra', 'CacheCreation12h', 'CalculateCostUnified']:
+                self.assertIn(expected, source)
+
     def test_codex_account_patch_preserves_upstream_passthrough_selector(self) -> None:
         patch = next((ROOT / 'patches/cur').glob('0017-*.patch')).read_text()
         relative = 'frontend/src/components/account/CreateAccountModal.vue'

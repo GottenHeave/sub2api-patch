@@ -57,7 +57,7 @@ Row 25 was added on 2026-11-17 as a temporary GPT-6.2 Sol/Astra import.
 | 22: Codex API handshake error bodies | Finish reading failed handshake bodies before the WebSocket library cancels its context | WebSocket transport and existing handshake test | 2 | +12 / -2 |
 | 23: Codex API large-request bridge | Reuse HTTP bridging and complete connection-local replay, retain native continuation and bound Responses ingress/decompression | Dedicated HTTP/WS handlers, bridge, shared replay/relay/decoder helpers and tests | 13 | +1790 / -25 |
 | 24: Codex API subscription quota | Query the configured gateway and show subscription windows through existing account usage loading; keep public inference routes unchanged | Account usage service, shared transport builder, provider wiring, account usage UI/types/batch eligibility and tests | 10 | +359 / -3 |
-| 25: Temporary GPT-6.2 support | Import Sol/Astra identities, Codex metadata, compatible-interface validation, pricing, request-time Ultrafast rates and frontend presets | OpenAI compatibility/model/billing services, metadata and price resources, frontend presets/locales and tests | 25 | +1021 / -89 |
+| 25: GPT-6.2 pricing regression | Verify Sol/Astra twelve-hour cache-write pricing with and without the pricing resolver; full model support is supplied by upstream | `service/openai_gpt62_downstream_test.go` | 1 | +31 / -0 |
 
 ## Behavior boundaries
 
@@ -162,13 +162,12 @@ For separate capabilities:
   shape. No selector header or metadata removal is added. Its
   bounded decompression rejects oversized output instead of returning a
   truncated inspection body. No account scheduling or billing schema changes.
-- Patch 25 follows patch 24 and temporarily imports the complete GPT-6.2
-  Sol/Astra change. Shared billing gains request-time Ultrafast rates and the
-  existing twelve-hour cache-write policy; dedicated Codex API request and
-  model-list passthrough remains unchanged. Remove this patch once a selected
-  CI-eligible upstream main base contains equivalent changes, then verify the
-  remaining series against that base. Patch removal is manual; the apply
-  script does not automatically skip duplicate changes.
+- Patch 25 follows patch 24 and verifies GPT-6.2 Sol/Astra twelve-hour
+  cache-write pricing with and without the pricing resolver. The complete
+  model support is supplied by upstream, including identities, metadata,
+  compatibility validation, frontend presets and request-time Ultrafast rates.
+  Dedicated Codex API request and model-list passthrough remains unchanged.
+  All 25 patches are applied; no automatic duplicate skipping is enabled.
 - GPT-6 Sol/Luna and Claude Opus 5.5 support now comes from upstream; the early
   downstream import is no longer needed.
 
