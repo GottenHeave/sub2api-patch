@@ -272,7 +272,7 @@ index a12527b82bcf4126476eb312f1b56271e5a77bc8..79be12207795cf8b8d02c26c425ada7d
 @@ -705,2 +726,3 @@ import { adminAPI } from '@/api/admin'
  import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
 +import type { OpenAIRateLimitWindow } from '@/api/admin/accounts'
- import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
+ import { buildAccountUsageRefreshKey } from '@/utils/accountUsageRefresh'
 @@ -792,4 +814,42 @@ const isGeminiVertex = computed(() => {
  
 -// Show usage windows for OAuth and Setup Token accounts

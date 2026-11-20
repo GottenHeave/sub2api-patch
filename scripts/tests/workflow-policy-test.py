@@ -17,6 +17,24 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_quota_import_accepts_account_usage_refresh_key(self) -> None:
+        patch = next((ROOT / 'patches/cur').glob('0024-*.patch')).read_text()
+        hunk = next(h for h in re.findall(r'(?ms)^@@ .*?(?=^@@ |^diff --git |\Z)', patch)
+                    if '+import type { OpenAIRateLimitWindow }' in h)
+        relative = 'frontend/src/components/account/AccountUsageCell.vue'
+        source = "import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'\nimport { buildAccountUsageRefreshKey } from '@/utils/accountUsageRefresh'\n"
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / relative
+            target.parent.mkdir(parents=True)
+            target.write_text(source)
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            result = subprocess.run(['git', 'apply', '-'],
+                                    input=f'--- a/{relative}\n+++ b/{relative}\n{hunk}',
+                                    cwd=directory, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('buildAccountUsageRefreshKey', target.read_text())
+            self.assertIn('import type { OpenAIRateLimitWindow }', target.read_text())
+
     def test_gpt62_patch_applies_after_upstream_import(self) -> None:
         patch = next((ROOT / 'patches/cur').glob('0025-*.patch'))
         with tempfile.TemporaryDirectory() as directory:
