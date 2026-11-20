@@ -17,6 +17,13 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_codex_dispatch_preserves_conflicting_fields_guard(self) -> None:
+        patch = next((ROOT / 'patches/cur').glob('0017-*.patch')).read_text()
+        lines = [line for line in patch.splitlines()
+                 if 'groupModelAllowlist, compositeTarget' in line
+                 and ('r.Handle(' in line or 'codexDirect' in line)]
+        self.assertEqual(lines, [], 'Route patches must retain rejectConflictingFields')
+
     def test_quota_import_accepts_account_usage_refresh_key(self) -> None:
         patch = next((ROOT / 'patches/cur').glob('0024-*.patch')).read_text()
         hunk = next(h for h in re.findall(r'(?ms)^@@ .*?(?=^@@ |^diff --git |\Z)', patch)
