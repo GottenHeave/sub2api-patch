@@ -15,6 +15,17 @@ Subject: [PATCH] test: assert transport and identity semantics without
  .../openai_ws_v2_realtime_relay_test.go       | 10 ++++-
  8 files changed, 67 insertions(+), 42 deletions(-)
 
+diff --git a/backend/internal/service/openai_gateway_messages_tool_search_test.go b/backend/internal/service/openai_gateway_messages_tool_search_test.go
+--- a/backend/internal/service/openai_gateway_messages_tool_search_test.go
++++ b/backend/internal/service/openai_gateway_messages_tool_search_test.go
+@@ -124,5 +124,5 @@ func TestForwardAsAnthropic_CodexOAuthRevealedToolNameMatchesReplay(t *testing.T) {
+ 	for _, tc := range []struct{ name, want string }{
+-		{"python", "python__sub2api"},
+-		{"Python", "python__sub2api"},
++		{"python", "namespace__pi"},
++		{"Python", "namespace__pi"},
+ 		{"Echo", "Echo"},
+ 	} {
 diff --git a/backend/internal/service/account_email_identity_test.go b/backend/internal/service/account_email_identity_test.go
 index 1006bf729..af53cd817 100644
 --- a/backend/internal/service/account_email_identity_test.go
