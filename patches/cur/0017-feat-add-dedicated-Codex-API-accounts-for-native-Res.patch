@@ -1535,9 +1535,11 @@ index 85c5099342792f7aa123de3cb8722f773dd62d15..ed80a0a91e1393dd9bd3dc5a3939cd6e
 diff --git a/backend/internal/server/routes/gateway_request_field_conflict_test.go b/backend/internal/server/routes/gateway_request_field_conflict_test.go
 --- a/backend/internal/server/routes/gateway_request_field_conflict_test.go
 +++ b/backend/internal/server/routes/gateway_request_field_conflict_test.go
-@@ -168 +168 @@
+@@ -167,3 +167,3 @@
+ 		router,
 -		&handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: &handler.OpenAIGatewayHandler{}, AsyncImage: handler.NewAsyncImageHandler(nil, nil)},
 +		&handler.Handlers{Gateway: &handler.GatewayHandler{}, OpenAIGateway: newOrdinaryRoutesOpenAIHandler(&config.Config{}), AsyncImage: handler.NewAsyncImageHandler(nil, nil)},
+ 		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
 diff --git a/backend/internal/server/routes/gateway_test.go b/backend/internal/server/routes/gateway_test.go
 index 3f545b22ecf7f8ad7e6e42366be6a8545e86396a..988e4c6ed574b15cd0ea0e47123a3f6de8694432 100644
 --- a/backend/internal/server/routes/gateway_test.go
