@@ -17,6 +17,24 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_codex_import_preserves_upstream_group_sync_button(self) -> None:
+        patch = next((ROOT / 'patches/cur').glob('0017-*.patch')).read_text()
+        for name in ['CreateAccountModal', 'EditAccountModal']:
+            relative = f'frontend/src/components/account/{name}.vue'
+            diff = patch.split(f'diff --git a/{relative} b/{relative}\n', 1)[1].split('\ndiff --git ', 1)[0]
+            hunk = next(h for h in re.findall(r'(?ms)^@@ .*?(?=^@@ |\Z)', diff)
+                        if '+import CodexAPICredentialsFields' in h)
+            source = "import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'\nimport UpstreamGroupSyncButton from '@/components/account/UpstreamGroupSyncButton.vue'\n"
+            with tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / relative
+                target.parent.mkdir(parents=True)
+                target.write_text(source)
+                subprocess.run(['git', 'init', '-q', directory], check=True)
+                result = subprocess.run(['git', 'apply', '-'], input=f'--- a/{relative}\n+++ b/{relative}\n{hunk}', cwd=directory, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('import CodexAPICredentialsFields', target.read_text())
+                self.assertIn('import UpstreamGroupSyncButton', target.read_text())
+
     def test_codex_dispatch_preserves_conflicting_fields_guard(self) -> None:
         patch = next((ROOT / 'patches/cur').glob('0017-*.patch')).read_text()
         lines = [line for line in patch.splitlines()
