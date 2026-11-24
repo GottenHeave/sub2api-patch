@@ -2034,12 +2034,13 @@ index 5d778b75ce8396f94e73431d94cb1ef1c9d57b82..c5b428f00cfb4d1733406f481ed52d85
 +	if account.IsCodexAPI() {
 +		if err := validateCodexAPIAccountGroups(ctx, s.accountRepo, s.groupRepo, account, groupIDs); err != nil {
  			return nil, err
-@@ -542,2 +540,5 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
+@@ -542,3 +540,6 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
  	}
 +	if err := createAccountWithGroups(ctx, s.accountRepo, account, groupIDs); err != nil {
 +		return nil, err
 +	}
  
+ 	AfterAccountCommit(ctx, func(_ context.Context) {
 @@ -839,2 +840,5 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
  
 +	if err := ValidateCodexAPIAccount(account.Platform, account.Type, account.Credentials); err != nil {

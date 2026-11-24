@@ -17,6 +17,12 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_account_creation_hunk_has_unique_commit_boundary(self) -> None:
+        patch = next((ROOT / 'patches/cur').glob('0017-*.patch')).read_text()
+        hunk = next(h for h in re.findall(r'(?ms)^@@ .*?(?=^@@ |^diff --git |\Z)', patch)
+                    if '+\tif err := createAccountWithGroups(ctx, s.accountRepo, account, groupIDs)' in h)
+        self.assertIn('AfterAccountCommit(ctx, func(_ context.Context)', hunk)
+
     def test_codex_import_preserves_upstream_group_sync_button(self) -> None:
         patch = next((ROOT / 'patches/cur').glob('0017-*.patch')).read_text()
         for name in ['CreateAccountModal', 'EditAccountModal']:
