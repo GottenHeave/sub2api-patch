@@ -237,10 +237,11 @@ diff --git a/backend/internal/service/wire.go b/backend/internal/service/wire.go
 index d24d33a1a406fc5522b0d50b5ffead92567a1f51..b048e084be4f59e2f8cb37ec44a1af4beb27984b 100644
 --- a/backend/internal/service/wire.go
 +++ b/backend/internal/service/wire.go
-@@ -255,2 +255,3 @@ func ProvideAccountUsageService(
+@@ -255,3 +255,4 @@ func ProvideAccountUsageService(
  	service.agentIdentityWS = openAIGatewayService
 +	service.openaiGatewayService = openAIGatewayService
- 	return service
+ 	if opsService != nil {
+ 		service.opsMonitoring = opsService
 diff --git a/frontend/src/components/account/AccountUsageCell.vue b/frontend/src/components/account/AccountUsageCell.vue
 index a12527b82bcf4126476eb312f1b56271e5a77bc8..79be12207795cf8b8d02c26c425ada7d422e9387 100644
 --- a/frontend/src/components/account/AccountUsageCell.vue

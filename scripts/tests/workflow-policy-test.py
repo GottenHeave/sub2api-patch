@@ -17,6 +17,28 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_quota_gateway_wiring_targets_account_usage(self) -> None:
+        patch = next((ROOT / 'patches/cur').glob('0024-*.patch')).read_text()
+        hunk = next(h for h in re.findall(r'(?ms)^@@ .*?(?=^@@ |^diff --git |\Z)', patch)
+                    if '+\tservice.openaiGatewayService = openAIGatewayService' in h)
+        self.assertIn(' \tif opsService != nil {', hunk)
+        relative = 'backend/internal/service/wire.go'
+        source = ('func ProvideOpenAIQuotaService() {\n'
+                  '\tservice.agentIdentityWS = openAIGatewayService\n\treturn service\n}\n'
+                  'func ProvideAccountUsageService() {\n'
+                  '\tservice.agentIdentityWS = openAIGatewayService\n'
+                  '\tif opsService != nil {\n\t\tservice.opsMonitoring = opsService\n\t}\n}\n')
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / relative
+            target.parent.mkdir(parents=True)
+            target.write_text(source)
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            result = subprocess.run(['git', 'apply', '-'], input=f'--- a/{relative}\n+++ b/{relative}\n{hunk}', cwd=directory, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            quota, usage = target.read_text().split('func ProvideAccountUsageService()', 1)
+            self.assertNotIn('service.openaiGatewayService =', quota)
+            self.assertIn('service.openaiGatewayService = openAIGatewayService', usage)
+
     def test_account_creation_hunk_has_unique_commit_boundary(self) -> None:
         patch = next((ROOT / 'patches/cur').glob('0017-*.patch')).read_text()
         hunk = next(h for h in re.findall(r'(?ms)^@@ .*?(?=^@@ |^diff --git |\Z)', patch)
