@@ -17,6 +17,11 @@ RELEASE = (ROOT / ".github/workflows/auto-release.yml").read_text()
 
 
 class WorkflowPolicyTest(unittest.TestCase):
+    def test_gemini_idle_helper_owns_virtual_time(self) -> None:
+        patch = next((ROOT / 'patches/cur').glob('0015-*.patch')).read_text()
+        self.assertIn('+\t\tout = runAntigravityGeminiStreamWithIdleInBubble(t, userAgent, idle)', patch)
+        self.assertEqual(patch.count('+\tsynctest.Test(t,'), 1)
+
     def test_quota_gateway_wiring_targets_account_usage(self) -> None:
         patch = next((ROOT / 'patches/cur').glob('0024-*.patch')).read_text()
         hunk = next(h for h in re.findall(r'(?ms)^@@ .*?(?=^@@ |^diff --git |\Z)', patch)
